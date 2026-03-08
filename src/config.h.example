@@ -1,0 +1,24 @@
+#pragma once
+
+// --- WiFi credentials ---
+#define WIFI_SSID       "your_wifi_ssid"
+#define WIFI_PASSWORD   "your_wifi_password"
+
+// --- Location (used for Open-Meteo weather API) ---
+#define WEATHER_LAT     44.82
+#define WEATHER_LON     20.46
+#define WEATHER_CITY    "Belgrade"
+
+// --- Weather update interval (ms) ---
+#define WEATHER_UPDATE_INTERVAL_MS  (30 * 60 * 1000)  // 30 minutes
+
+// --- Home Assistant ---
+// HA_BASE_URL: e.g. "http://192.168.1.100:8123"
+// HA_TOKEN: long-lived access token from HA profile page
+#define HA_BASE_URL               "http://192.168.X.X:8123"
+#define HA_TOKEN                  "your_long_lived_access_token"
+#define HA_CAL_UPDATE_INTERVAL_MS (5 * 60 * 1000)
+
+// --- NTP ---
+#define NTP_SERVER      "pool.ntp.org"
+#define POSIX_TZ        "CET-1CEST,M3.5.0,M10.5.0/3"
