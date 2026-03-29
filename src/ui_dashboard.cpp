@@ -4,12 +4,14 @@
 #include "weather.h"
 #include "ha_calendar.h"
 #include "transport.h"
+#include "bridge.h"
 #include "weather_icons.h"
 #include "lvgl.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include <time.h>
+#include <stdio.h>
 
 // Declared in main.cpp
 extern void request_calendar_date(int year, int month, int day);
@@ -31,8 +33,9 @@ static lv_color_t *canvas_buf       = NULL;
 
 // Schedule elements
 static lv_obj_t *lbl_sched_title = NULL;
-#define MAX_EVENT_LINES 8
+#define MAX_EVENT_LINES 16
 static lv_obj_t *lbl_events[MAX_EVENT_LINES] = {};
+static lv_obj_t *events_scroll = NULL;  // scrollable container for events
 static lv_obj_t *lbl_no_events = NULL;
 static lv_obj_t *btn_today     = NULL;
 static lv_obj_t *now_line      = NULL;   // "current time" indicator line
@@ -41,6 +44,23 @@ static lv_obj_t *right_panel_ref = NULL; // for positioning now_line
 // Transport panel elements
 static lv_obj_t *lbl_transport_out = NULL;   // stop 89 — outbound
 static lv_obj_t *lbl_transport_in  = NULL;   // stop 90 — inbound
+
+// Tileview
+static lv_obj_t *tileview = NULL;
+
+// Page 2: Health + Tasks + News
+static lv_obj_t *lbl_health_steps = NULL;
+static lv_obj_t *lbl_health_sleep = NULL;
+static lv_obj_t *lbl_health_hr    = NULL;
+static lv_obj_t *lbl_health_ready = NULL;
+#define MAX_TASK_LINES 8
+static lv_obj_t *lbl_task_lines[MAX_TASK_LINES] = {};
+static lv_obj_t *lbl_no_tasks = NULL;
+#define MAX_NEWS_LINES 5
+static lv_obj_t *lbl_news_lines[MAX_NEWS_LINES] = {};
+static lv_obj_t *lbl_no_news = NULL;
+// Page indicator dots
+static lv_obj_t *dot_indicators[2] = {};
 
 #define COLOR_NOW lv_color_hex(0xFF4444)  // red "now" line
 
@@ -118,6 +138,31 @@ static void timer_transport_cb(lv_timer_t *timer)
     ui_dashboard_update_transport(t);
 }
 
+static void timer_bridge_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    const bridge_data_t *d = bridge_get_data();
+    ui_dashboard_update_bridge(d);
+}
+
+static void update_dot_indicators(int active)
+{
+    for (int i = 0; i < 2; i++) {
+        if (dot_indicators[i]) {
+            lv_obj_set_style_bg_opa(dot_indicators[i],
+                (i == active) ? LV_OPA_COVER : LV_OPA_50, 0);
+        }
+    }
+}
+
+static void tileview_changed_cb(lv_event_t *e)
+{
+    lv_obj_t *tv = lv_event_get_target(e);
+    lv_obj_t *tile = lv_tileview_get_tile_act(tv);
+    int col = lv_obj_get_x(tile) / 1024;
+    update_dot_indicators(col);
+}
+
 static bool is_today(int y, int m, int d)
 {
     time_t now;
@@ -176,6 +221,8 @@ static void btn_today_cb(lv_event_t *e)
     request_calendar_date(sel_year, sel_month, sel_day);
 }
 
+static void create_page2(lv_obj_t *tile);
+
 void ui_dashboard_create(void)
 {
     lv_obj_t *scr = lv_scr_act();
@@ -183,8 +230,32 @@ void ui_dashboard_create(void)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
+    // Create tileview for horizontal swipe between pages
+    tileview = lv_tileview_create(scr);
+    lv_obj_set_size(tileview, 1024, 600);
+    lv_obj_set_pos(tileview, 0, 0);
+    lv_obj_set_style_bg_opa(tileview, LV_OPA_TRANSP, 0);
+    lv_obj_add_event_cb(tileview, tileview_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lv_obj_t *tile1 = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_RIGHT);
+    lv_obj_t *tile2 = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_LEFT);
+
+    // Page indicator dots (bottom center, above bottom bar)
+    for (int i = 0; i < 2; i++) {
+        dot_indicators[i] = lv_obj_create(scr);
+        lv_obj_remove_style_all(dot_indicators[i]);
+        lv_obj_set_size(dot_indicators[i], 8, 8);
+        lv_obj_set_pos(dot_indicators[i], 504 + i * 16, 572);
+        lv_obj_set_style_bg_color(dot_indicators[i], COLOR_TEXT, 0);
+        lv_obj_set_style_bg_opa(dot_indicators[i], (i == 0) ? LV_OPA_COVER : LV_OPA_50, 0);
+        lv_obj_set_style_radius(dot_indicators[i], LV_RADIUS_CIRCLE, 0);
+    }
+
+    // ===== PAGE 1: Main Dashboard (existing) =====
+    lv_obj_t *page = tile1;
+
     // ---- TOP BAR (60px) ----
-    lv_obj_t *top_bar = lv_obj_create(scr);
+    lv_obj_t *top_bar = lv_obj_create(page);
     lv_obj_remove_style_all(top_bar);
     lv_obj_set_size(top_bar, 1024, 60);
     lv_obj_set_pos(top_bar, 0, 0);
@@ -196,7 +267,7 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_color(lbl_datetime, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(lbl_datetime, &lv_font_montserrat_24, 0);
     lv_obj_set_width(lbl_datetime, 500);
-    lv_label_set_long_mode(lbl_datetime, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(lbl_datetime, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(lbl_datetime, "...");
     lv_obj_set_pos(lbl_datetime, 15, 15);
 
@@ -204,13 +275,13 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_color(lbl_topbar_temp, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(lbl_topbar_temp, &lv_font_montserrat_24, 0);
     lv_obj_set_width(lbl_topbar_temp, 400);
-    lv_label_set_long_mode(lbl_topbar_temp, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(lbl_topbar_temp, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(lbl_topbar_temp, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(lbl_topbar_temp, WEATHER_CITY);
     lv_obj_set_pos(lbl_topbar_temp, 609, 15);
 
     // ---- LEFT PANEL (weather + calendar) ----
-    lv_obj_t *cal_panel = lv_obj_create(scr);
+    lv_obj_t *cal_panel = lv_obj_create(page);
     lv_obj_remove_style_all(cal_panel);
     lv_obj_set_size(cal_panel, 410, 510);
     lv_obj_set_pos(cal_panel, 5, 65);
@@ -233,7 +304,7 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_color(lbl_weather_main, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(lbl_weather_main, &lv_font_montserrat_24, 0);
     lv_obj_set_width(lbl_weather_main, 320);
-    lv_label_set_long_mode(lbl_weather_main, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(lbl_weather_main, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(lbl_weather_main, "...");
     lv_obj_set_pos(lbl_weather_main, 70, 8);
 
@@ -242,7 +313,7 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_color(lbl_weather_detail, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_weather_detail, &lv_font_montserrat_14, 0);
     lv_obj_set_width(lbl_weather_detail, 320);
-    lv_label_set_long_mode(lbl_weather_detail, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(lbl_weather_detail, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(lbl_weather_detail, "");
     lv_obj_set_pos(lbl_weather_detail, 70, 38);
 
@@ -274,7 +345,7 @@ void ui_dashboard_create(void)
     lv_obj_add_event_cb(calendar, calendar_click_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     // ---- RIGHT PANEL (schedule + transport) ----
-    right_panel_ref = lv_obj_create(scr);
+    right_panel_ref = lv_obj_create(page);
     lv_obj_t *right_panel = right_panel_ref;
     lv_obj_remove_style_all(right_panel);
     lv_obj_set_size(right_panel, 599, 510);
@@ -307,27 +378,38 @@ void ui_dashboard_create(void)
     lv_label_set_text(btn_lbl, "Today");
     lv_obj_center(btn_lbl);
 
-    // Event lines (y=42, 8 lines x 35px = up to y=322)
+    // Scrollable event area (y=42, height=288 — fits 8 visible, scrolls for more)
+    events_scroll = lv_obj_create(right_panel);
+    lv_obj_remove_style_all(events_scroll);
+    lv_obj_set_size(events_scroll, 579, 288);
+    lv_obj_set_pos(events_scroll, 0, 42);
+    lv_obj_set_style_bg_opa(events_scroll, LV_OPA_TRANSP, 0);
+    lv_obj_set_flex_flow(events_scroll, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(events_scroll, 3, 0);
+    lv_obj_set_style_pad_left(events_scroll, 20, 0);
+    lv_obj_set_scroll_dir(events_scroll, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(events_scroll, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_bg_color(events_scroll, COLOR_TEXT_DIM, LV_PART_SCROLLBAR);
+    lv_obj_set_style_width(events_scroll, 4, LV_PART_SCROLLBAR);
+
     for (int i = 0; i < MAX_EVENT_LINES; i++) {
-        lbl_events[i] = lv_label_create(right_panel);
+        lbl_events[i] = lv_label_create(events_scroll);
         lv_obj_set_style_text_color(lbl_events[i], COLOR_TEXT, 0);
         lv_obj_set_style_text_font(lbl_events[i], &font_montserrat_16_cyr, 0);
-        lv_obj_set_width(lbl_events[i], 559);
-        lv_label_set_long_mode(lbl_events[i], LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(lbl_events[i], 539);
+        lv_label_set_long_mode(lbl_events[i], LV_LABEL_LONG_SCROLL_CIRCULAR);
         lv_label_set_text(lbl_events[i], "");
-        lv_obj_set_pos(lbl_events[i], 20, 42 + i * 35);
         lv_obj_add_flag(lbl_events[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     // "No events" fallback
-    lbl_no_events = lv_label_create(right_panel);
+    lbl_no_events = lv_label_create(events_scroll);
     lv_obj_set_style_text_color(lbl_no_events, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_no_events, &font_montserrat_16_cyr, 0);
     lv_label_set_text(lbl_no_events, "No events today");
-    lv_obj_set_pos(lbl_no_events, 20, 42);
 
     // "Now" time indicator line
-    now_line = lv_obj_create(right_panel);
+    now_line = lv_obj_create(events_scroll);
     lv_obj_remove_style_all(now_line);
     lv_obj_set_size(now_line, 539, 2);
     lv_obj_set_style_bg_color(now_line, COLOR_NOW, 0);
@@ -363,7 +445,7 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_color(lbl_transport_out, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(lbl_transport_out, &lv_font_montserrat_16, 0);
     lv_obj_set_width(lbl_transport_out, 440);
-    lv_label_set_long_mode(lbl_transport_out, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(lbl_transport_out, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_recolor(lbl_transport_out, true);
     lv_label_set_text(lbl_transport_out, "---");
     lv_obj_set_pos(lbl_transport_out, 130, 373);
@@ -379,13 +461,13 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_color(lbl_transport_in, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(lbl_transport_in, &lv_font_montserrat_16, 0);
     lv_obj_set_width(lbl_transport_in, 440);
-    lv_label_set_long_mode(lbl_transport_in, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(lbl_transport_in, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_recolor(lbl_transport_in, true);
     lv_label_set_text(lbl_transport_in, "---");
     lv_obj_set_pos(lbl_transport_in, 130, 403);
 
     // ---- BOTTOM BAR (20px) ----
-    lv_obj_t *bottom_bar = lv_obj_create(scr);
+    lv_obj_t *bottom_bar = lv_obj_create(page);
     lv_obj_remove_style_all(bottom_bar);
     lv_obj_set_size(bottom_bar, 1024, 20);
     lv_obj_set_pos(bottom_bar, 0, 580);
@@ -397,15 +479,19 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_color(lbl_bottom, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_bottom, &lv_font_montserrat_12, 0);
     lv_obj_set_width(lbl_bottom, 994);
-    lv_label_set_long_mode(lbl_bottom, LV_LABEL_LONG_CLIP);
+    lv_label_set_long_mode(lbl_bottom, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(lbl_bottom, "WiFi: ---");
     lv_obj_set_pos(lbl_bottom, 10, 2);
+
+    // ===== PAGE 2: Health + Tasks + News =====
+    create_page2(tile2);
 
     // Timers
     lv_timer_create(timer_time_cb, 5000, NULL);
     lv_timer_create(timer_weather_cb, 10000, NULL);
     lv_timer_create(timer_ha_cal_cb, 5000, NULL);
     lv_timer_create(timer_transport_cb, 5000, NULL);
+    lv_timer_create(timer_bridge_cb, 5000, NULL);
 
     // Initial update
     ui_dashboard_update_time();
@@ -557,20 +643,14 @@ void ui_dashboard_update_ha_calendar(const ha_cal_data_t *data)
             lv_obj_set_style_bg_opa(lbl_events[highlight_idx], LV_OPA_30, 0);
             lv_obj_set_style_radius(lbl_events[highlight_idx], 4, 0);
             if (now_line) lv_obj_add_flag(now_line, LV_OBJ_FLAG_HIDDEN);
+            // Auto-scroll to highlight
+            lv_obj_scroll_to_view(lbl_events[highlight_idx], LV_ANIM_ON);
         } else if (line_before_idx >= 0 && now_line) {
-            // Position the "now" line between events
-            // Event rows start at y=42, each 35px apart
-            int line_y;
-            if (line_before_idx == 0) {
-                line_y = 42 - 6; // above first event
-            } else if (line_before_idx >= display_count) {
-                line_y = 42 + (display_count - 1) * 35 + 25; // below last event
-            } else {
-                // Between event [line_before_idx-1] and [line_before_idx]
-                line_y = 42 + line_before_idx * 35 - 6;
-            }
-            lv_obj_set_pos(now_line, 30, line_y);
+            // Move now_line in flex layout to the right position
+            lv_obj_move_to_index(now_line, line_before_idx);
             lv_obj_clear_flag(now_line, LV_OBJ_FLAG_HIDDEN);
+            // Auto-scroll to now line
+            lv_obj_scroll_to_view(now_line, LV_ANIM_ON);
         } else {
             if (now_line) lv_obj_add_flag(now_line, LV_OBJ_FLAG_HIDDEN);
         }
@@ -667,12 +747,229 @@ void ui_dashboard_update_time(void)
     // Update bottom bar
     if (lbl_bottom) {
         char buf[128];
-        snprintf(buf, sizeof(buf), "WiFi: %s  Heap: %.1fKB  W: %s  Cal: %s  Tr: %s",
+        snprintf(buf, sizeof(buf), "WiFi: %s  Heap: %.1fKB  W: %s  Cal: %s  Tr: %s  Br: %s",
                  wifi_is_connected() ? "OK" : "---",
                  esp_get_free_heap_size() / 1024.0f,
                  weather_get_last_error(),
                  ha_calendar_get_last_error(),
-                 transport_get_last_error());
+                 transport_get_last_error(),
+                 bridge_get_last_error());
         lv_label_set_text(lbl_bottom, buf);
+    }
+}
+
+// ===== PAGE 2: Health + Tasks + News =====
+
+static void create_page2(lv_obj_t *tile)
+{
+    // ---- HEALTH PANEL (left, 410x560) ----
+    lv_obj_t *health_panel = lv_obj_create(tile);
+    lv_obj_remove_style_all(health_panel);
+    lv_obj_set_size(health_panel, 410, 560);
+    lv_obj_set_pos(health_panel, 5, 5);
+    lv_obj_set_style_bg_color(health_panel, COLOR_PANEL, 0);
+    lv_obj_set_style_bg_opa(health_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(health_panel, 8, 0);
+    lv_obj_clear_flag(health_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *lbl_htitle = lv_label_create(health_panel);
+    lv_obj_set_style_text_color(lbl_htitle, COLOR_HIGHLIGHT, 0);
+    lv_obj_set_style_text_font(lbl_htitle, &lv_font_montserrat_20, 0);
+    lv_label_set_text(lbl_htitle, LV_SYMBOL_CHARGE " Health");
+    lv_obj_set_pos(lbl_htitle, 20, 10);
+
+    // Readiness score (big)
+    lbl_health_ready = lv_label_create(health_panel);
+    lv_obj_set_style_text_color(lbl_health_ready, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(lbl_health_ready, &lv_font_montserrat_24, 0);
+    lv_label_set_text(lbl_health_ready, "Readiness: ---");
+    lv_obj_set_pos(lbl_health_ready, 20, 50);
+
+    // Steps
+    lbl_health_steps = lv_label_create(health_panel);
+    lv_obj_set_style_text_color(lbl_health_steps, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(lbl_health_steps, &lv_font_montserrat_20, 0);
+    lv_label_set_text(lbl_health_steps, LV_SYMBOL_REFRESH " Steps: ---");
+    lv_obj_set_pos(lbl_health_steps, 20, 100);
+
+    // Sleep
+    lbl_health_sleep = lv_label_create(health_panel);
+    lv_obj_set_style_text_color(lbl_health_sleep, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(lbl_health_sleep, &lv_font_montserrat_20, 0);
+    lv_label_set_text(lbl_health_sleep, "Sleep: ---");
+    lv_obj_set_pos(lbl_health_sleep, 20, 145);
+
+    // Heart rate
+    lbl_health_hr = lv_label_create(health_panel);
+    lv_obj_set_style_text_color(lbl_health_hr, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(lbl_health_hr, &lv_font_montserrat_20, 0);
+    lv_label_set_text(lbl_health_hr, "HR: ---");
+    lv_obj_set_pos(lbl_health_hr, 20, 190);
+
+    // ---- TASKS PANEL (right top, 599x270) ----
+    lv_obj_t *tasks_panel = lv_obj_create(tile);
+    lv_obj_remove_style_all(tasks_panel);
+    lv_obj_set_size(tasks_panel, 599, 270);
+    lv_obj_set_pos(tasks_panel, 420, 5);
+    lv_obj_set_style_bg_color(tasks_panel, COLOR_PANEL, 0);
+    lv_obj_set_style_bg_opa(tasks_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(tasks_panel, 8, 0);
+    lv_obj_clear_flag(tasks_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *lbl_ttitle = lv_label_create(tasks_panel);
+    lv_obj_set_style_text_color(lbl_ttitle, COLOR_HIGHLIGHT, 0);
+    lv_obj_set_style_text_font(lbl_ttitle, &lv_font_montserrat_20, 0);
+    lv_label_set_text(lbl_ttitle, LV_SYMBOL_LIST " Tasks");
+    lv_obj_set_pos(lbl_ttitle, 20, 10);
+
+    for (int i = 0; i < MAX_TASK_LINES; i++) {
+        lbl_task_lines[i] = lv_label_create(tasks_panel);
+        lv_obj_set_style_text_color(lbl_task_lines[i], COLOR_TEXT, 0);
+        lv_obj_set_style_text_font(lbl_task_lines[i], &font_montserrat_16_cyr, 0);
+        lv_obj_set_width(lbl_task_lines[i], 559);
+        lv_label_set_long_mode(lbl_task_lines[i], LV_LABEL_LONG_SCROLL_CIRCULAR);
+        lv_label_set_text(lbl_task_lines[i], "");
+        lv_obj_set_pos(lbl_task_lines[i], 20, 42 + i * 28);
+        lv_obj_add_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    lbl_no_tasks = lv_label_create(tasks_panel);
+    lv_obj_set_style_text_color(lbl_no_tasks, COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(lbl_no_tasks, &lv_font_montserrat_14, 0);
+    lv_label_set_text(lbl_no_tasks, "No tasks");
+    lv_obj_set_pos(lbl_no_tasks, 20, 42);
+
+    // ---- NEWS PANEL (right bottom, 599x285) ----
+    lv_obj_t *news_panel = lv_obj_create(tile);
+    lv_obj_remove_style_all(news_panel);
+    lv_obj_set_size(news_panel, 599, 285);
+    lv_obj_set_pos(news_panel, 420, 280);
+    lv_obj_set_style_bg_color(news_panel, COLOR_PANEL, 0);
+    lv_obj_set_style_bg_opa(news_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(news_panel, 8, 0);
+    lv_obj_clear_flag(news_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *lbl_ntitle = lv_label_create(news_panel);
+    lv_obj_set_style_text_color(lbl_ntitle, COLOR_HIGHLIGHT, 0);
+    lv_obj_set_style_text_font(lbl_ntitle, &lv_font_montserrat_20, 0);
+    lv_label_set_text(lbl_ntitle, LV_SYMBOL_FILE " News");
+    lv_obj_set_pos(lbl_ntitle, 20, 10);
+
+    for (int i = 0; i < MAX_NEWS_LINES; i++) {
+        lbl_news_lines[i] = lv_label_create(news_panel);
+        lv_obj_set_style_text_color(lbl_news_lines[i], COLOR_TEXT, 0);
+        lv_obj_set_style_text_font(lbl_news_lines[i], &font_montserrat_16_cyr, 0);
+        lv_obj_set_width(lbl_news_lines[i], 559);
+        lv_label_set_long_mode(lbl_news_lines[i], LV_LABEL_LONG_SCROLL_CIRCULAR);
+        lv_label_set_text(lbl_news_lines[i], "");
+        lv_obj_set_pos(lbl_news_lines[i], 20, 42 + i * 45);
+        lv_obj_add_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    lbl_no_news = lv_label_create(news_panel);
+    lv_obj_set_style_text_color(lbl_no_news, COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(lbl_no_news, &lv_font_montserrat_14, 0);
+    lv_label_set_text(lbl_no_news, "No news");
+    lv_obj_set_pos(lbl_no_news, 20, 42);
+}
+
+// ===== BRIDGE UPDATE =====
+
+static const char *trend_arrow(int cur, int prev)
+{
+    if (cur > prev) return LV_SYMBOL_UP;
+    if (cur < prev) return LV_SYMBOL_DOWN;
+    return "=";
+}
+
+void ui_dashboard_update_bridge(const bridge_data_t *data)
+{
+    if (!data) return;
+
+    // Health
+    if (data->health.valid) {
+        if (lbl_health_ready) {
+            char buf[48];
+            snprintf(buf, sizeof(buf), "Readiness: %d", data->health.readiness);
+            lv_label_set_text(lbl_health_ready, buf);
+            lv_obj_set_style_text_color(lbl_health_ready,
+                data->health.readiness >= 70 ? lv_color_hex(0x66BB6A) :
+                data->health.readiness >= 40 ? lv_color_hex(0xFFC107) :
+                                               lv_color_hex(0xEF5350), 0);
+        }
+        if (lbl_health_steps) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%s Steps: %d  %s (prev %d)",
+                     LV_SYMBOL_REFRESH, data->health.steps,
+                     trend_arrow(data->health.steps, data->health.steps_prev),
+                     data->health.steps_prev);
+            lv_label_set_text(lbl_health_steps, buf);
+        }
+        if (lbl_health_sleep) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Sleep: %.1fh  %s (prev %.1fh)",
+                     data->health.sleep,
+                     trend_arrow((int)(data->health.sleep * 10), (int)(data->health.sleep_prev * 10)),
+                     data->health.sleep_prev);
+            lv_label_set_text(lbl_health_sleep, buf);
+        }
+        if (lbl_health_hr) {
+            char buf[80];
+            snprintf(buf, sizeof(buf), "HR: %d  RHR: %d  HRV: %d  SpO2: %d%%",
+                     data->health.hr, data->health.rhr,
+                     data->health.hrv, data->health.spo2);
+            lv_label_set_text(lbl_health_hr, buf);
+        }
+    }
+
+    // Tasks
+    if (data->tasks_valid) {
+        int n = data->task_count;
+        if (n == 0) {
+            if (lbl_no_tasks) lv_obj_clear_flag(lbl_no_tasks, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            if (lbl_no_tasks) lv_obj_add_flag(lbl_no_tasks, LV_OBJ_FLAG_HIDDEN);
+        }
+        for (int i = 0; i < MAX_TASK_LINES; i++) {
+            if (!lbl_task_lines[i]) continue;
+            if (i < n) {
+                char buf[100];
+                const char *prio_mark = data->tasks[i].priority >= 4 ? "!! " :
+                                        data->tasks[i].priority >= 3 ? "!  " : "   ";
+                snprintf(buf, sizeof(buf), "%s%s", prio_mark, data->tasks[i].title);
+                lv_label_set_text(lbl_task_lines[i], buf);
+                lv_obj_set_style_text_color(lbl_task_lines[i],
+                    data->tasks[i].priority >= 4 ? lv_color_hex(0xEF5350) :
+                    data->tasks[i].priority >= 3 ? lv_color_hex(0xFFA726) :
+                                                   COLOR_TEXT, 0);
+                lv_obj_clear_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+
+    // News
+    if (data->news_valid) {
+        int n = data->news_count;
+        if (n == 0) {
+            if (lbl_no_news) lv_obj_clear_flag(lbl_no_news, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            if (lbl_no_news) lv_obj_add_flag(lbl_no_news, LV_OBJ_FLAG_HIDDEN);
+        }
+        for (int i = 0; i < MAX_NEWS_LINES; i++) {
+            if (!lbl_news_lines[i]) continue;
+            if (i < n) {
+                char buf[160];
+                snprintf(buf, sizeof(buf), "[%s] %s  (%dh ago)",
+                         data->news[i].category,
+                         data->news[i].title,
+                         data->news[i].hours_ago);
+                lv_label_set_text(lbl_news_lines[i], buf);
+                lv_obj_clear_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
     }
 }

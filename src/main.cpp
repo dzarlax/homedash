@@ -14,6 +14,7 @@
 #include "weather.h"
 #include "ha_calendar.h"
 #include "transport.h"
+#include "bridge.h"
 #include "ui_dashboard.h"
 
 static const char *TAG = "main";
@@ -74,6 +75,7 @@ static void network_task(void *param)
     uint32_t weather_elapsed   = WEATHER_UPDATE_INTERVAL_MS;  // trigger immediately
     uint32_t ha_cal_elapsed    = HA_CAL_UPDATE_INTERVAL_MS;   // trigger immediately
     uint32_t transport_elapsed = TRANSPORT_UPDATE_MS;          // trigger immediately
+    uint32_t bridge_elapsed    = BRIDGE_UPDATE_INTERVAL_MS;    // trigger immediately
 
     for (;;) {
         if (weather_elapsed >= WEATHER_UPDATE_INTERVAL_MS) {
@@ -99,11 +101,17 @@ static void network_task(void *param)
             transport_elapsed = 0;
         }
 
+        if (bridge_elapsed >= BRIDGE_UPDATE_INTERVAL_MS) {
+            bridge_fetch_and_update();
+            bridge_elapsed = 0;
+        }
+
         // Wait for notification (instant wake) or timeout after TICK_MS
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TICK_MS));
         weather_elapsed   += TICK_MS;
         ha_cal_elapsed    += TICK_MS;
         transport_elapsed += TICK_MS;
+        bridge_elapsed    += TICK_MS;
     }
 }
 
