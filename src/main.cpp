@@ -39,6 +39,20 @@ void request_calendar_date(int year, int month, int day)
     }
 }
 
+// Shared light toggle request (written by UI core, read by network core)
+static char s_toggle_entity[48] = {};
+static volatile bool s_toggle_requested = false;
+
+void request_light_toggle(const char *entity_id)
+{
+    strncpy(s_toggle_entity, entity_id, sizeof(s_toggle_entity) - 1);
+    s_toggle_entity[sizeof(s_toggle_entity) - 1] = '\0';
+    s_toggle_requested = true;
+    if (s_network_task_handle) {
+        xTaskNotifyGive(s_network_task_handle);
+    }
+}
+
 // Background task: WiFi + NTP + Weather (runs on core 0)
 static void network_task(void *param)
 {
@@ -99,6 +113,12 @@ static void network_task(void *param)
         if (transport_elapsed >= TRANSPORT_UPDATE_MS) {
             transport_fetch_and_update();
             transport_elapsed = 0;
+        }
+
+        // Check for light toggle request (from UI tap)
+        if (s_toggle_requested) {
+            s_toggle_requested = false;
+            bridge_toggle_light(s_toggle_entity);
         }
 
         if (bridge_elapsed >= BRIDGE_UPDATE_INTERVAL_MS) {

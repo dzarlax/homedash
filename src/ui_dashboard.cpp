@@ -12,12 +12,15 @@
 #include "esp_heap_caps.h"
 #include <time.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // Declared in main.cpp
 extern void request_calendar_date(int year, int month, int day);
+extern void request_light_toggle(const char *entity_id);
 
 // Custom font with Cyrillic support (for HA calendar events)
 LV_FONT_DECLARE(font_montserrat_16_cyr);
+LV_FONT_DECLARE(font_montserrat_24_cyr);
 
 // --- UI element references ---
 static lv_obj_t *lbl_datetime    = NULL;
@@ -48,19 +51,77 @@ static lv_obj_t *lbl_transport_in  = NULL;   // stop 90 — inbound
 // Tileview
 static lv_obj_t *tileview = NULL;
 
-// Page 2: Health + Tasks + News
-static lv_obj_t *lbl_health_steps = NULL;
-static lv_obj_t *lbl_health_sleep = NULL;
-static lv_obj_t *lbl_health_hr    = NULL;
-static lv_obj_t *lbl_health_ready = NULL;
+// Page 2: Health + Tasks + News (redesigned)
+// Readiness arc
+static lv_obj_t *arc_readiness = NULL;
+static lv_obj_t *lbl_readiness_val = NULL;
+static lv_obj_t *lbl_readiness_label = NULL;
+
+// Metric cards: value + label + trend
+#define NUM_METRIC_CARDS 7
+struct metric_card_t {
+    lv_obj_t *container;
+    lv_obj_t *lbl_value;
+    lv_obj_t *lbl_name;
+    lv_obj_t *lbl_trend;
+};
+static metric_card_t metric_cards[NUM_METRIC_CARDS] = {};
+
+// Tasks
 #define MAX_TASK_LINES 8
+static lv_obj_t *task_prio_bars[MAX_TASK_LINES] = {};
 static lv_obj_t *lbl_task_lines[MAX_TASK_LINES] = {};
 static lv_obj_t *lbl_no_tasks = NULL;
+
+// News
 #define MAX_NEWS_LINES 5
+static lv_obj_t *news_dots[MAX_NEWS_LINES] = {};
 static lv_obj_t *lbl_news_lines[MAX_NEWS_LINES] = {};
+static lv_obj_t *lbl_news_age[MAX_NEWS_LINES] = {};
 static lv_obj_t *lbl_no_news = NULL;
+
+// Design colors (deeper palette)
+#define COLOR_CARD      lv_color_hex(0x1E2140)
+#define COLOR_GOOD      lv_color_hex(0x4CAF50)
+#define COLOR_WARN      lv_color_hex(0xFFC107)
+#define COLOR_BAD       lv_color_hex(0xEF5350)
+// Page 3: HA Control — room-based layout
+#define MAX_ROOMS 4
+#define MAX_ROOM_LIGHTS 3
+#define MAX_ROOM_SENSORS 6
+
+struct room_def_t {
+    const char *name;
+    const char *light_ids[MAX_ROOM_LIGHTS];
+    int light_count;
+    const char *sensor_ids[MAX_ROOM_SENSORS];
+    int sensor_count;
+};
+
+static const room_def_t ROOMS[MAX_ROOMS] = {
+    {"Гостиная",
+     {"light.svet_u_divana", "light.svet_u_okna", NULL}, 2,
+     {"sensor.gostinaia_airq_co2", "sensor.zhimi_ca4_90f5_relative_humidity_2", NULL, NULL, NULL, NULL}, 2},
+    {"Кабинет",
+     {"light.office_light", NULL, NULL}, 1,
+     {"sensor.co2_sensor_co2", "sensor.zhimi_vb4_f663_pm25_density", "sensor.zhimi_vb4_f663_relative_humidity", "sensor.zhimi_vb4_f663_temperature", "sensor.aqara_sensor_temperature", "sensor.aqara_sensor_humidity"}, 6},
+    {"Спальня",
+     {"light.bedroom_light", "light.yeelink_bslamp2_2272_light", NULL}, 2,
+     {"sensor.purifier_humidifier_humidity", "sensor.purifier_humidifier_temperature", NULL, NULL, NULL, NULL}, 2},
+    {"Кухня",
+     {"light.kukhnia", NULL, NULL}, 1,
+     {NULL, NULL, NULL, NULL, NULL, NULL}, 0},
+};
+
+static lv_obj_t *room_light_btns[MAX_ROOMS][MAX_ROOM_LIGHTS] = {};
+static lv_obj_t *room_light_labels[MAX_ROOMS][MAX_ROOM_LIGHTS] = {};
+// Sensor cards per room (value + name labels)
+static lv_obj_t *room_sensor_cards[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
+static lv_obj_t *room_sensor_val_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
+static lv_obj_t *room_sensor_name_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
+
 // Page indicator dots
-static lv_obj_t *dot_indicators[2] = {};
+static lv_obj_t *dot_indicators[3] = {};
 
 #define COLOR_NOW lv_color_hex(0xFF4444)  // red "now" line
 
@@ -143,11 +204,12 @@ static void timer_bridge_cb(lv_timer_t *timer)
     (void)timer;
     const bridge_data_t *d = bridge_get_data();
     ui_dashboard_update_bridge(d);
+    ui_dashboard_update_ha(d);
 }
 
 static void update_dot_indicators(int active)
 {
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         if (dot_indicators[i]) {
             lv_obj_set_style_bg_opa(dot_indicators[i],
                 (i == active) ? LV_OPA_COVER : LV_OPA_50, 0);
@@ -222,6 +284,7 @@ static void btn_today_cb(lv_event_t *e)
 }
 
 static void create_page2(lv_obj_t *tile);
+static void create_page3(lv_obj_t *tile);
 
 void ui_dashboard_create(void)
 {
@@ -238,14 +301,15 @@ void ui_dashboard_create(void)
     lv_obj_add_event_cb(tileview, tileview_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     lv_obj_t *tile1 = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_RIGHT);
-    lv_obj_t *tile2 = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_LEFT);
+    lv_obj_t *tile2 = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+    lv_obj_t *tile3 = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_LEFT);
 
     // Page indicator dots (bottom center, above bottom bar)
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         dot_indicators[i] = lv_obj_create(scr);
         lv_obj_remove_style_all(dot_indicators[i]);
         lv_obj_set_size(dot_indicators[i], 8, 8);
-        lv_obj_set_pos(dot_indicators[i], 504 + i * 16, 572);
+        lv_obj_set_pos(dot_indicators[i], 496 + i * 16, 572);
         lv_obj_set_style_bg_color(dot_indicators[i], COLOR_TEXT, 0);
         lv_obj_set_style_bg_opa(dot_indicators[i], (i == 0) ? LV_OPA_COVER : LV_OPA_50, 0);
         lv_obj_set_style_radius(dot_indicators[i], LV_RADIUS_CIRCLE, 0);
@@ -274,11 +338,21 @@ void ui_dashboard_create(void)
     lbl_topbar_temp = lv_label_create(top_bar);
     lv_obj_set_style_text_color(lbl_topbar_temp, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(lbl_topbar_temp, &lv_font_montserrat_24, 0);
-    lv_obj_set_width(lbl_topbar_temp, 400);
+    lv_obj_set_width(lbl_topbar_temp, 500);
     lv_label_set_long_mode(lbl_topbar_temp, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(lbl_topbar_temp, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(lbl_topbar_temp, WEATHER_CITY);
-    lv_obj_set_pos(lbl_topbar_temp, 609, 15);
+    lv_obj_set_pos(lbl_topbar_temp, 509, 5);
+
+    // Weather detail in top bar (second line)
+    lbl_weather_detail = lv_label_create(top_bar);
+    lv_obj_set_style_text_color(lbl_weather_detail, COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(lbl_weather_detail, &font_montserrat_16_cyr, 0);
+    lv_obj_set_width(lbl_weather_detail, 500);
+    lv_label_set_long_mode(lbl_weather_detail, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_text_align(lbl_weather_detail, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(lbl_weather_detail, "");
+    lv_obj_set_pos(lbl_weather_detail, 509, 35);
 
     // ---- LEFT PANEL (weather + calendar) ----
     lv_obj_t *cal_panel = lv_obj_create(page);
@@ -290,50 +364,24 @@ void ui_dashboard_create(void)
     lv_obj_set_style_radius(cal_panel, 8, 0);
     lv_obj_clear_flag(cal_panel, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Weather icon canvas (48x48)
+    // Weather detail (moved to top bar — lbl_weather_detail created there)
+    // Canvas kept but hidden in panel (used by weather_icon_draw on ESP32)
     weather_canvas = lv_canvas_create(cal_panel);
     canvas_buf = (lv_color_t *)heap_caps_malloc(ICON_SIZE * ICON_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
     if (canvas_buf) {
         lv_canvas_set_buffer(weather_canvas, canvas_buf, ICON_SIZE, ICON_SIZE, LV_IMG_CF_TRUE_COLOR);
         lv_canvas_fill_bg(weather_canvas, COLOR_PANEL, LV_OPA_COVER);
     }
-    lv_obj_set_pos(weather_canvas, 10, 8);
+    lv_obj_add_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
 
-    // Weather main label: "Clear  5C"
-    lbl_weather_main = lv_label_create(cal_panel);
-    lv_obj_set_style_text_color(lbl_weather_main, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_weather_main, &lv_font_montserrat_24, 0);
-    lv_obj_set_width(lbl_weather_main, 320);
-    lv_label_set_long_mode(lbl_weather_main, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_label_set_text(lbl_weather_main, "...");
-    lv_obj_set_pos(lbl_weather_main, 70, 8);
-
-    // Weather detail label: "H:78%  W:12km/h  Tmrw: 8/2C"
-    lbl_weather_detail = lv_label_create(cal_panel);
-    lv_obj_set_style_text_color(lbl_weather_detail, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl_weather_detail, &lv_font_montserrat_14, 0);
-    lv_obj_set_width(lbl_weather_detail, 320);
-    lv_label_set_long_mode(lbl_weather_detail, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_label_set_text(lbl_weather_detail, "");
-    lv_obj_set_pos(lbl_weather_detail, 70, 38);
-
-    // Separator below weather
-    lv_obj_t *weather_sep = lv_obj_create(cal_panel);
-    lv_obj_remove_style_all(weather_sep);
-    lv_obj_set_size(weather_sep, 390, 2);
-    lv_obj_set_pos(weather_sep, 10, 62);
-    lv_obj_set_style_bg_color(weather_sep, COLOR_ACCENT, 0);
-    lv_obj_set_style_bg_opa(weather_sep, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(weather_sep, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Calendar widget (below weather)
+    // Calendar widget (full panel)
     calendar = lv_calendar_create(cal_panel);
-    lv_obj_set_size(calendar, 390, 430);
+    lv_obj_set_size(calendar, 390, 490);
     lv_obj_align(calendar, LV_ALIGN_BOTTOM_MID, 0, -5);
     lv_obj_set_style_bg_color(calendar, COLOR_PANEL, 0);
     lv_obj_set_style_bg_opa(calendar, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(calendar, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(calendar, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(calendar, &font_montserrat_16_cyr, 0);
     lv_obj_set_style_border_width(calendar, 0, 0);
 
     lv_obj_t *cal_header = lv_calendar_header_arrow_create(calendar);
@@ -358,7 +406,7 @@ void ui_dashboard_create(void)
     // Schedule title
     lbl_sched_title = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_sched_title, COLOR_HIGHLIGHT, 0);
-    lv_obj_set_style_text_font(lbl_sched_title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(lbl_sched_title, &font_montserrat_24_cyr, 0);
     lv_label_set_text(lbl_sched_title, "Today's Schedule");
     lv_obj_set_pos(lbl_sched_title, 20, 10);
 
@@ -374,7 +422,7 @@ void ui_dashboard_create(void)
 
     lv_obj_t *btn_lbl = lv_label_create(btn_today);
     lv_obj_set_style_text_color(btn_lbl, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(btn_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(btn_lbl, &font_montserrat_16_cyr, 0);
     lv_label_set_text(btn_lbl, "Today");
     lv_obj_center(btn_lbl);
 
@@ -430,20 +478,20 @@ void ui_dashboard_create(void)
     // Transport title
     lv_obj_t *lbl_tr_title = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_tr_title, COLOR_HIGHLIGHT, 0);
-    lv_obj_set_style_text_font(lbl_tr_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl_tr_title, &font_montserrat_16_cyr, 0);
     lv_label_set_text(lbl_tr_title, "Djeram");
     lv_obj_set_pos(lbl_tr_title, 20, 345);
 
     // Outbound (stop 89)
     lv_obj_t *lbl_out_dir = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_out_dir, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl_out_dir, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_out_dir, &font_montserrat_16_cyr, 0);
     lv_label_set_text(lbl_out_dir, LV_SYMBOL_RIGHT " Oblast");
     lv_obj_set_pos(lbl_out_dir, 20, 375);
 
     lbl_transport_out = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_transport_out, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_transport_out, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl_transport_out, &font_montserrat_16_cyr, 0);
     lv_obj_set_width(lbl_transport_out, 440);
     lv_label_set_long_mode(lbl_transport_out, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_recolor(lbl_transport_out, true);
@@ -453,13 +501,13 @@ void ui_dashboard_create(void)
     // Inbound (stop 90)
     lv_obj_t *lbl_in_dir = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_in_dir, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl_in_dir, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_in_dir, &font_montserrat_16_cyr, 0);
     lv_label_set_text(lbl_in_dir, LV_SYMBOL_LEFT " Centar");
     lv_obj_set_pos(lbl_in_dir, 20, 405);
 
     lbl_transport_in = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_transport_in, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_transport_in, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl_transport_in, &font_montserrat_16_cyr, 0);
     lv_obj_set_width(lbl_transport_in, 440);
     lv_label_set_long_mode(lbl_transport_in, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_recolor(lbl_transport_in, true);
@@ -477,7 +525,7 @@ void ui_dashboard_create(void)
 
     lbl_bottom = lv_label_create(bottom_bar);
     lv_obj_set_style_text_color(lbl_bottom, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl_bottom, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(lbl_bottom, &font_montserrat_16_cyr, 0);
     lv_obj_set_width(lbl_bottom, 994);
     lv_label_set_long_mode(lbl_bottom, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(lbl_bottom, "WiFi: ---");
@@ -485,6 +533,9 @@ void ui_dashboard_create(void)
 
     // ===== PAGE 2: Health + Tasks + News =====
     create_page2(tile2);
+
+    // ===== PAGE 3: HA Control =====
+    create_page3(tile3);
 
     // Timers
     lv_timer_create(timer_time_cb, 5000, NULL);
@@ -507,16 +558,17 @@ void ui_dashboard_update_weather(const weather_data_t *data)
         last_weather_code = data->weather_code;
     }
 
-    // Main line: "Clear  5C"
-    if (lbl_weather_main) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%s  %.0fC",
+    // Top bar: "Belgrade  Cloudy  12C"
+    if (lbl_topbar_temp) {
+        char buf[80];
+        snprintf(buf, sizeof(buf), "%s  %s  %.0fC",
+                 WEATHER_CITY,
                  weather_code_to_text(data->weather_code),
                  data->temp);
-        lv_label_set_text(lbl_weather_main, buf);
+        lv_label_set_text(lbl_topbar_temp, buf);
     }
 
-    // Detail line: "H:78%  W:12km/h  Tmrw: 8/2C"
+    // Top bar detail: "H:78%  W:12km/h  Tmrw: 8/2C"
     if (lbl_weather_detail) {
         char buf[96];
         snprintf(buf, sizeof(buf), "H:%.0f%%  W:%.0fkm/h  Tmrw: %.0f/%.0fC",
@@ -525,13 +577,6 @@ void ui_dashboard_update_weather(const weather_data_t *data)
                  data->daily[1].temp_max,
                  data->daily[1].temp_min);
         lv_label_set_text(lbl_weather_detail, buf);
-    }
-
-    // Top bar temp
-    if (lbl_topbar_temp) {
-        char buf[48];
-        snprintf(buf, sizeof(buf), "%s  %.0fC", WEATHER_CITY, data->temp);
-        lv_label_set_text(lbl_topbar_temp, buf);
     }
 }
 
@@ -760,169 +805,310 @@ void ui_dashboard_update_time(void)
 
 // ===== PAGE 2: Health + Tasks + News =====
 
+static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h)
+{
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, w, h);
+    lv_obj_set_pos(card, x, y);
+    lv_obj_set_style_bg_color(card, COLOR_CARD, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    return card;
+}
+
 static void create_page2(lv_obj_t *tile)
 {
-    // ---- HEALTH PANEL (left, 410x560) ----
-    lv_obj_t *health_panel = lv_obj_create(tile);
-    lv_obj_remove_style_all(health_panel);
-    lv_obj_set_size(health_panel, 410, 560);
-    lv_obj_set_pos(health_panel, 5, 5);
-    lv_obj_set_style_bg_color(health_panel, COLOR_PANEL, 0);
-    lv_obj_set_style_bg_opa(health_panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(health_panel, 8, 0);
-    lv_obj_clear_flag(health_panel, LV_OBJ_FLAG_SCROLLABLE);
+    // ===== TOP: Health banner (full width, 275px) =====
+    lv_obj_t *health_banner = make_card(tile, 5, 5, 1014, 275);
 
-    lv_obj_t *lbl_htitle = lv_label_create(health_panel);
+    // Title
+    lv_obj_t *lbl_htitle = lv_label_create(health_banner);
     lv_obj_set_style_text_color(lbl_htitle, COLOR_HIGHLIGHT, 0);
-    lv_obj_set_style_text_font(lbl_htitle, &lv_font_montserrat_20, 0);
-    lv_label_set_text(lbl_htitle, LV_SYMBOL_CHARGE " Health");
-    lv_obj_set_pos(lbl_htitle, 20, 10);
+    lv_obj_set_style_text_font(lbl_htitle, &font_montserrat_24_cyr, 0);
+    lv_label_set_text(lbl_htitle, "Health");
+    lv_obj_set_pos(lbl_htitle, 15, 8);
 
-    // Readiness score (big)
-    lbl_health_ready = lv_label_create(health_panel);
-    lv_obj_set_style_text_color(lbl_health_ready, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_health_ready, &lv_font_montserrat_24, 0);
-    lv_label_set_text(lbl_health_ready, "Readiness: ---");
-    lv_obj_set_pos(lbl_health_ready, 20, 50);
+    // Readiness arc (left side)
+    arc_readiness = lv_arc_create(health_banner);
+    lv_obj_set_size(arc_readiness, 140, 140);
+    lv_obj_set_pos(arc_readiness, 20, 50);
+    lv_arc_set_rotation(arc_readiness, 135);
+    lv_arc_set_bg_angles(arc_readiness, 0, 270);
+    lv_arc_set_range(arc_readiness, 0, 100);
+    lv_arc_set_value(arc_readiness, 0);
+    lv_obj_remove_style(arc_readiness, NULL, LV_PART_KNOB);
+    lv_obj_set_style_arc_width(arc_readiness, 10, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(arc_readiness, 10, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc_readiness, lv_color_hex(0x2A2A4A), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc_readiness, COLOR_GOOD, LV_PART_INDICATOR);
+    lv_obj_clear_flag(arc_readiness, LV_OBJ_FLAG_CLICKABLE);
 
-    // Steps
-    lbl_health_steps = lv_label_create(health_panel);
-    lv_obj_set_style_text_color(lbl_health_steps, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_health_steps, &lv_font_montserrat_20, 0);
-    lv_label_set_text(lbl_health_steps, LV_SYMBOL_REFRESH " Steps: ---");
-    lv_obj_set_pos(lbl_health_steps, 20, 100);
+    // Readiness value (inside arc)
+    lbl_readiness_val = lv_label_create(health_banner);
+    lv_obj_set_style_text_color(lbl_readiness_val, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(lbl_readiness_val, &lv_font_montserrat_48, 0);
+    lv_label_set_text(lbl_readiness_val, "--");
+    lv_obj_set_pos(lbl_readiness_val, 58, 85);
 
-    // Sleep
-    lbl_health_sleep = lv_label_create(health_panel);
-    lv_obj_set_style_text_color(lbl_health_sleep, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_health_sleep, &lv_font_montserrat_20, 0);
-    lv_label_set_text(lbl_health_sleep, "Sleep: ---");
-    lv_obj_set_pos(lbl_health_sleep, 20, 145);
+    // Readiness label (below arc)
+    lbl_readiness_label = lv_label_create(health_banner);
+    lv_obj_set_style_text_color(lbl_readiness_label, COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(lbl_readiness_label, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(lbl_readiness_label, "Readiness");
+    lv_obj_set_pos(lbl_readiness_label, 45, 200);
 
-    // Heart rate
-    lbl_health_hr = lv_label_create(health_panel);
-    lv_obj_set_style_text_color(lbl_health_hr, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_health_hr, &lv_font_montserrat_20, 0);
-    lv_label_set_text(lbl_health_hr, "HR: ---");
-    lv_obj_set_pos(lbl_health_hr, 20, 190);
+    // Row 1: 3 main metric cards (Steps, Sleep, Calories) — bigger
+    static const char *row1_names[] = {"Steps", "Sleep", "Calories"};
+    int r1_x = 185, r1_w = 190, r1_h = 110, r1_gap = 10;
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *mc = make_card(health_banner, r1_x + i * (r1_w + r1_gap), 38, r1_w, r1_h);
+        metric_cards[i].lbl_name = lv_label_create(mc);
+        lv_obj_set_style_text_color(metric_cards[i].lbl_name, COLOR_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(metric_cards[i].lbl_name, &font_montserrat_16_cyr, 0);
+        lv_obj_set_width(metric_cards[i].lbl_name, r1_w - 16);
+        lv_obj_set_style_text_align(metric_cards[i].lbl_name, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(metric_cards[i].lbl_name, row1_names[i]);
+        lv_obj_set_pos(metric_cards[i].lbl_name, 8, 6);
 
-    // ---- TASKS PANEL (right top, 599x270) ----
-    lv_obj_t *tasks_panel = lv_obj_create(tile);
-    lv_obj_remove_style_all(tasks_panel);
-    lv_obj_set_size(tasks_panel, 599, 270);
-    lv_obj_set_pos(tasks_panel, 420, 5);
-    lv_obj_set_style_bg_color(tasks_panel, COLOR_PANEL, 0);
-    lv_obj_set_style_bg_opa(tasks_panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(tasks_panel, 8, 0);
-    lv_obj_clear_flag(tasks_panel, LV_OBJ_FLAG_SCROLLABLE);
+        metric_cards[i].lbl_value = lv_label_create(mc);
+        lv_obj_set_style_text_color(metric_cards[i].lbl_value, COLOR_TEXT, 0);
+        lv_obj_set_style_text_font(metric_cards[i].lbl_value, &lv_font_montserrat_32, 0);
+        lv_obj_set_width(metric_cards[i].lbl_value, r1_w - 16);
+        lv_obj_set_style_text_align(metric_cards[i].lbl_value, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(metric_cards[i].lbl_value, "---");
+        lv_obj_set_pos(metric_cards[i].lbl_value, 8, 28);
+
+        metric_cards[i].lbl_trend = lv_label_create(mc);
+        lv_obj_set_style_text_color(metric_cards[i].lbl_trend, COLOR_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(metric_cards[i].lbl_trend, &font_montserrat_16_cyr, 0);
+        lv_obj_set_width(metric_cards[i].lbl_trend, r1_w - 16);
+        lv_obj_set_style_text_align(metric_cards[i].lbl_trend, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(metric_cards[i].lbl_trend, "");
+        lv_obj_set_pos(metric_cards[i].lbl_trend, 8, 72);
+        metric_cards[i].container = mc;
+    }
+
+    // Remaining space right of row 1: extra wide card
+    lv_obj_t *mc_extra = make_card(health_banner, r1_x + 3 * (r1_w + r1_gap), 38, 210, r1_h);
+    // Card 3 = HR (live)
+    metric_cards[3].lbl_name = lv_label_create(mc_extra);
+    lv_obj_set_style_text_color(metric_cards[3].lbl_name, COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(metric_cards[3].lbl_name, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(metric_cards[3].lbl_name, "Heart Rate");
+    lv_obj_set_pos(metric_cards[3].lbl_name, 8, 6);
+    metric_cards[3].lbl_value = lv_label_create(mc_extra);
+    lv_obj_set_style_text_color(metric_cards[3].lbl_value, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(metric_cards[3].lbl_value, &lv_font_montserrat_32, 0);
+    lv_label_set_text(metric_cards[3].lbl_value, "---");
+    lv_obj_set_pos(metric_cards[3].lbl_value, 8, 28);
+    metric_cards[3].lbl_trend = lv_label_create(mc_extra);
+    lv_obj_set_style_text_font(metric_cards[3].lbl_trend, &font_montserrat_16_cyr, 0);
+    lv_obj_set_style_text_color(metric_cards[3].lbl_trend, COLOR_TEXT_DIM, 0);
+    lv_label_set_text(metric_cards[3].lbl_trend, "");
+    lv_obj_set_pos(metric_cards[3].lbl_trend, 8, 72);
+    metric_cards[3].container = mc_extra;
+
+    // Row 2: 4 smaller cards (RHR, HRV, SpO2, Resp Rate) — below
+    static const char *row2_names[] = {"RHR", "HRV", "SpO2"};
+    int r2_x = 185, r2_w = 270, r2_h = 100, r2_gap = 10;
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *mc2 = make_card(health_banner, r2_x + i * (r2_w + r2_gap), 158, r2_w, r2_h);
+        int idx = 4 + i;
+        metric_cards[idx].lbl_name = lv_label_create(mc2);
+        lv_obj_set_style_text_color(metric_cards[idx].lbl_name, COLOR_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(metric_cards[idx].lbl_name, &font_montserrat_16_cyr, 0);
+        lv_label_set_text(metric_cards[idx].lbl_name, row2_names[i]);
+        lv_obj_set_pos(metric_cards[idx].lbl_name, 8, 6);
+
+        metric_cards[idx].lbl_value = lv_label_create(mc2);
+        lv_obj_set_style_text_color(metric_cards[idx].lbl_value, COLOR_TEXT, 0);
+        lv_obj_set_style_text_font(metric_cards[idx].lbl_value, &lv_font_montserrat_28, 0);
+        lv_label_set_text(metric_cards[idx].lbl_value, "---");
+        lv_obj_set_pos(metric_cards[idx].lbl_value, 8, 28);
+
+        metric_cards[idx].lbl_trend = lv_label_create(mc2);
+        lv_obj_set_style_text_font(metric_cards[idx].lbl_trend, &font_montserrat_16_cyr, 0);
+        lv_obj_set_style_text_color(metric_cards[idx].lbl_trend, COLOR_TEXT_DIM, 0);
+        lv_label_set_text(metric_cards[idx].lbl_trend, "");
+        lv_obj_set_pos(metric_cards[idx].lbl_trend, 8, 65);
+        metric_cards[idx].container = mc2;
+    }
+
+    // ===== BOTTOM LEFT: Tasks (500x305) =====
+    lv_obj_t *tasks_panel = make_card(tile, 5, 285, 505, 305);
 
     lv_obj_t *lbl_ttitle = lv_label_create(tasks_panel);
     lv_obj_set_style_text_color(lbl_ttitle, COLOR_HIGHLIGHT, 0);
-    lv_obj_set_style_text_font(lbl_ttitle, &lv_font_montserrat_20, 0);
-    lv_label_set_text(lbl_ttitle, LV_SYMBOL_LIST " Tasks");
-    lv_obj_set_pos(lbl_ttitle, 20, 10);
+    lv_obj_set_style_text_font(lbl_ttitle, &font_montserrat_24_cyr, 0);
+    lv_label_set_text(lbl_ttitle, "Tasks");
+    lv_obj_set_pos(lbl_ttitle, 15, 10);
 
     for (int i = 0; i < MAX_TASK_LINES; i++) {
+        int y = 38 + i * 32;
+
+        // Priority bar (left edge)
+        task_prio_bars[i] = lv_obj_create(tasks_panel);
+        lv_obj_remove_style_all(task_prio_bars[i]);
+        lv_obj_set_size(task_prio_bars[i], 4, 24);
+        lv_obj_set_pos(task_prio_bars[i], 15, y + 2);
+        lv_obj_set_style_bg_color(task_prio_bars[i], COLOR_TEXT_DIM, 0);
+        lv_obj_set_style_bg_opa(task_prio_bars[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(task_prio_bars[i], 2, 0);
+        lv_obj_add_flag(task_prio_bars[i], LV_OBJ_FLAG_HIDDEN);
+
+        // Task text
         lbl_task_lines[i] = lv_label_create(tasks_panel);
         lv_obj_set_style_text_color(lbl_task_lines[i], COLOR_TEXT, 0);
         lv_obj_set_style_text_font(lbl_task_lines[i], &font_montserrat_16_cyr, 0);
-        lv_obj_set_width(lbl_task_lines[i], 559);
+        lv_obj_set_width(lbl_task_lines[i], 460);
         lv_label_set_long_mode(lbl_task_lines[i], LV_LABEL_LONG_SCROLL_CIRCULAR);
         lv_label_set_text(lbl_task_lines[i], "");
-        lv_obj_set_pos(lbl_task_lines[i], 20, 42 + i * 28);
+        lv_obj_set_pos(lbl_task_lines[i], 28, y);
         lv_obj_add_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     lbl_no_tasks = lv_label_create(tasks_panel);
     lv_obj_set_style_text_color(lbl_no_tasks, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl_no_tasks, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_no_tasks, &font_montserrat_16_cyr, 0);
     lv_label_set_text(lbl_no_tasks, "No tasks");
-    lv_obj_set_pos(lbl_no_tasks, 20, 42);
+    lv_obj_set_pos(lbl_no_tasks, 15, 38);
 
-    // ---- NEWS PANEL (right bottom, 599x285) ----
-    lv_obj_t *news_panel = lv_obj_create(tile);
-    lv_obj_remove_style_all(news_panel);
-    lv_obj_set_size(news_panel, 599, 285);
-    lv_obj_set_pos(news_panel, 420, 280);
-    lv_obj_set_style_bg_color(news_panel, COLOR_PANEL, 0);
-    lv_obj_set_style_bg_opa(news_panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(news_panel, 8, 0);
-    lv_obj_clear_flag(news_panel, LV_OBJ_FLAG_SCROLLABLE);
+    // ===== BOTTOM RIGHT: News (505x305) =====
+    lv_obj_t *news_panel = make_card(tile, 514, 285, 505, 305);
 
     lv_obj_t *lbl_ntitle = lv_label_create(news_panel);
     lv_obj_set_style_text_color(lbl_ntitle, COLOR_HIGHLIGHT, 0);
-    lv_obj_set_style_text_font(lbl_ntitle, &lv_font_montserrat_20, 0);
-    lv_label_set_text(lbl_ntitle, LV_SYMBOL_FILE " News");
-    lv_obj_set_pos(lbl_ntitle, 20, 10);
+    lv_obj_set_style_text_font(lbl_ntitle, &font_montserrat_24_cyr, 0);
+    lv_label_set_text(lbl_ntitle, "News");
+    lv_obj_set_pos(lbl_ntitle, 15, 10);
 
     for (int i = 0; i < MAX_NEWS_LINES; i++) {
+        int y = 38 + i * 46;
+
+        // Category dot
+        news_dots[i] = lv_obj_create(news_panel);
+        lv_obj_remove_style_all(news_dots[i]);
+        lv_obj_set_size(news_dots[i], 8, 8);
+        lv_obj_set_pos(news_dots[i], 15, y + 5);
+        lv_obj_set_style_bg_color(news_dots[i], COLOR_HIGHLIGHT, 0);
+        lv_obj_set_style_bg_opa(news_dots[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(news_dots[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_add_flag(news_dots[i], LV_OBJ_FLAG_HIDDEN);
+
+        // News title
         lbl_news_lines[i] = lv_label_create(news_panel);
         lv_obj_set_style_text_color(lbl_news_lines[i], COLOR_TEXT, 0);
         lv_obj_set_style_text_font(lbl_news_lines[i], &font_montserrat_16_cyr, 0);
-        lv_obj_set_width(lbl_news_lines[i], 559);
+        lv_obj_set_width(lbl_news_lines[i], 460);
         lv_label_set_long_mode(lbl_news_lines[i], LV_LABEL_LONG_SCROLL_CIRCULAR);
         lv_label_set_text(lbl_news_lines[i], "");
-        lv_obj_set_pos(lbl_news_lines[i], 20, 42 + i * 45);
+        lv_obj_set_pos(lbl_news_lines[i], 30, y);
         lv_obj_add_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
+
+        // Category label (below title)
+        lbl_news_age[i] = lv_label_create(news_panel);
+        lv_obj_set_style_text_color(lbl_news_age[i], COLOR_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(lbl_news_age[i], &font_montserrat_16_cyr, 0);
+        lv_label_set_text(lbl_news_age[i], "");
+        lv_obj_set_pos(lbl_news_age[i], 30, y + 22);
+        lv_obj_add_flag(lbl_news_age[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     lbl_no_news = lv_label_create(news_panel);
     lv_obj_set_style_text_color(lbl_no_news, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl_no_news, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_no_news, &font_montserrat_16_cyr, 0);
     lv_label_set_text(lbl_no_news, "No news");
-    lv_obj_set_pos(lbl_no_news, 20, 42);
+    lv_obj_set_pos(lbl_no_news, 15, 38);
 }
 
 // ===== BRIDGE UPDATE =====
 
-static const char *trend_arrow(int cur, int prev)
+static lv_color_t readiness_color(int score)
 {
-    if (cur > prev) return LV_SYMBOL_UP;
-    if (cur < prev) return LV_SYMBOL_DOWN;
-    return "=";
+    if (score >= 80) return COLOR_GOOD;
+    if (score >= 50) return COLOR_WARN;
+    return COLOR_BAD;
+}
+
+static void set_metric_card(int idx, const char *value, const char *trend, lv_color_t trend_color)
+{
+    if (idx >= NUM_METRIC_CARDS || !metric_cards[idx].lbl_value) return;
+    lv_label_set_text(metric_cards[idx].lbl_value, value);
+    lv_label_set_text(metric_cards[idx].lbl_trend, trend);
+    lv_obj_set_style_text_color(metric_cards[idx].lbl_trend, trend_color, 0);
+}
+
+static void format_trend(char *buf, int bufsize, int cur, int prev)
+{
+    if (prev == 0) { buf[0] = '\0'; return; }
+    int pct = (int)(((float)(cur - prev) / prev) * 100);
+    const char *arrow = pct > 0 ? LV_SYMBOL_UP : (pct < 0 ? LV_SYMBOL_DOWN : "");
+    snprintf(buf, bufsize, "%s %d%%", arrow, pct > 0 ? pct : -pct);
 }
 
 void ui_dashboard_update_bridge(const bridge_data_t *data)
 {
     if (!data) return;
 
-    // Health
+    // Health — readiness arc + metric cards
     if (data->health.valid) {
-        if (lbl_health_ready) {
-            char buf[48];
-            snprintf(buf, sizeof(buf), "Readiness: %d", data->health.readiness);
-            lv_label_set_text(lbl_health_ready, buf);
-            lv_obj_set_style_text_color(lbl_health_ready,
-                data->health.readiness >= 70 ? lv_color_hex(0x66BB6A) :
-                data->health.readiness >= 40 ? lv_color_hex(0xFFC107) :
-                                               lv_color_hex(0xEF5350), 0);
+        int r = data->health.readiness;
+
+        // Arc
+        if (arc_readiness) {
+            lv_arc_set_value(arc_readiness, r);
+            lv_obj_set_style_arc_color(arc_readiness, readiness_color(r), LV_PART_INDICATOR);
         }
-        if (lbl_health_steps) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%s Steps: %d  %s (prev %d)",
-                     LV_SYMBOL_REFRESH, data->health.steps,
-                     trend_arrow(data->health.steps, data->health.steps_prev),
-                     data->health.steps_prev);
-            lv_label_set_text(lbl_health_steps, buf);
+        if (lbl_readiness_val) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", r);
+            lv_label_set_text(lbl_readiness_val, buf);
+            lv_obj_set_style_text_color(lbl_readiness_val, readiness_color(r), 0);
         }
-        if (lbl_health_sleep) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "Sleep: %.1fh  %s (prev %.1fh)",
-                     data->health.sleep,
-                     trend_arrow((int)(data->health.sleep * 10), (int)(data->health.sleep_prev * 10)),
-                     data->health.sleep_prev);
-            lv_label_set_text(lbl_health_sleep, buf);
+        if (lbl_readiness_label) {
+            lv_label_set_text(lbl_readiness_label,
+                r >= 80 ? "Optimal" : r >= 50 ? "Fair" : "Low");
         }
-        if (lbl_health_hr) {
-            char buf[80];
-            snprintf(buf, sizeof(buf), "HR: %d  RHR: %d  HRV: %d  SpO2: %d%%",
-                     data->health.hr, data->health.rhr,
-                     data->health.hrv, data->health.spo2);
-            lv_label_set_text(lbl_health_hr, buf);
-        }
+
+        // Metric cards: 0=Steps, 1=Sleep, 2=Calories, 3=HR, 4=RHR, 5=HRV, 6=SpO2
+        char val[16], trend[24];
+
+        // Steps
+        snprintf(val, sizeof(val), "%d", data->health.steps);
+        format_trend(trend, sizeof(trend), data->health.steps, data->health.steps_prev);
+        set_metric_card(0, val, trend, data->health.steps >= data->health.steps_prev ? COLOR_GOOD : COLOR_BAD);
+
+        // Sleep
+        snprintf(val, sizeof(val), "%.1fh", data->health.sleep);
+        int s10 = (int)(data->health.sleep * 10), sp10 = (int)(data->health.sleep_prev * 10);
+        format_trend(trend, sizeof(trend), s10, sp10);
+        set_metric_card(1, val, trend, data->health.sleep >= 7.0 ? COLOR_GOOD : (data->health.sleep >= 6.0 ? COLOR_WARN : COLOR_BAD));
+
+        // Calories
+        snprintf(val, sizeof(val), "%d", data->health.cal);
+        format_trend(trend, sizeof(trend), data->health.cal, data->health.cal_prev);
+        set_metric_card(2, val, trend, data->health.cal >= data->health.cal_prev ? COLOR_GOOD : COLOR_TEXT_DIM);
+
+        // Heart Rate (live)
+        snprintf(val, sizeof(val), "%d bpm", data->health.hr);
+        set_metric_card(3, val, "", data->health.hr <= 100 ? COLOR_GOOD : COLOR_WARN);
+
+        // RHR
+        snprintf(val, sizeof(val), "%d bpm", data->health.rhr);
+        set_metric_card(4, val, "", data->health.rhr <= 60 ? COLOR_GOOD : (data->health.rhr <= 75 ? COLOR_WARN : COLOR_BAD));
+
+        // HRV
+        snprintf(val, sizeof(val), "%d ms", data->health.hrv);
+        set_metric_card(5, val, "", data->health.hrv >= 40 ? COLOR_GOOD : (data->health.hrv >= 25 ? COLOR_WARN : COLOR_BAD));
+
+        // SpO2
+        snprintf(val, sizeof(val), "%d%%", data->health.spo2);
+        set_metric_card(6, val, "", data->health.spo2 >= 95 ? COLOR_GOOD : COLOR_WARN);
     }
 
-    // Tasks
+    // Tasks — with priority bars
     if (data->tasks_valid) {
         int n = data->task_count;
         if (n == 0) {
@@ -931,25 +1117,26 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
             if (lbl_no_tasks) lv_obj_add_flag(lbl_no_tasks, LV_OBJ_FLAG_HIDDEN);
         }
         for (int i = 0; i < MAX_TASK_LINES; i++) {
-            if (!lbl_task_lines[i]) continue;
             if (i < n) {
-                char buf[100];
-                const char *prio_mark = data->tasks[i].priority >= 4 ? "!! " :
-                                        data->tasks[i].priority >= 3 ? "!  " : "   ";
-                snprintf(buf, sizeof(buf), "%s%s", prio_mark, data->tasks[i].title);
-                lv_label_set_text(lbl_task_lines[i], buf);
-                lv_obj_set_style_text_color(lbl_task_lines[i],
-                    data->tasks[i].priority >= 4 ? lv_color_hex(0xEF5350) :
-                    data->tasks[i].priority >= 3 ? lv_color_hex(0xFFA726) :
-                                                   COLOR_TEXT, 0);
-                lv_obj_clear_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
+                // Priority bar color
+                lv_color_t pcolor = data->tasks[i].priority >= 4 ? COLOR_BAD :
+                                    data->tasks[i].priority >= 3 ? COLOR_WARN : COLOR_TEXT_DIM;
+                if (task_prio_bars[i]) {
+                    lv_obj_set_style_bg_color(task_prio_bars[i], pcolor, 0);
+                    lv_obj_clear_flag(task_prio_bars[i], LV_OBJ_FLAG_HIDDEN);
+                }
+                if (lbl_task_lines[i]) {
+                    lv_label_set_text(lbl_task_lines[i], data->tasks[i].title);
+                    lv_obj_clear_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
+                }
             } else {
-                lv_obj_add_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
+                if (task_prio_bars[i]) lv_obj_add_flag(task_prio_bars[i], LV_OBJ_FLAG_HIDDEN);
+                if (lbl_task_lines[i]) lv_obj_add_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
             }
         }
     }
 
-    // News
+    // News — with dots and age
     if (data->news_valid) {
         int n = data->news_count;
         if (n == 0) {
@@ -957,18 +1144,263 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
         } else {
             if (lbl_no_news) lv_obj_add_flag(lbl_no_news, LV_OBJ_FLAG_HIDDEN);
         }
+
+        // Category colors
+        static const lv_color_t cat_colors[] = {
+            {.full = 0x53A8}, {.full = 0x66BB}, {.full = 0xFFA7},
+            {.full = 0xAB47}, {.full = 0xEF53}
+        };
+
         for (int i = 0; i < MAX_NEWS_LINES; i++) {
-            if (!lbl_news_lines[i]) continue;
             if (i < n) {
-                char buf[160];
-                snprintf(buf, sizeof(buf), "[%s] %s  (%dh ago)",
-                         data->news[i].category,
-                         data->news[i].title,
-                         data->news[i].hours_ago);
-                lv_label_set_text(lbl_news_lines[i], buf);
-                lv_obj_clear_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
+                if (news_dots[i]) {
+                    // Simple hash for category color
+                    int cidx = (data->news[i].category[0] + data->news[i].category[1]) % 5;
+                    lv_obj_set_style_bg_color(news_dots[i],
+                        lv_color_hex(cidx == 0 ? 0x5BC0EB : cidx == 1 ? 0x66BB6A :
+                                     cidx == 2 ? 0xFFA726 : cidx == 3 ? 0xAB47BC : 0xEF5350), 0);
+                    lv_obj_clear_flag(news_dots[i], LV_OBJ_FLAG_HIDDEN);
+                }
+                if (lbl_news_lines[i]) {
+                    char news_buf[160];
+                    lv_label_set_text(lbl_news_lines[i], data->news[i].title);
+                    lv_obj_clear_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
+                }
+                if (lbl_news_age[i]) {
+                    lv_label_set_text(lbl_news_age[i], data->news[i].category);
+                    lv_obj_clear_flag(lbl_news_age[i], LV_OBJ_FLAG_HIDDEN);
+                }
             } else {
-                lv_obj_add_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
+                if (news_dots[i]) lv_obj_add_flag(news_dots[i], LV_OBJ_FLAG_HIDDEN);
+                if (lbl_news_lines[i]) lv_obj_add_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
+                if (lbl_news_age[i]) lv_obj_add_flag(lbl_news_age[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+}
+
+// ===== PAGE 3: HA Control — rooms =====
+
+#define COLOR_LIGHT_ON  lv_color_hex(0xFFC107)
+#define COLOR_LIGHT_OFF lv_color_hex(0x3A3A5C)
+
+// Encode room_idx and light_idx into one int for event callback
+#define LIGHT_CB_ID(room, light) ((room) * MAX_ROOM_LIGHTS + (light))
+#define LIGHT_CB_ROOM(id)        ((id) / MAX_ROOM_LIGHTS)
+#define LIGHT_CB_LIGHT(id)       ((id) % MAX_ROOM_LIGHTS)
+
+static void light_btn_cb(lv_event_t *e)
+{
+    int id = (int)(intptr_t)lv_event_get_user_data(e);
+    int room = LIGHT_CB_ROOM(id);
+    int light = LIGHT_CB_LIGHT(id);
+    if (room < MAX_ROOMS && light < ROOMS[room].light_count) {
+        request_light_toggle(ROOMS[room].light_ids[light]);
+    }
+}
+
+static void create_page3(lv_obj_t *tile)
+{
+    // Title
+    lv_obj_t *pg_title = lv_label_create(tile);
+    lv_obj_set_style_text_color(pg_title, COLOR_HIGHLIGHT, 0);
+    lv_obj_set_style_text_font(pg_title, &font_montserrat_24_cyr, 0);
+    lv_label_set_text(pg_title, "Home");
+    lv_obj_set_pos(pg_title, 15, 8);
+
+    // 2x2 grid of room cards
+    int pw = 500, ph = 265;
+    int positions[MAX_ROOMS][2] = {
+        {5, 40}, {512, 40}, {5, 310}, {512, 310}
+    };
+
+    for (int r = 0; r < MAX_ROOMS; r++) {
+        const room_def_t *room = &ROOMS[r];
+        lv_obj_t *panel = make_card(tile, positions[r][0], positions[r][1], pw, ph);
+
+        // Room title
+        lv_obj_t *lbl_title = lv_label_create(panel);
+        lv_obj_set_style_text_color(lbl_title, COLOR_HIGHLIGHT, 0);
+        lv_obj_set_style_text_font(lbl_title, &font_montserrat_24_cyr, 0);
+        lv_label_set_text(lbl_title, room->name);
+        lv_obj_set_pos(lbl_title, 15, 8);
+
+        // Light toggle buttons
+        for (int l = 0; l < MAX_ROOM_LIGHTS; l++) {
+            lv_obj_t *btn = lv_btn_create(panel);
+            lv_obj_set_size(btn, 148, 44);
+            lv_obj_set_pos(btn, 15 + l * 156, 40);
+            lv_obj_set_style_bg_color(btn, COLOR_LIGHT_OFF, 0);
+            lv_obj_set_style_radius(btn, 22, 0);  // pill shape
+            lv_obj_set_style_pad_all(btn, 4, 0);
+            lv_obj_set_style_shadow_width(btn, 0, 0);
+            lv_obj_add_event_cb(btn, light_btn_cb, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)LIGHT_CB_ID(r, l));
+
+            lv_obj_t *lbl = lv_label_create(btn);
+            lv_obj_set_style_text_color(lbl, COLOR_TEXT, 0);
+            lv_obj_set_style_text_font(lbl, &font_montserrat_16_cyr, 0);
+            lv_obj_set_width(lbl, 132);
+            lv_label_set_long_mode(lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
+            lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+            lv_label_set_text(lbl, "---");
+            lv_obj_center(lbl);
+
+            room_light_btns[r][l] = btn;
+            room_light_labels[r][l] = lbl;
+
+            if (l >= room->light_count) {
+                lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+
+        // Sensor cards (below lights, like Health metric cards)
+        int sc_w = 140, sc_h = 68, sc_gap = 6;
+        int sc_per_row = (pw - 20) / (sc_w + sc_gap);
+        for (int s = 0; s < MAX_ROOM_SENSORS; s++) {
+            int col = s % sc_per_row;
+            int row = s / sc_per_row;
+            int sx = 12 + col * (sc_w + sc_gap);
+            int sy = 90 + row * (sc_h + sc_gap);
+
+            lv_obj_t *sc = make_card(panel, sx, sy, sc_w, sc_h);
+
+            // Value
+            lv_obj_t *vlbl = lv_label_create(sc);
+            lv_obj_set_style_text_color(vlbl, COLOR_TEXT, 0);
+            lv_obj_set_style_text_font(vlbl, &font_montserrat_24_cyr, 0);
+            lv_obj_set_width(vlbl, sc_w - 12);
+            lv_obj_set_style_text_align(vlbl, LV_TEXT_ALIGN_CENTER, 0);
+            lv_label_set_text(vlbl, "---");
+            lv_obj_set_pos(vlbl, 6, 4);
+
+            // Name
+            lv_obj_t *nlbl = lv_label_create(sc);
+            lv_obj_set_style_text_color(nlbl, COLOR_TEXT_DIM, 0);
+            lv_obj_set_style_text_font(nlbl, &font_montserrat_16_cyr, 0);
+            lv_obj_set_width(nlbl, sc_w - 12);
+            lv_obj_set_style_text_align(nlbl, LV_TEXT_ALIGN_CENTER, 0);
+            lv_label_set_long_mode(nlbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
+            lv_label_set_text(nlbl, "");
+            lv_obj_set_pos(nlbl, 6, 38);
+
+            room_sensor_cards[r][s] = sc;
+            room_sensor_val_lbl[r][s] = vlbl;
+            room_sensor_name_lbl[r][s] = nlbl;
+
+            if (s >= room->sensor_count) {
+                lv_obj_add_flag(sc, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+}
+
+// Find light/sensor in bridge data by entity_id
+static const bridge_light_t *find_light(const bridge_data_t *d, const char *eid)
+{
+    for (int i = 0; i < d->light_count; i++) {
+        if (strcmp(d->lights[i].entity_id, eid) == 0) return &d->lights[i];
+    }
+    return NULL;
+}
+
+void ui_dashboard_update_ha(const bridge_data_t *data)
+{
+    if (!data) return;
+
+    // Update lights per room
+    if (data->lights_valid) {
+        for (int r = 0; r < MAX_ROOMS; r++) {
+            const room_def_t *room = &ROOMS[r];
+            for (int l = 0; l < room->light_count; l++) {
+                const bridge_light_t *light = find_light(data, room->light_ids[l]);
+                if (!light || !room_light_btns[r][l]) continue;
+
+                lv_label_set_text(room_light_labels[r][l], light->name);
+
+                lv_obj_set_style_bg_color(room_light_btns[r][l],
+                    light->on ? COLOR_LIGHT_ON : COLOR_LIGHT_OFF, 0);
+                lv_obj_set_style_text_color(room_light_labels[r][l],
+                    light->on ? lv_color_hex(0x1A1A2E) : COLOR_TEXT, 0);
+            }
+        }
+    }
+
+    // Update sensor tables per room
+    if (data->sensors_valid) {
+        static const char *sensor_entity_order[] = {
+            "sensor.gostinaia_airq_co2",
+            "sensor.co2_sensor_co2",
+            "sensor.zhimi_vb4_f663_pm25_density",
+            "sensor.zhimi_ca4_90f5_relative_humidity_2",
+            "sensor.purifier_humidifier_humidity",
+            "sensor.purifier_humidifier_temperature",
+            "sensor.zhimi_vb4_f663_temperature",
+            "sensor.aqara_sensor_temperature",
+            "sensor.aqara_sensor_humidity",
+        };
+        int sensor_order_count = sizeof(sensor_entity_order) / sizeof(sensor_entity_order[0]);
+
+        // Entity-specific short names
+        struct sensor_label_t { const char *entity; const char *label; };
+        static const sensor_label_t sensor_labels[] = {
+            {"sensor.gostinaia_airq_co2",              "CO2"},
+            {"sensor.co2_sensor_co2",                  "CO2"},
+            {"sensor.zhimi_vb4_f663_pm25_density",     "PM2.5"},
+            {"sensor.zhimi_ca4_90f5_relative_humidity_2", "Humidity"},
+            {"sensor.purifier_humidifier_humidity",     "Humidity"},
+            {"sensor.purifier_humidifier_temperature",  "Temp"},
+            {"sensor.zhimi_vb4_f663_temperature",       "Temp (purifier)"},
+            {"sensor.zhimi_vb4_f663_relative_humidity",  "Humidity (purifier)"},
+            {"sensor.aqara_sensor_temperature",         "Temp (Aqara)"},
+            {"sensor.aqara_sensor_humidity",            "Humidity (Aqara)"},
+        };
+        int num_labels = sizeof(sensor_labels) / sizeof(sensor_labels[0]);
+
+        for (int r = 0; r < MAX_ROOMS; r++) {
+            const room_def_t *room = &ROOMS[r];
+            if (!room_sensor_val_lbl[r][0]) continue;
+
+            for (int s = 0; s < room->sensor_count; s++) {
+                const char *wanted = room->sensor_ids[s];
+                if (!wanted || !room_sensor_cards[r][s]) continue;
+
+                bool found = false;
+                for (int k = 0; k < sensor_order_count && k < data->sensor_count; k++) {
+                    if (strcmp(sensor_entity_order[k], wanted) == 0) {
+                        const bridge_sensor_t *sen = &data->sensors[k];
+
+                        // Skip unavailable sensors
+                        if (sen->value[0] == '\0' || strcmp(sen->value, "0") == 0) break;
+
+                        // Find entity-specific label
+                        const char *label = sen->name;
+                        for (int n = 0; n < num_labels; n++) {
+                            if (strcmp(sensor_labels[n].entity, wanted) == 0) {
+                                label = sensor_labels[n].label;
+                                break;
+                            }
+                        }
+
+                        lv_label_set_text(room_sensor_val_lbl[r][s], sen->value);
+                        lv_label_set_text(room_sensor_name_lbl[r][s], label);
+                        lv_obj_clear_flag(room_sensor_cards[r][s], LV_OBJ_FLAG_HIDDEN);
+
+                        // CO2 color coding
+                        if (strstr(sen->unit, "ppm")) {
+                            int co2 = atoi(sen->value);
+                            lv_color_t co2_color = co2 < 800 ? COLOR_GOOD :
+                                                   co2 < 1000 ? COLOR_WARN : COLOR_BAD;
+                            lv_obj_set_style_text_color(room_sensor_val_lbl[r][s], co2_color, 0);
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                // Hide card if sensor not found in bridge data
+                if (!found) {
+                    lv_obj_add_flag(room_sensor_cards[r][s], LV_OBJ_FLAG_HIDDEN);
+                }
             }
         }
     }

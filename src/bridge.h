@@ -5,7 +5,8 @@
 
 #define BRIDGE_MAX_TASKS   8
 #define BRIDGE_MAX_NEWS    5
-#define BRIDGE_MAX_SENSORS 6
+#define BRIDGE_MAX_SENSORS 10
+#define BRIDGE_MAX_LIGHTS  8
 
 struct bridge_health_t {
     int  steps;
@@ -40,6 +41,13 @@ struct bridge_sensor_t {
     char unit[8];
 };
 
+struct bridge_light_t {
+    char entity_id[48];
+    char name[40];
+    bool on;
+    int  brightness;   // 0-255
+};
+
 struct bridge_data_t {
     uint32_t ts;
 
@@ -56,8 +64,13 @@ struct bridge_data_t {
     bridge_sensor_t sensors[BRIDGE_MAX_SENSORS];
     int sensor_count;
     bool sensors_valid;
+
+    bridge_light_t lights[BRIDGE_MAX_LIGHTS];
+    int light_count;
+    bool lights_valid;
 };
 
 void bridge_fetch_and_update(void);
+void bridge_toggle_light(const char *entity_id);
 const bridge_data_t *bridge_get_data(void);
 const char *bridge_get_last_error(void);

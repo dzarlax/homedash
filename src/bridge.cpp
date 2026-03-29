@@ -162,6 +162,41 @@ static void parse_sensors(cJSON *arr)
     s_data.sensors_valid = true;
 }
 
+static void parse_lights(cJSON *arr)
+{
+    s_data.light_count = 0;
+    s_data.lights_valid = false;
+    if (!arr || !cJSON_IsArray(arr)) return;
+
+    int n = cJSON_GetArraySize(arr);
+    if (n > BRIDGE_MAX_LIGHTS) n = BRIDGE_MAX_LIGHTS;
+
+    for (int i = 0; i < n; i++) {
+        cJSON *item = cJSON_GetArrayItem(arr, i);
+        if (!item) continue;
+
+        bridge_light_t *l = &s_data.lights[s_data.light_count];
+        memset(l, 0, sizeof(*l));
+
+        cJSON *id = cJSON_GetObjectItem(item, "id");
+        if (id && cJSON_IsString(id)) {
+            strncpy(l->entity_id, id->valuestring, sizeof(l->entity_id) - 1);
+        }
+        cJSON *name = cJSON_GetObjectItem(item, "n");
+        if (name && cJSON_IsString(name)) {
+            strncpy(l->name, name->valuestring, sizeof(l->name) - 1);
+        }
+        cJSON *on = cJSON_GetObjectItem(item, "on");
+        if (on) l->on = cJSON_IsTrue(on);
+
+        cJSON *br = cJSON_GetObjectItem(item, "br");
+        if (br) l->brightness = br->valueint;
+
+        s_data.light_count++;
+    }
+    s_data.lights_valid = true;
+}
+
 void bridge_fetch_and_update(void)
 {
     if (!wifi_is_connected()) {
@@ -214,6 +249,7 @@ void bridge_fetch_and_update(void)
     parse_tasks(cJSON_GetObjectItem(root, "tasks"));
     parse_news(cJSON_GetObjectItem(root, "news"));
     parse_sensors(cJSON_GetObjectItem(root, "sensors"));
+    parse_lights(cJSON_GetObjectItem(root, "lights"));
 
     cJSON_Delete(root);
     snprintf(s_last_error, sizeof(s_last_error), "OK");
@@ -227,4 +263,37 @@ const bridge_data_t *bridge_get_data(void)
 const char *bridge_get_last_error(void)
 {
     return s_last_error;
+}
+
+void bridge_toggle_light(const char *entity_id)
+{
+    if (!wifi_is_connected() || !entity_id) return;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/ha/action?key=%s", BRIDGE_URL, BRIDGE_API_KEY);
+
+    char body[128];
+    snprintf(body, sizeof(body), "{\"entity_id\":\"%s\",\"action\":\"toggle\"}", entity_id);
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = 10000;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, body, strlen(body));
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err == ESP_OK && status == 200) {
+        ESP_LOGI(TAG, "Toggle %s OK", entity_id);
+        // Refresh data immediately
+        bridge_fetch_and_update();
+    } else {
+        ESP_LOGE(TAG, "Toggle %s failed: HTTP %d", entity_id, status);
+    }
 }
