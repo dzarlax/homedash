@@ -138,9 +138,9 @@ static int sel_day   = 0;
 // Track last weather code to avoid unnecessary redraws
 static int last_weather_code = -1;
 
-static const char *DOW_NAMES[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-static const char *MONTH_NAMES[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+static const char *DOW_NAMES[] = {"Bc", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"};
+static const char *MONTH_NAMES[] = {"Янв", "Фев", "Мар", "Апр", "Май", "Июн",
+                                     "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"};
 
 #define COLOR_BG        lv_color_hex(0x1A1A2E)
 #define COLOR_PANEL     lv_color_hex(0x16213E)
@@ -238,12 +238,12 @@ static void update_schedule_title(int y, int m, int d)
 {
     if (!lbl_sched_title) return;
     if (is_today(y, m, d)) {
-        lv_label_set_text(lbl_sched_title, "Today's Schedule");
+        lv_label_set_text(lbl_sched_title, "Расписание");
         if (btn_today) lv_obj_add_flag(btn_today, LV_OBJ_FLAG_HIDDEN);
     } else {
         char buf[48];
         const char *mon = (m >= 1 && m <= 12) ? MONTH_NAMES[m - 1] : "???";
-        snprintf(buf, sizeof(buf), "Schedule for %s %d", mon, d);
+        snprintf(buf, sizeof(buf), "Расписание: %s %d", mon, d);
         lv_label_set_text(lbl_sched_title, buf);
         if (btn_today) lv_obj_clear_flag(btn_today, LV_OBJ_FLAG_HIDDEN);
     }
@@ -329,7 +329,7 @@ void ui_dashboard_create(void)
 
     lbl_datetime = lv_label_create(top_bar);
     lv_obj_set_style_text_color(lbl_datetime, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_datetime, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(lbl_datetime, &font_montserrat_24_cyr, 0);
     lv_obj_set_width(lbl_datetime, 500);
     lv_label_set_long_mode(lbl_datetime, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(lbl_datetime, "...");
@@ -337,7 +337,7 @@ void ui_dashboard_create(void)
 
     lbl_topbar_temp = lv_label_create(top_bar);
     lv_obj_set_style_text_color(lbl_topbar_temp, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_topbar_temp, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(lbl_topbar_temp, &font_montserrat_24_cyr, 0);
     lv_obj_set_width(lbl_topbar_temp, 500);
     lv_label_set_long_mode(lbl_topbar_temp, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(lbl_topbar_temp, LV_TEXT_ALIGN_RIGHT, 0);
@@ -407,10 +407,10 @@ void ui_dashboard_create(void)
     lbl_sched_title = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_sched_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(lbl_sched_title, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(lbl_sched_title, "Today's Schedule");
+    lv_label_set_text(lbl_sched_title, "Расписание");
     lv_obj_set_pos(lbl_sched_title, 20, 10);
 
-    // "Today" button
+    // "Сегодня" button
     btn_today = lv_btn_create(right_panel);
     lv_obj_set_size(btn_today, 70, 28);
     lv_obj_set_pos(btn_today, 505, 8);
@@ -423,7 +423,7 @@ void ui_dashboard_create(void)
     lv_obj_t *btn_lbl = lv_label_create(btn_today);
     lv_obj_set_style_text_color(btn_lbl, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(btn_lbl, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(btn_lbl, "Today");
+    lv_label_set_text(btn_lbl, "Сегодня");
     lv_obj_center(btn_lbl);
 
     // Scrollable event area (y=42, height=288 — fits 8 visible, scrolls for more)
@@ -454,7 +454,7 @@ void ui_dashboard_create(void)
     lbl_no_events = lv_label_create(events_scroll);
     lv_obj_set_style_text_color(lbl_no_events, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_no_events, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_no_events, "No events today");
+    lv_label_set_text(lbl_no_events, "Нет событий");
 
     // "Now" time indicator line
     now_line = lv_obj_create(events_scroll);
@@ -479,14 +479,14 @@ void ui_dashboard_create(void)
     lv_obj_t *lbl_tr_title = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_tr_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(lbl_tr_title, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_tr_title, "Djeram");
+    lv_label_set_text(lbl_tr_title, "Джерам");
     lv_obj_set_pos(lbl_tr_title, 20, 345);
 
     // Outbound (stop 89)
     lv_obj_t *lbl_out_dir = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_out_dir, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_out_dir, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_out_dir, LV_SYMBOL_RIGHT " Oblast");
+    lv_label_set_text(lbl_out_dir, LV_SYMBOL_RIGHT " Область");
     lv_obj_set_pos(lbl_out_dir, 20, 375);
 
     lbl_transport_out = lv_label_create(right_panel);
@@ -502,7 +502,7 @@ void ui_dashboard_create(void)
     lv_obj_t *lbl_in_dir = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_in_dir, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_in_dir, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_in_dir, LV_SYMBOL_LEFT " Centar");
+    lv_label_set_text(lbl_in_dir, LV_SYMBOL_LEFT " Центр");
     lv_obj_set_pos(lbl_in_dir, 20, 405);
 
     lbl_transport_in = lv_label_create(right_panel);
@@ -600,11 +600,11 @@ void ui_dashboard_update_ha_calendar(const ha_cal_data_t *data)
         // Update "no events" text based on date
         if (lbl_no_events) {
             if (is_today(sel_year, sel_month, sel_day)) {
-                lv_label_set_text(lbl_no_events, "No events today");
+                lv_label_set_text(lbl_no_events, "Нет событий");
             } else {
                 char buf[48];
                 const char *mon = (sel_month >= 1 && sel_month <= 12) ? MONTH_NAMES[sel_month - 1] : "???";
-                snprintf(buf, sizeof(buf), "No events on %s %d", mon, sel_day);
+                snprintf(buf, sizeof(buf), "Нет событий %s %d", mon, sel_day);
                 lv_label_set_text(lbl_no_events, buf);
             }
         }
@@ -628,7 +628,7 @@ void ui_dashboard_update_ha_calendar(const ha_cal_data_t *data)
             const ha_cal_event_t *ev = &data->events[i];
             char buf[96];
             if (ev->all_day) {
-                snprintf(buf, sizeof(buf), "All day      %s", ev->summary);
+                snprintf(buf, sizeof(buf), "Весь день    %s", ev->summary);
             } else {
                 snprintf(buf, sizeof(buf), "%02d:%02d-%02d:%02d  %s",
                          ev->start_hour, ev->start_min,
@@ -718,7 +718,7 @@ static const char *time_color(int mins)
 static void format_stop_line(char *buf, int buf_size, const transport_stop_t *stop)
 {
     if (stop->count == 0) {
-        snprintf(buf, buf_size, "no data");
+        snprintf(buf, buf_size, "нет данных");
         return;
     }
     int pos = 0;
@@ -827,7 +827,7 @@ static void create_page2(lv_obj_t *tile)
     lv_obj_t *lbl_htitle = lv_label_create(health_banner);
     lv_obj_set_style_text_color(lbl_htitle, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(lbl_htitle, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(lbl_htitle, "Health");
+    lv_label_set_text(lbl_htitle, "Здоровье");
     lv_obj_set_pos(lbl_htitle, 15, 8);
 
     // Readiness arc (left side)
@@ -856,11 +856,11 @@ static void create_page2(lv_obj_t *tile)
     lbl_readiness_label = lv_label_create(health_banner);
     lv_obj_set_style_text_color(lbl_readiness_label, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_readiness_label, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_readiness_label, "Readiness");
+    lv_label_set_text(lbl_readiness_label, "Готовность");
     lv_obj_set_pos(lbl_readiness_label, 45, 200);
 
     // Row 1: 3 main metric cards (Steps, Sleep, Calories) — bigger
-    static const char *row1_names[] = {"Steps", "Sleep", "Calories"};
+    static const char *row1_names[] = {"Шаги", "Сон", "Калории"};
     int r1_x = 185, r1_w = 190, r1_h = 110, r1_gap = 10;
     for (int i = 0; i < 3; i++) {
         lv_obj_t *mc = make_card(health_banner, r1_x + i * (r1_w + r1_gap), 38, r1_w, r1_h);
@@ -896,7 +896,7 @@ static void create_page2(lv_obj_t *tile)
     metric_cards[3].lbl_name = lv_label_create(mc_extra);
     lv_obj_set_style_text_color(metric_cards[3].lbl_name, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(metric_cards[3].lbl_name, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(metric_cards[3].lbl_name, "Heart Rate");
+    lv_label_set_text(metric_cards[3].lbl_name, "Пульс");
     lv_obj_set_pos(metric_cards[3].lbl_name, 8, 6);
     metric_cards[3].lbl_value = lv_label_create(mc_extra);
     lv_obj_set_style_text_color(metric_cards[3].lbl_value, COLOR_TEXT, 0);
@@ -911,7 +911,7 @@ static void create_page2(lv_obj_t *tile)
     metric_cards[3].container = mc_extra;
 
     // Row 2: 4 smaller cards (RHR, HRV, SpO2, Resp Rate) — below
-    static const char *row2_names[] = {"RHR", "HRV", "SpO2"};
+    static const char *row2_names[] = {"ЧСС покоя", "ВСР", "SpO2"};
     int r2_x = 185, r2_w = 270, r2_h = 100, r2_gap = 10;
     for (int i = 0; i < 3; i++) {
         lv_obj_t *mc2 = make_card(health_banner, r2_x + i * (r2_w + r2_gap), 158, r2_w, r2_h);
@@ -942,7 +942,7 @@ static void create_page2(lv_obj_t *tile)
     lv_obj_t *lbl_ttitle = lv_label_create(tasks_panel);
     lv_obj_set_style_text_color(lbl_ttitle, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(lbl_ttitle, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(lbl_ttitle, "Tasks");
+    lv_label_set_text(lbl_ttitle, "Задачи");
     lv_obj_set_pos(lbl_ttitle, 15, 10);
 
     for (int i = 0; i < MAX_TASK_LINES; i++) {
@@ -972,7 +972,7 @@ static void create_page2(lv_obj_t *tile)
     lbl_no_tasks = lv_label_create(tasks_panel);
     lv_obj_set_style_text_color(lbl_no_tasks, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_no_tasks, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_no_tasks, "No tasks");
+    lv_label_set_text(lbl_no_tasks, "Нет задач");
     lv_obj_set_pos(lbl_no_tasks, 15, 38);
 
     // ===== BOTTOM RIGHT: News (505x305) =====
@@ -981,7 +981,7 @@ static void create_page2(lv_obj_t *tile)
     lv_obj_t *lbl_ntitle = lv_label_create(news_panel);
     lv_obj_set_style_text_color(lbl_ntitle, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(lbl_ntitle, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(lbl_ntitle, "News");
+    lv_label_set_text(lbl_ntitle, "Новости");
     lv_obj_set_pos(lbl_ntitle, 15, 10);
 
     for (int i = 0; i < MAX_NEWS_LINES; i++) {
@@ -1019,7 +1019,7 @@ static void create_page2(lv_obj_t *tile)
     lbl_no_news = lv_label_create(news_panel);
     lv_obj_set_style_text_color(lbl_no_news, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_no_news, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_no_news, "No news");
+    lv_label_set_text(lbl_no_news, "Нет новостей");
     lv_obj_set_pos(lbl_no_news, 15, 38);
 }
 
@@ -1069,7 +1069,7 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
         }
         if (lbl_readiness_label) {
             lv_label_set_text(lbl_readiness_label,
-                r >= 80 ? "Optimal" : r >= 50 ? "Fair" : "Low");
+                r >= 80 ? "Отлично" : r >= 50 ? "Норма" : "Низко");
         }
 
         // Metric cards: 0=Steps, 1=Sleep, 2=Calories, 3=HR, 4=RHR, 5=HRV, 6=SpO2
@@ -1205,7 +1205,7 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_t *pg_title = lv_label_create(tile);
     lv_obj_set_style_text_color(pg_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(pg_title, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(pg_title, "Home");
+    lv_label_set_text(pg_title, "Дом");
     lv_obj_set_pos(pg_title, 15, 8);
 
     // 2x2 grid of room cards
@@ -1347,13 +1347,13 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
             {"sensor.gostinaia_airq_co2",              "CO2"},
             {"sensor.co2_sensor_co2",                  "CO2"},
             {"sensor.zhimi_vb4_f663_pm25_density",     "PM2.5"},
-            {"sensor.zhimi_ca4_90f5_relative_humidity_2", "Humidity"},
-            {"sensor.purifier_humidifier_humidity",     "Humidity"},
-            {"sensor.purifier_humidifier_temperature",  "Temp"},
-            {"sensor.zhimi_vb4_f663_temperature",       "Temp (purifier)"},
-            {"sensor.zhimi_vb4_f663_relative_humidity",  "Humidity (purifier)"},
-            {"sensor.aqara_sensor_temperature",         "Temp (Aqara)"},
-            {"sensor.aqara_sensor_humidity",            "Humidity (Aqara)"},
+            {"sensor.zhimi_ca4_90f5_relative_humidity_2", "Влажн."},
+            {"sensor.purifier_humidifier_humidity",     "Влажн."},
+            {"sensor.purifier_humidifier_temperature",  "Темп."},
+            {"sensor.zhimi_vb4_f663_temperature",       "Темп.(очист.)"},
+            {"sensor.zhimi_vb4_f663_relative_humidity",  "Влажн.(очист.)"},
+            {"sensor.aqara_sensor_temperature",         "Темп.(Aqara)"},
+            {"sensor.aqara_sensor_humidity",            "Влажн.(Aqara)"},
         };
         int num_labels = sizeof(sensor_labels) / sizeof(sensor_labels[0]);
 

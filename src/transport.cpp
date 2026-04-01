@@ -14,8 +14,8 @@ static transport_data_t s_transport = {};
 static char s_last_error[64] = "Waiting...";
 
 static const char *STOP_URLS[TRANSPORT_NUM_STOPS] = {
-    "https://transport-api.dzarlax.dev/api/stations/bg/search?id=89",
-    "https://transport-api.dzarlax.dev/api/stations/bg/search?id=90",
+    "https://transport-api.dzarlax.dev/api/stations/bg/search?id=20089",
+    "https://transport-api.dzarlax.dev/api/stations/bg/search?id=20090",
 };
 
 typedef struct {
