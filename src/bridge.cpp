@@ -1,5 +1,4 @@
 #include "bridge.h"
-#include "config.h"
 #include "wifi_manager.h"
 
 #include <string.h>
@@ -10,6 +9,18 @@
 #include "cJSON.h"
 
 static const char *TAG = "bridge";
+
+static char s_bridge_url[128] = {};
+static char s_bridge_key[64] = {};
+
+void bridge_init(const char *url, const char *api_key)
+{
+    strncpy(s_bridge_url, url, sizeof(s_bridge_url) - 1);
+    strncpy(s_bridge_key, api_key, sizeof(s_bridge_key) - 1);
+}
+
+const char *bridge_get_url(void) { return s_bridge_url; }
+const char *bridge_get_api_key(void) { return s_bridge_key; }
 
 // Copy up to dst_size-1 bytes from src, but never split a multi-byte UTF-8 char.
 static void utf8_strncpy(char *dst, const char *src, size_t dst_size)
@@ -323,7 +334,7 @@ void bridge_fetch_and_update(void)
     snprintf(s_last_error, sizeof(s_last_error), "Fetching...");
 
     char url[256];
-    snprintf(url, sizeof(url), "%s/api/dashboard?key=%s", BRIDGE_URL, BRIDGE_API_KEY);
+    snprintf(url, sizeof(url), "%s/api/dashboard?key=%s", s_bridge_url, s_bridge_key);
 
     http_buf_t resp = {};
     if (!http_get(url, &resp)) {
@@ -373,7 +384,7 @@ void bridge_toggle_light(const char *entity_id)
     if (!wifi_is_connected() || !entity_id) return;
 
     char url[256];
-    snprintf(url, sizeof(url), "%s/api/ha/action?key=%s", BRIDGE_URL, BRIDGE_API_KEY);
+    snprintf(url, sizeof(url), "%s/api/ha/action?key=%s", s_bridge_url, s_bridge_key);
 
     char body[128];
     snprintf(body, sizeof(body), "{\"entity_id\":\"%s\",\"action\":\"toggle\"}", entity_id);
@@ -423,7 +434,7 @@ void bridge_fetch_calendar(int year, int month, int day)
 
     char url[256];
     snprintf(url, sizeof(url), "%s/api/calendar?date=%04d-%02d-%02d&key=%s",
-             BRIDGE_URL, year, month, day, BRIDGE_API_KEY);
+             s_bridge_url, year, month, day, s_bridge_key);
 
     http_buf_t resp = {};
     if (!http_get(url, &resp)) {

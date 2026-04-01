@@ -130,9 +130,12 @@ struct bridge_data_t {
     bridge_transport_t transport;
 };
 
+void bridge_init(const char *url, const char *api_key);
 void bridge_fetch_and_update(void);
 void bridge_toggle_light(const char *entity_id);
 void bridge_fetch_calendar(int year, int month, int day);
 const bridge_data_t *bridge_get_data(void);
 const bridge_cal_data_t *bridge_get_calendar_data(void);
 const char *bridge_get_last_error(void);
+const char *bridge_get_url(void);
+const char *bridge_get_api_key(void);

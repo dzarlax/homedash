@@ -5,13 +5,16 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_netif_sntp.h"
+#include "esp_ota_ops.h"
 #include "nvs_flash.h"
 
 #include "lvgl_port.h"
 #include "gt911.h"
 #include "config.h"
+#include "nvs_config.h"
 #include "wifi_manager.h"
 #include "bridge.h"
+#include "ota.h"
 #include "ui_dashboard.h"
 
 static const char *TAG = "main";
@@ -50,14 +53,25 @@ void request_light_toggle(const char *entity_id)
     }
 }
 
-// Background task: WiFi + NTP + Bridge polling (runs on core 0)
+// Background task: WiFi + NTP + Bridge polling + OTA (runs on core 0)
 static void network_task(void *param)
 {
     // Wait for LVGL to render first frame
     vTaskDelay(pdMS_TO_TICKS(2000));
 
+    // Load config from NVS
+    device_config_t cfg;
+    if (!nvs_config_load(&cfg)) {
+        ESP_LOGE(TAG, "NVS config missing! Flash nvs.bin first. Halting network.");
+        for (;;) vTaskDelay(pdMS_TO_TICKS(10000));
+    }
+
+    // Initialize bridge with runtime URL
+    bridge_init(cfg.bridge_url, cfg.bridge_key);
+    ota_init(cfg.bridge_url, cfg.bridge_key);
+
     // WiFi init
-    wifi_init(WIFI_SSID, WIFI_PASSWORD);
+    wifi_init(cfg.wifi_ssid, cfg.wifi_pass);
 
     // NTP
     if (wifi_is_connected()) {
@@ -82,9 +96,9 @@ static void network_task(void *param)
 
     const uint32_t TICK_MS = 10000;
     uint32_t bridge_elapsed = BRIDGE_UPDATE_INTERVAL_MS; // trigger immediately
-
-    // Fetch today's calendar on first run
+    uint32_t ota_elapsed = OTA_CHECK_INTERVAL_MS;        // trigger immediately
     bool cal_initial = true;
+    bool app_validated = false;
 
     for (;;) {
         // On-demand calendar date request (from UI calendar tap)
@@ -102,13 +116,20 @@ static void network_task(void *param)
             bridge_toggle_light(s_toggle_entity);
         }
 
-        // Bridge polling — fetches health, tasks, news, sensors, lights, weather, transport
+        // Bridge polling
         if (bridge_elapsed >= BRIDGE_UPDATE_INTERVAL_MS) {
             bridge_fetch_and_update();
             bridge_elapsed = 0;
 
+            // Mark app as valid after first successful bridge fetch (rollback protection)
+            if (!app_validated && bridge_get_data()->ts > 0) {
+                esp_ota_mark_app_valid_cancel_rollback();
+                app_validated = true;
+                ESP_LOGI(TAG, "App marked valid (rollback cancelled)");
+            }
+
             // Fetch today's calendar after first successful bridge update
-            if (cal_initial) {
+            if (cal_initial && bridge_get_data()->ts > 0) {
                 time_t now;
                 time(&now);
                 struct tm t;
@@ -118,15 +139,22 @@ static void network_task(void *param)
             }
         }
 
+        // OTA check
+        if (ota_elapsed >= OTA_CHECK_INTERVAL_MS) {
+            ota_check_and_update(); // reboots if update found
+            ota_elapsed = 0;
+        }
+
         // Wait for notification (instant wake on UI request) or timeout
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TICK_MS));
         bridge_elapsed += TICK_MS;
+        ota_elapsed += TICK_MS;
     }
 }
 
 extern "C" void app_main(void)
 {
-    // Initialize NVS (required by WiFi)
+    // Initialize NVS (required by WiFi and config)
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
