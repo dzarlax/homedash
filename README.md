@@ -140,6 +140,10 @@ lv_font_conv --font Montserrat-Medium.ttf \
   -o src/fonts/font_montserrat_16_cyr.c
 ```
 
+## Related
+
+- [ESP32 Bridge](https://github.com/dzarlax/esp32-bridge) — Go backend that aggregates all data sources and proxies OTA updates
+
 ## License
 
 MIT
