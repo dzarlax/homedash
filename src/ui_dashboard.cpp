@@ -14,6 +14,7 @@
 // Declared in main.cpp
 extern void request_calendar_date(int year, int month, int day);
 extern void request_light_toggle(const char *entity_id);
+extern void request_ota_check(void);
 
 // Custom font with Cyrillic support (for HA calendar events)
 LV_FONT_DECLARE(font_montserrat_16_cyr);
@@ -1212,6 +1213,12 @@ static void light_btn_cb(lv_event_t *e)
     }
 }
 
+static void ota_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    request_ota_check();
+}
+
 static void create_page3(lv_obj_t *tile)
 {
     // Title
@@ -1220,6 +1227,21 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_set_style_text_font(pg_title, &font_montserrat_24_cyr, 0);
     lv_label_set_text(pg_title, "Дом");
     lv_obj_set_pos(pg_title, 15, 8);
+
+    // OTA update button
+    lv_obj_t *btn_ota = lv_btn_create(tile);
+    lv_obj_set_size(btn_ota, 120, 30);
+    lv_obj_set_pos(btn_ota, 890, 6);
+    lv_obj_set_style_bg_color(btn_ota, lv_color_hex(0x2A4A6B), 0);
+    lv_obj_set_style_radius(btn_ota, 15, 0);
+    lv_obj_set_style_shadow_width(btn_ota, 0, 0);
+    lv_obj_add_event_cb(btn_ota, ota_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *ota_lbl = lv_label_create(btn_ota);
+    lv_obj_set_style_text_color(ota_lbl, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(ota_lbl, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(ota_lbl, "Обновить");
+    lv_obj_center(ota_lbl);
 
     // 2x2 grid of room cards
     int pw = 500, ph = 265;

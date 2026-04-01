@@ -53,6 +53,17 @@ void request_light_toggle(const char *entity_id)
     }
 }
 
+// Manual OTA check request (from UI button)
+static volatile bool s_ota_requested = false;
+
+void request_ota_check(void)
+{
+    s_ota_requested = true;
+    if (s_network_task_handle) {
+        xTaskNotifyGive(s_network_task_handle);
+    }
+}
+
 // Background task: WiFi + NTP + Bridge polling + OTA (runs on core 0)
 static void network_task(void *param)
 {
@@ -139,9 +150,15 @@ static void network_task(void *param)
             }
         }
 
-        // OTA check
+        // Manual OTA check (from UI button)
+        if (s_ota_requested) {
+            s_ota_requested = false;
+            ota_check_and_update();
+        }
+
+        // Periodic OTA check
         if (ota_elapsed >= OTA_CHECK_INTERVAL_MS) {
-            ota_check_and_update(); // reboots if update found
+            ota_check_and_update();
             ota_elapsed = 0;
         }
 
