@@ -807,12 +807,9 @@ void ui_dashboard_update_time(void)
     // Update bottom bar
     if (lbl_bottom) {
         char buf[128];
-        snprintf(buf, sizeof(buf), "WiFi: %s  Heap: %.1fKB  W: %s  Cal: %s  Tr: %s  Br: %s",
+        snprintf(buf, sizeof(buf), "WiFi: %s  Heap: %.1fKB  Bridge: %s",
                  wifi_is_connected() ? "OK" : "---",
                  esp_get_free_heap_size() / 1024.0f,
-                 weather_get_last_error(),
-                 ha_calendar_get_last_error(),
-                 transport_get_last_error(),
                  bridge_get_last_error());
         lv_label_set_text(lbl_bottom, buf);
     }
