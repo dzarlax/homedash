@@ -11,9 +11,6 @@
 #include "gt911.h"
 #include "config.h"
 #include "wifi_manager.h"
-#include "weather.h"
-#include "ha_calendar.h"
-#include "transport.h"
 #include "bridge.h"
 #include "ui_dashboard.h"
 
@@ -53,7 +50,7 @@ void request_light_toggle(const char *entity_id)
     }
 }
 
-// Background task: WiFi + NTP + Weather (runs on core 0)
+// Background task: WiFi + NTP + Bridge polling (runs on core 0)
 static void network_task(void *param)
 {
     // Wait for LVGL to render first frame
@@ -81,57 +78,49 @@ static void network_task(void *param)
         ESP_LOGI(TAG, "NTP sync %s (year=%d)", tinfo.tm_year > 100 ? "OK" : "FAILED", tinfo.tm_year + 1900);
     }
 
-    // Tick-based scheduler: weather every 30min, HA calendar every 5min
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     const uint32_t TICK_MS = 10000;
-    const uint32_t TRANSPORT_UPDATE_MS = 60000;  // every 1 minute
-    uint32_t weather_elapsed   = WEATHER_UPDATE_INTERVAL_MS;  // trigger immediately
-    uint32_t ha_cal_elapsed    = HA_CAL_UPDATE_INTERVAL_MS;   // trigger immediately
-    uint32_t transport_elapsed = TRANSPORT_UPDATE_MS;          // trigger immediately
-    uint32_t bridge_elapsed    = BRIDGE_UPDATE_INTERVAL_MS;    // trigger immediately
+    uint32_t bridge_elapsed = BRIDGE_UPDATE_INTERVAL_MS; // trigger immediately
+
+    // Fetch today's calendar on first run
+    bool cal_initial = true;
 
     for (;;) {
-        if (weather_elapsed >= WEATHER_UPDATE_INTERVAL_MS) {
-            weather_fetch_and_update();
-            weather_elapsed = 0;
-        }
-
-        // Check for on-demand date request (from calendar click)
+        // On-demand calendar date request (from UI calendar tap)
         if (s_date_requested) {
             int y = s_req_year;
             int m = s_req_month;
             int d = s_req_day;
             s_date_requested = false;
-            ha_calendar_fetch_for_date(y, m, d);
-            ha_cal_elapsed = 0; // reset auto-refresh timer
-        } else if (ha_cal_elapsed >= HA_CAL_UPDATE_INTERVAL_MS) {
-            ha_calendar_fetch_and_update();
-            ha_cal_elapsed = 0;
+            bridge_fetch_calendar(y, m, d);
         }
 
-        if (transport_elapsed >= TRANSPORT_UPDATE_MS) {
-            transport_fetch_and_update();
-            transport_elapsed = 0;
-        }
-
-        // Check for light toggle request (from UI tap)
+        // On-demand light toggle (from UI tap)
         if (s_toggle_requested) {
             s_toggle_requested = false;
             bridge_toggle_light(s_toggle_entity);
         }
 
+        // Bridge polling — fetches health, tasks, news, sensors, lights, weather, transport
         if (bridge_elapsed >= BRIDGE_UPDATE_INTERVAL_MS) {
             bridge_fetch_and_update();
             bridge_elapsed = 0;
+
+            // Fetch today's calendar after first successful bridge update
+            if (cal_initial) {
+                time_t now;
+                time(&now);
+                struct tm t;
+                localtime_r(&now, &t);
+                bridge_fetch_calendar(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+                cal_initial = false;
+            }
         }
 
-        // Wait for notification (instant wake) or timeout after TICK_MS
+        // Wait for notification (instant wake on UI request) or timeout
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TICK_MS));
-        weather_elapsed   += TICK_MS;
-        ha_cal_elapsed    += TICK_MS;
-        transport_elapsed += TICK_MS;
-        bridge_elapsed    += TICK_MS;
+        bridge_elapsed += TICK_MS;
     }
 }
 

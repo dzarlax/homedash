@@ -1,9 +1,6 @@
 #include "ui_dashboard.h"
 #include "config.h"
 #include "wifi_manager.h"
-#include "weather.h"
-#include "ha_calendar.h"
-#include "transport.h"
 #include "bridge.h"
 #include "weather_icons.h"
 #include "lvgl.h"
@@ -181,22 +178,22 @@ static void timer_time_cb(lv_timer_t *timer)
 static void timer_weather_cb(lv_timer_t *timer)
 {
     (void)timer;
-    const weather_data_t *w = weather_get_data();
-    ui_dashboard_update_weather(w);
+    const bridge_data_t *d = bridge_get_data();
+    ui_dashboard_update_weather(&d->weather);
 }
 
 static void timer_ha_cal_cb(lv_timer_t *timer)
 {
     (void)timer;
-    const ha_cal_data_t *d = ha_calendar_get_data();
+    const bridge_cal_data_t *d = bridge_get_calendar_data();
     ui_dashboard_update_ha_calendar(d);
 }
 
 static void timer_transport_cb(lv_timer_t *timer)
 {
     (void)timer;
-    const transport_data_t *t = transport_get_data();
-    ui_dashboard_update_transport(t);
+    const bridge_data_t *d = bridge_get_data();
+    ui_dashboard_update_transport(&d->transport);
 }
 
 static void timer_bridge_cb(lv_timer_t *timer)
@@ -548,7 +545,25 @@ void ui_dashboard_create(void)
     ui_dashboard_update_time();
 }
 
-void ui_dashboard_update_weather(const weather_data_t *data)
+// Map WMO weather code to text (moved from weather.cpp)
+static const char *weather_code_to_text(int code)
+{
+    if (code == 0)                        return "Clear";
+    if (code >= 1 && code <= 3)           return "Cloudy";
+    if (code == 45 || code == 48)         return "Fog";
+    if (code >= 51 && code <= 55)         return "Drizzle";
+    if (code >= 56 && code <= 57)         return "Frzng Drz";
+    if (code >= 61 && code <= 65)         return "Rain";
+    if (code >= 66 && code <= 67)         return "Frzng Rain";
+    if (code >= 71 && code <= 75)         return "Snow";
+    if (code == 77)                       return "Snow Grn";
+    if (code >= 80 && code <= 82)         return "Showers";
+    if (code >= 85 && code <= 86)         return "Snow Shw";
+    if (code >= 95 && code <= 99)         return "Storm";
+    return "???";
+}
+
+void ui_dashboard_update_weather(const bridge_weather_t *data)
 {
     if (!data || !data->valid) return;
 
@@ -580,7 +595,7 @@ void ui_dashboard_update_weather(const weather_data_t *data)
     }
 }
 
-void ui_dashboard_update_ha_calendar(const ha_cal_data_t *data)
+void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
 {
     if (!data || !data->valid) {
         if (lbl_no_events) lv_obj_clear_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
@@ -625,7 +640,7 @@ void ui_dashboard_update_ha_calendar(const ha_cal_data_t *data)
         lv_obj_set_style_bg_opa(lbl_events[i], LV_OPA_TRANSP, 0);
 
         if (i < display_count) {
-            const ha_cal_event_t *ev = &data->events[i];
+            const bridge_cal_event_t *ev = &data->events[i];
             char buf[96];
             if (ev->all_day) {
                 snprintf(buf, sizeof(buf), "Весь день    %s", ev->summary);
@@ -657,7 +672,7 @@ void ui_dashboard_update_ha_calendar(const ha_cal_data_t *data)
         bool found = false;
 
         for (int i = 0; i < display_count; i++) {
-            const ha_cal_event_t *ev = &data->events[i];
+            const bridge_cal_event_t *ev = &data->events[i];
             if (ev->all_day) continue;
 
             int ev_start = ev->start_hour * 60 + ev->start_min;
@@ -715,7 +730,7 @@ static const char *time_color(int mins)
     return "F44336";                  // red — far away
 }
 
-static void format_stop_line(char *buf, int buf_size, const transport_stop_t *stop)
+static void format_stop_line(char *buf, int buf_size, const bridge_transport_stop_t *stop)
 {
     if (stop->count == 0) {
         snprintf(buf, buf_size, "нет данных");
@@ -723,7 +738,7 @@ static void format_stop_line(char *buf, int buf_size, const transport_stop_t *st
     }
     int pos = 0;
     for (int i = 0; i < stop->count && pos < buf_size - 1; i++) {
-        const transport_vehicle_t *v = &stop->vehicles[i];
+        const bridge_transport_vehicle_t *v = &stop->vehicles[i];
         int mins = (v->seconds_left + 30) / 60;
         if (mins < 1) mins = 1;
         int written;
@@ -740,19 +755,19 @@ static void format_stop_line(char *buf, int buf_size, const transport_stop_t *st
     }
 }
 
-void ui_dashboard_update_transport(const transport_data_t *data)
+void ui_dashboard_update_transport(const bridge_transport_t *data)
 {
     if (!data || !data->valid) return;
 
     if (lbl_transport_out) {
         char buf[256];
-        format_stop_line(buf, sizeof(buf), &data->stops[TRANSPORT_STOP_OUT]);
+        format_stop_line(buf, sizeof(buf), &data->stops[0]);
         lv_label_set_text(lbl_transport_out, buf);
     }
 
     if (lbl_transport_in) {
         char buf[256];
-        format_stop_line(buf, sizeof(buf), &data->stops[TRANSPORT_STOP_IN]);
+        format_stop_line(buf, sizeof(buf), &data->stops[1]);
         lv_label_set_text(lbl_transport_in, buf);
     }
 }

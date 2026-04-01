@@ -23,7 +23,7 @@ static void utf8_strncpy(char *dst, const char *src, size_t dst_size)
         if (c >= 0xF0)      seq_len = 4;
         else if (c >= 0xE0) seq_len = 3;
         else if (c >= 0xC0) seq_len = 2;
-        if (i + seq_len > max) break;   // not enough room for full char
+        if (i + seq_len > max) break;
         i += seq_len;
     }
     memcpy(dst, src, i);
@@ -31,6 +31,7 @@ static void utf8_strncpy(char *dst, const char *src, size_t dst_size)
 }
 
 static bridge_data_t s_data = {};
+static bridge_cal_data_t s_cal_data = {};
 static char s_last_error[64] = "Waiting...";
 
 typedef struct {
@@ -62,6 +63,34 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
         break;
     }
     return ESP_OK;
+}
+
+// Allocate and perform HTTP GET, return response buffer. Caller must free buf->data.
+static bool http_get(const char *url, http_buf_t *buf)
+{
+    buf->cap = 4096;
+    buf->len = 0;
+    buf->data = (char *)malloc(buf->cap);
+    if (!buf->data) return false;
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.event_handler = http_event_handler;
+    config.user_data = buf;
+    config.timeout_ms = 15000;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err != ESP_OK || status != 200) {
+        free(buf->data);
+        buf->data = NULL;
+        return false;
+    }
+    return true;
 }
 
 static void parse_health(cJSON *obj)
@@ -216,6 +245,74 @@ static void parse_lights(cJSON *arr)
     s_data.lights_valid = true;
 }
 
+static void parse_weather(cJSON *obj)
+{
+    s_data.weather.valid = false;
+    if (!obj || !cJSON_IsObject(obj)) return;
+
+    cJSON *v;
+    v = cJSON_GetObjectItem(obj, "temp"); if (v) s_data.weather.temp = (float)v->valuedouble;
+    v = cJSON_GetObjectItem(obj, "hum");  if (v) s_data.weather.humidity = (float)v->valuedouble;
+    v = cJSON_GetObjectItem(obj, "wind"); if (v) s_data.weather.wind_speed = (float)v->valuedouble;
+    v = cJSON_GetObjectItem(obj, "wc");   if (v) s_data.weather.weather_code = v->valueint;
+
+    s_data.weather.daily_count = 0;
+    cJSON *daily = cJSON_GetObjectItem(obj, "daily");
+    if (daily && cJSON_IsArray(daily)) {
+        int n = cJSON_GetArraySize(daily);
+        if (n > BRIDGE_FORECAST_DAYS) n = BRIDGE_FORECAST_DAYS;
+        for (int i = 0; i < n; i++) {
+            cJSON *d = cJSON_GetArrayItem(daily, i);
+            if (!d) continue;
+            bridge_weather_daily_t *wd = &s_data.weather.daily[i];
+            v = cJSON_GetObjectItem(d, "tmax"); if (v) wd->temp_max = (float)v->valuedouble;
+            v = cJSON_GetObjectItem(d, "tmin"); if (v) wd->temp_min = (float)v->valuedouble;
+            v = cJSON_GetObjectItem(d, "wc");   if (v) wd->weather_code = v->valueint;
+            s_data.weather.daily_count++;
+        }
+    }
+    s_data.weather.valid = true;
+}
+
+static void parse_transport(cJSON *arr)
+{
+    s_data.transport.valid = false;
+    if (!arr || !cJSON_IsArray(arr)) return;
+
+    int n = cJSON_GetArraySize(arr);
+    if (n > BRIDGE_TRANSPORT_STOPS) n = BRIDGE_TRANSPORT_STOPS;
+
+    for (int i = 0; i < n; i++) {
+        cJSON *stop = cJSON_GetArrayItem(arr, i);
+        if (!stop) continue;
+
+        bridge_transport_stop_t *ts = &s_data.transport.stops[i];
+        ts->count = 0;
+
+        cJSON *vehicles = cJSON_GetObjectItem(stop, "vehicles");
+        if (!vehicles || !cJSON_IsArray(vehicles)) continue;
+
+        int vc = cJSON_GetArraySize(vehicles);
+        if (vc > BRIDGE_TRANSPORT_VEHICLES) vc = BRIDGE_TRANSPORT_VEHICLES;
+
+        for (int j = 0; j < vc; j++) {
+            cJSON *v = cJSON_GetArrayItem(vehicles, j);
+            if (!v) continue;
+            bridge_transport_vehicle_t *tv = &ts->vehicles[ts->count];
+            memset(tv, 0, sizeof(*tv));
+
+            cJSON *ln = cJSON_GetObjectItem(v, "ln");
+            if (ln && cJSON_IsString(ln)) strncpy(tv->line_number, ln->valuestring, sizeof(tv->line_number) - 1);
+            cJSON *sl = cJSON_GetObjectItem(v, "sl");
+            if (sl) tv->seconds_left = sl->valueint;
+            cJSON *sb = cJSON_GetObjectItem(v, "sb");
+            if (sb) tv->stations_between = sb->valueint;
+            ts->count++;
+        }
+    }
+    s_data.transport.valid = true;
+}
+
 void bridge_fetch_and_update(void)
 {
     if (!wifi_is_connected()) {
@@ -225,32 +322,12 @@ void bridge_fetch_and_update(void)
 
     snprintf(s_last_error, sizeof(s_last_error), "Fetching...");
 
-    http_buf_t resp = {};
-    resp.cap = 4096;
-    resp.data = (char *)malloc(resp.cap);
-    if (!resp.data) {
-        snprintf(s_last_error, sizeof(s_last_error), "OOM");
-        return;
-    }
-
     char url[256];
     snprintf(url, sizeof(url), "%s/api/dashboard?key=%s", BRIDGE_URL, BRIDGE_API_KEY);
 
-    esp_http_client_config_t config = {};
-    config.url = url;
-    config.event_handler = http_event_handler;
-    config.user_data = &resp;
-    config.timeout_ms = 15000;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    if (err != ESP_OK || status != 200) {
-        free(resp.data);
-        snprintf(s_last_error, sizeof(s_last_error), "HTTP %d", status);
+    http_buf_t resp = {};
+    if (!http_get(url, &resp)) {
+        snprintf(s_last_error, sizeof(s_last_error), "HTTP error");
         return;
     }
 
@@ -269,6 +346,8 @@ void bridge_fetch_and_update(void)
     parse_news(cJSON_GetObjectItem(root, "news"));
     parse_sensors(cJSON_GetObjectItem(root, "sensors"));
     parse_lights(cJSON_GetObjectItem(root, "lights"));
+    parse_weather(cJSON_GetObjectItem(root, "weather"));
+    parse_transport(cJSON_GetObjectItem(root, "transport"));
 
     cJSON_Delete(root);
     snprintf(s_last_error, sizeof(s_last_error), "OK");
@@ -277,6 +356,11 @@ void bridge_fetch_and_update(void)
 const bridge_data_t *bridge_get_data(void)
 {
     return &s_data;
+}
+
+const bridge_cal_data_t *bridge_get_calendar_data(void)
+{
+    return &s_cal_data;
 }
 
 const char *bridge_get_last_error(void)
@@ -294,9 +378,17 @@ void bridge_toggle_light(const char *entity_id)
     char body[128];
     snprintf(body, sizeof(body), "{\"entity_id\":\"%s\",\"action\":\"toggle\"}", entity_id);
 
+    http_buf_t resp = {};
+    resp.cap = 2048;
+    resp.len = 0;
+    resp.data = (char *)malloc(resp.cap);
+    if (!resp.data) return;
+
     esp_http_client_config_t config = {};
     config.url = url;
     config.method = HTTP_METHOD_POST;
+    config.event_handler = http_event_handler;
+    config.user_data = &resp;
     config.timeout_ms = 10000;
     config.crt_bundle_attach = esp_crt_bundle_attach;
 
@@ -308,11 +400,72 @@ void bridge_toggle_light(const char *entity_id)
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
-    if (err == ESP_OK && status == 200) {
+    if (err == ESP_OK && status == 200 && resp.data) {
         ESP_LOGI(TAG, "Toggle %s OK", entity_id);
-        // Refresh data immediately
-        bridge_fetch_and_update();
+        // Parse fresh lights from response
+        cJSON *root = cJSON_Parse(resp.data);
+        if (root) {
+            cJSON *lights = cJSON_GetObjectItem(root, "lights");
+            if (lights) {
+                parse_lights(lights);
+            }
+            cJSON_Delete(root);
+        }
     } else {
         ESP_LOGE(TAG, "Toggle %s failed: HTTP %d", entity_id, status);
     }
+    free(resp.data);
+}
+
+void bridge_fetch_calendar(int year, int month, int day)
+{
+    if (!wifi_is_connected()) return;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/calendar?date=%04d-%02d-%02d&key=%s",
+             BRIDGE_URL, year, month, day, BRIDGE_API_KEY);
+
+    http_buf_t resp = {};
+    if (!http_get(url, &resp)) {
+        ESP_LOGE(TAG, "Calendar fetch failed");
+        return;
+    }
+
+    cJSON *root = cJSON_Parse(resp.data);
+    free(resp.data);
+    if (!root || !cJSON_IsArray(root)) {
+        if (root) cJSON_Delete(root);
+        return;
+    }
+
+    s_cal_data.count = 0;
+    s_cal_data.year = year;
+    s_cal_data.month = month;
+    s_cal_data.day = day;
+
+    int n = cJSON_GetArraySize(root);
+    if (n > BRIDGE_CAL_MAX_EVENTS) n = BRIDGE_CAL_MAX_EVENTS;
+
+    for (int i = 0; i < n; i++) {
+        cJSON *item = cJSON_GetArrayItem(root, i);
+        if (!item) continue;
+
+        bridge_cal_event_t *ev = &s_cal_data.events[s_cal_data.count];
+        memset(ev, 0, sizeof(*ev));
+
+        cJSON *s = cJSON_GetObjectItem(item, "s");
+        if (s && cJSON_IsString(s)) {
+            utf8_strncpy(ev->summary, s->valuestring, sizeof(ev->summary));
+        }
+        cJSON *sh = cJSON_GetObjectItem(item, "sh"); if (sh) ev->start_hour = sh->valueint;
+        cJSON *sm = cJSON_GetObjectItem(item, "sm"); if (sm) ev->start_min = sm->valueint;
+        cJSON *eh = cJSON_GetObjectItem(item, "eh"); if (eh) ev->end_hour = eh->valueint;
+        cJSON *em = cJSON_GetObjectItem(item, "em"); if (em) ev->end_min = em->valueint;
+        cJSON *ad = cJSON_GetObjectItem(item, "ad"); if (ad) ev->all_day = cJSON_IsTrue(ad);
+        cJSON *ci = cJSON_GetObjectItem(item, "ci"); if (ci) ev->cal_idx = ci->valueint;
+
+        s_cal_data.count++;
+    }
+    s_cal_data.valid = true;
+    cJSON_Delete(root);
 }

@@ -8,6 +8,11 @@
 #define BRIDGE_MAX_SENSORS 10
 #define BRIDGE_MAX_LIGHTS  8
 
+#define BRIDGE_FORECAST_DAYS      5
+#define BRIDGE_TRANSPORT_STOPS    2
+#define BRIDGE_TRANSPORT_VEHICLES 5
+#define BRIDGE_CAL_MAX_EVENTS     20
+
 struct bridge_health_t {
     int  steps;
     int  steps_prev;
@@ -48,6 +53,58 @@ struct bridge_light_t {
     int  brightness;   // 0-255
 };
 
+// Weather
+struct bridge_weather_daily_t {
+    float temp_max;
+    float temp_min;
+    int   weather_code;
+};
+
+struct bridge_weather_t {
+    float temp;
+    float humidity;
+    float wind_speed;
+    int   weather_code;
+    bridge_weather_daily_t daily[BRIDGE_FORECAST_DAYS];
+    int   daily_count;
+    bool  valid;
+};
+
+// Transport
+struct bridge_transport_vehicle_t {
+    char line_number[8];
+    int  seconds_left;
+    int  stations_between;
+};
+
+struct bridge_transport_stop_t {
+    bridge_transport_vehicle_t vehicles[BRIDGE_TRANSPORT_VEHICLES];
+    int count;
+};
+
+struct bridge_transport_t {
+    bridge_transport_stop_t stops[BRIDGE_TRANSPORT_STOPS];
+    bool valid;
+};
+
+// Calendar
+struct bridge_cal_event_t {
+    char    summary[64];
+    uint8_t start_hour;
+    uint8_t start_min;
+    uint8_t end_hour;
+    uint8_t end_min;
+    bool    all_day;
+    uint8_t cal_idx;
+};
+
+struct bridge_cal_data_t {
+    bridge_cal_event_t events[BRIDGE_CAL_MAX_EVENTS];
+    int   count;
+    bool  valid;
+    int   year, month, day;
+};
+
 struct bridge_data_t {
     uint32_t ts;
 
@@ -68,9 +125,14 @@ struct bridge_data_t {
     bridge_light_t lights[BRIDGE_MAX_LIGHTS];
     int light_count;
     bool lights_valid;
+
+    bridge_weather_t   weather;
+    bridge_transport_t transport;
 };
 
 void bridge_fetch_and_update(void);
 void bridge_toggle_light(const char *entity_id);
+void bridge_fetch_calendar(int year, int month, int day);
 const bridge_data_t *bridge_get_data(void);
+const bridge_cal_data_t *bridge_get_calendar_data(void);
 const char *bridge_get_last_error(void);
