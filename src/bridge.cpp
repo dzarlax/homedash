@@ -11,6 +11,25 @@
 
 static const char *TAG = "bridge";
 
+// Copy up to dst_size-1 bytes from src, but never split a multi-byte UTF-8 char.
+static void utf8_strncpy(char *dst, const char *src, size_t dst_size)
+{
+    if (!dst || !src || dst_size == 0) return;
+    size_t max = dst_size - 1;
+    size_t i = 0;
+    while (i < max && src[i]) {
+        unsigned char c = (unsigned char)src[i];
+        int seq_len = 1;
+        if (c >= 0xF0)      seq_len = 4;
+        else if (c >= 0xE0) seq_len = 3;
+        else if (c >= 0xC0) seq_len = 2;
+        if (i + seq_len > max) break;   // not enough room for full char
+        i += seq_len;
+    }
+    memcpy(dst, src, i);
+    dst[i] = '\0';
+}
+
 static bridge_data_t s_data = {};
 static char s_last_error[64] = "Waiting...";
 
@@ -83,7 +102,7 @@ static void parse_tasks(cJSON *arr)
 
         cJSON *title = cJSON_GetObjectItem(item, "t");
         if (title && cJSON_IsString(title)) {
-            strncpy(t->title, title->valuestring, sizeof(t->title) - 1);
+            utf8_strncpy(t->title, title->valuestring, sizeof(t->title));
         }
         cJSON *prio = cJSON_GetObjectItem(item, "p");
         if (prio) t->priority = prio->valueint;
@@ -115,7 +134,7 @@ static void parse_news(cJSON *arr)
 
         cJSON *title = cJSON_GetObjectItem(item, "t");
         if (title && cJSON_IsString(title)) {
-            strncpy(nw->title, title->valuestring, sizeof(nw->title) - 1);
+            utf8_strncpy(nw->title, title->valuestring, sizeof(nw->title));
         }
         cJSON *cat = cJSON_GetObjectItem(item, "c");
         if (cat && cJSON_IsString(cat)) {

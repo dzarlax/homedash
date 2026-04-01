@@ -24,13 +24,13 @@ struct bridge_health_t {
 };
 
 struct bridge_task_t {
-    char title[80];
+    char title[160];
     int  priority;
     char due[12];   // "2026-03-29"
 };
 
 struct bridge_news_t {
-    char title[120];
+    char title[256];
     char category[24];
     int  hours_ago;
 };
