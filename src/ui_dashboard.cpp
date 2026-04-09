@@ -1,7 +1,9 @@
 #include "ui_dashboard.h"
+#include "ui_agentdeck.h"
 #include "config.h"
 #include "wifi_manager.h"
 #include "bridge.h"
+#include "agentdeck.h"
 #include "weather_icons.h"
 #include "lvgl.h"
 #include "esp_timer.h"
@@ -10,6 +12,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <cstring>
 
 // Declared in main.cpp
 extern void request_calendar_date(int year, int month, int day);
@@ -119,7 +122,7 @@ static lv_obj_t *room_sensor_val_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 static lv_obj_t *room_sensor_name_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 
 // Page indicator dots
-static lv_obj_t *dot_indicators[3] = {};
+static lv_obj_t *dot_indicators[4] = {};
 
 #define COLOR_NOW lv_color_hex(0xFF4444)  // red "now" line
 
@@ -149,9 +152,7 @@ static const char *MONTH_NAMES[] = {"Янв", "Фев", "Мар", "Апр", "М�
 
 // Calendar event colors (per calendar index)
 #define NUM_CAL_COLORS 6
-static const lv_color_t CAL_COLORS[NUM_CAL_COLORS] = {
-    {.full = 0x53A8},  // placeholder — initialized at runtime
-};
+static lv_color_t CAL_COLORS[NUM_CAL_COLORS];  // initialized at runtime via cal_color()
 static lv_color_t s_cal_colors[NUM_CAL_COLORS];
 static bool s_cal_colors_init = false;
 
@@ -205,9 +206,16 @@ static void timer_bridge_cb(lv_timer_t *timer)
     ui_dashboard_update_ha(d);
 }
 
+static void timer_agentdeck_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    const agentdeck_data_t *d = agentdeck_get_data();
+    ui_agentdeck_update(d);
+}
+
 static void update_dot_indicators(int active)
 {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         if (dot_indicators[i]) {
             lv_obj_set_style_bg_opa(dot_indicators[i],
                 (i == active) ? LV_OPA_COVER : LV_OPA_50, 0);
@@ -217,8 +225,8 @@ static void update_dot_indicators(int active)
 
 static void tileview_changed_cb(lv_event_t *e)
 {
-    lv_obj_t *tv = lv_event_get_target(e);
-    lv_obj_t *tile = lv_tileview_get_tile_act(tv);
+    lv_obj_t *tv = (lv_obj_t *)lv_event_get_target(e);
+    lv_obj_t *tile = (lv_obj_t *)lv_tileview_get_tile_active(tv);
     int col = lv_obj_get_x(tile) / 1024;
     update_dot_indicators(col);
 }
@@ -253,7 +261,7 @@ static void calendar_click_cb(lv_event_t *e)
     if (code != LV_EVENT_VALUE_CHANGED) return;
 
     lv_calendar_date_t date;
-    if (lv_calendar_get_pressed_date(calendar, &date) != LV_RES_OK) return;
+    if (lv_calendar_get_pressed_date(calendar, &date) != LV_RESULT_OK) return;
 
     sel_year  = date.year;
     sel_month = date.month;
@@ -298,16 +306,17 @@ void ui_dashboard_create(void)
     lv_obj_set_style_bg_opa(tileview, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(tileview, tileview_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    lv_obj_t *tile1 = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_RIGHT);
-    lv_obj_t *tile2 = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
-    lv_obj_t *tile3 = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_LEFT);
+    lv_obj_t *tile1 = lv_tileview_add_tile(tileview, 0, 0, (lv_dir_t)LV_DIR_RIGHT);
+    lv_obj_t *tile2 = lv_tileview_add_tile(tileview, 1, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
+    lv_obj_t *tile3 = lv_tileview_add_tile(tileview, 2, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
+    lv_obj_t *tile4 = lv_tileview_add_tile(tileview, 3, 0, (lv_dir_t)LV_DIR_LEFT);
 
     // Page indicator dots (bottom center, above bottom bar)
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         dot_indicators[i] = lv_obj_create(scr);
         lv_obj_remove_style_all(dot_indicators[i]);
         lv_obj_set_size(dot_indicators[i], 8, 8);
-        lv_obj_set_pos(dot_indicators[i], 496 + i * 16, 572);
+        lv_obj_set_pos(dot_indicators[i], 488 + i * 16, 572);
         lv_obj_set_style_bg_color(dot_indicators[i], COLOR_TEXT, 0);
         lv_obj_set_style_bg_opa(dot_indicators[i], (i == 0) ? LV_OPA_COVER : LV_OPA_50, 0);
         lv_obj_set_style_radius(dot_indicators[i], LV_RADIUS_CIRCLE, 0);
@@ -367,7 +376,10 @@ void ui_dashboard_create(void)
     weather_canvas = lv_canvas_create(cal_panel);
     canvas_buf = (lv_color_t *)heap_caps_malloc(ICON_SIZE * ICON_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
     if (canvas_buf) {
-        lv_canvas_set_buffer(weather_canvas, canvas_buf, ICON_SIZE, ICON_SIZE, LV_IMG_CF_TRUE_COLOR);
+        static lv_draw_buf_t weather_draw_buf;
+        lv_draw_buf_init(&weather_draw_buf, ICON_SIZE, ICON_SIZE, LV_COLOR_FORMAT_NATIVE,
+                         0, canvas_buf, ICON_SIZE * ICON_SIZE * sizeof(lv_color_t));
+        lv_canvas_set_draw_buf(weather_canvas, &weather_draw_buf);
         lv_canvas_fill_bg(weather_canvas, COLOR_PANEL, LV_OPA_COVER);
     }
     lv_obj_add_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
@@ -487,13 +499,11 @@ void ui_dashboard_create(void)
     lv_label_set_text(lbl_out_dir, LV_SYMBOL_RIGHT " Область");
     lv_obj_set_pos(lbl_out_dir, 20, 375);
 
-    lbl_transport_out = lv_label_create(right_panel);
+    lbl_transport_out = lv_spangroup_create(right_panel);
     lv_obj_set_style_text_color(lbl_transport_out, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(lbl_transport_out, &font_montserrat_16_cyr, 0);
     lv_obj_set_width(lbl_transport_out, 440);
-    lv_label_set_long_mode(lbl_transport_out, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_label_set_recolor(lbl_transport_out, true);
-    lv_label_set_text(lbl_transport_out, "---");
+    lv_spangroup_set_overflow(lbl_transport_out, LV_SPAN_OVERFLOW_ELLIPSIS);
     lv_obj_set_pos(lbl_transport_out, 130, 373);
 
     // Inbound (stop 90)
@@ -503,13 +513,11 @@ void ui_dashboard_create(void)
     lv_label_set_text(lbl_in_dir, LV_SYMBOL_LEFT " Центр");
     lv_obj_set_pos(lbl_in_dir, 20, 405);
 
-    lbl_transport_in = lv_label_create(right_panel);
+    lbl_transport_in = lv_spangroup_create(right_panel);
     lv_obj_set_style_text_color(lbl_transport_in, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(lbl_transport_in, &font_montserrat_16_cyr, 0);
     lv_obj_set_width(lbl_transport_in, 440);
-    lv_label_set_long_mode(lbl_transport_in, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_label_set_recolor(lbl_transport_in, true);
-    lv_label_set_text(lbl_transport_in, "---");
+    lv_spangroup_set_overflow(lbl_transport_in, LV_SPAN_OVERFLOW_ELLIPSIS);
     lv_obj_set_pos(lbl_transport_in, 130, 403);
 
     // ---- BOTTOM BAR (20px) ----
@@ -535,12 +543,16 @@ void ui_dashboard_create(void)
     // ===== PAGE 3: HA Control =====
     create_page3(tile3);
 
+    // ===== PAGE 4: AgentDeck =====
+    ui_agentdeck_create(tile4);
+
     // Timers
     lv_timer_create(timer_time_cb, 5000, NULL);
     lv_timer_create(timer_weather_cb, 10000, NULL);
     lv_timer_create(timer_ha_cal_cb, 5000, NULL);
     lv_timer_create(timer_transport_cb, 5000, NULL);
     lv_timer_create(timer_bridge_cb, 5000, NULL);
+    lv_timer_create(timer_agentdeck_cb, 2000, NULL);
 
     // Initial update
     ui_dashboard_update_time();
@@ -720,40 +732,58 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     }
 }
 
-// Recolor: green (close) → yellow → orange → red (far)
-static const char *time_color(int mins)
+static lv_color_t time_color(int mins)
 {
-    if (mins <= 2)  return "4CAF50";  // green — arriving now
-    if (mins <= 5)  return "8BC34A";  // light green
-    if (mins <= 8)  return "FFC107";  // yellow
-    if (mins <= 12) return "FF9800";  // orange
-    if (mins <= 18) return "FF5722";  // deep orange
-    return "F44336";                  // red — far away
+    if (mins <= 2)  return lv_color_hex(0x4CAF50);  // green — arriving now
+    if (mins <= 5)  return lv_color_hex(0x8BC34A);  // light green
+    if (mins <= 8)  return lv_color_hex(0xFFC107);  // yellow
+    if (mins <= 12) return lv_color_hex(0xFF9800);  // orange
+    if (mins <= 18) return lv_color_hex(0xFF5722);  // deep orange
+    return lv_color_hex(0xF44336);                   // red — far away
 }
 
-static void format_stop_line(char *buf, int buf_size, const bridge_transport_stop_t *stop)
+static void fill_stop_spans(lv_obj_t *spangroup, const bridge_transport_stop_t *stop)
 {
+    // Clear existing spans
+    while (lv_spangroup_get_span_count(spangroup) > 0) {
+        lv_spangroup_delete_span(spangroup, lv_spangroup_get_child(spangroup, 0));
+    }
+
     if (stop->count == 0) {
-        snprintf(buf, buf_size, "нет данных");
+        lv_span_t *s = lv_spangroup_new_span(spangroup);
+        lv_span_set_text(s, "нет данных");
+        lv_spangroup_refr_mode(spangroup);
         return;
     }
-    int pos = 0;
-    for (int i = 0; i < stop->count && pos < buf_size - 1; i++) {
+
+    for (int i = 0; i < stop->count; i++) {
         const bridge_transport_vehicle_t *v = &stop->vehicles[i];
         int mins = (v->seconds_left + 30) / 60;
         if (mins < 1) mins = 1;
-        int written;
+
+        // Separator
         if (i > 0) {
-            written = snprintf(buf + pos, buf_size - pos,
-                "   #53A8E2 %s# #%s %dmin#",
-                v->line_number, time_color(mins), mins);
-        } else {
-            written = snprintf(buf + pos, buf_size - pos,
-                "#53A8E2 %s# #%s %dmin#",
-                v->line_number, time_color(mins), mins);
+            lv_span_t *sep = lv_spangroup_new_span(spangroup);
+            lv_span_set_text(sep, "   ");
         }
-        if (written > 0) pos += written;
+
+        // Route number (blue)
+        lv_span_t *route = lv_spangroup_new_span(spangroup);
+        lv_span_set_text(route, v->line_number);
+        lv_style_set_text_color(lv_span_get_style(route), lv_color_hex(0x53A8E2));
+
+        // Colon
+        lv_span_t *colon = lv_spangroup_new_span(spangroup);
+        lv_span_set_text(colon, ":");
+
+        // Time (color-coded)
+        char time_buf[16];
+        snprintf(time_buf, sizeof(time_buf), "%dmin", mins);
+        lv_span_t *time_span = lv_spangroup_new_span(spangroup);
+        lv_span_set_text(time_span, time_buf);
+        lv_style_set_text_color(lv_span_get_style(time_span), time_color(mins));
     }
+    lv_spangroup_refr_mode(spangroup);
 }
 
 void ui_dashboard_update_transport(const bridge_transport_t *data)
@@ -761,15 +791,11 @@ void ui_dashboard_update_transport(const bridge_transport_t *data)
     if (!data || !data->valid) return;
 
     if (lbl_transport_out) {
-        char buf[256];
-        format_stop_line(buf, sizeof(buf), &data->stops[0]);
-        lv_label_set_text(lbl_transport_out, buf);
+        fill_stop_spans(lbl_transport_out, &data->stops[0]);
     }
 
     if (lbl_transport_in) {
-        char buf[256];
-        format_stop_line(buf, sizeof(buf), &data->stops[1]);
-        lv_label_set_text(lbl_transport_in, buf);
+        fill_stop_spans(lbl_transport_in, &data->stops[1]);
     }
 }
 
@@ -808,9 +834,10 @@ void ui_dashboard_update_time(void)
     // Update bottom bar
     if (lbl_bottom) {
         char buf[128];
-        snprintf(buf, sizeof(buf), "WiFi: %s  Heap: %.1fKB  Bridge: %s  v%s",
-                 wifi_is_connected() ? "OK" : "---",
+        snprintf(buf, sizeof(buf), "WiFi:%s H:%.0f/%.0fKB Br:%s v%s",
+                 wifi_is_connected() ? "OK" : "--",
                  esp_get_free_heap_size() / 1024.0f,
+                 esp_get_free_internal_heap_size() / 1024.0f,
                  bridge_get_last_error(),
                  FW_VERSION);
         lv_label_set_text(lbl_bottom, buf);
@@ -1159,10 +1186,10 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
             if (lbl_no_news) lv_obj_add_flag(lbl_no_news, LV_OBJ_FLAG_HIDDEN);
         }
 
-        // Category colors
+        // Category colors (RGB565 via lv_color_hex)
         static const lv_color_t cat_colors[] = {
-            {.full = 0x53A8}, {.full = 0x66BB}, {.full = 0xFFA7},
-            {.full = 0xAB47}, {.full = 0xEF53}
+            lv_color_hex(0x5BC0EB), lv_color_hex(0x66BB6A), lv_color_hex(0xFFA726),
+            lv_color_hex(0xAB47BC), lv_color_hex(0xEF5350)
         };
 
         for (int i = 0; i < MAX_NEWS_LINES; i++) {

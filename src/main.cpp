@@ -15,6 +15,7 @@
 #include "wifi_manager.h"
 #include "bridge.h"
 #include "ota.h"
+#include "agentdeck.h"
 #include "ui_dashboard.h"
 
 static const char *TAG = "main";
@@ -105,6 +106,9 @@ static void network_task(void *param)
 
     vTaskDelay(pdMS_TO_TICKS(1000));
 
+    // AgentDeck WebSocket (LAN discovery via mDNS)
+    agentdeck_init();
+
     const uint32_t TICK_MS = 10000;
     uint32_t bridge_elapsed = BRIDGE_UPDATE_INTERVAL_MS; // trigger immediately
     uint32_t ota_elapsed = OTA_CHECK_INTERVAL_MS;        // trigger immediately
@@ -162,6 +166,9 @@ static void network_task(void *param)
             ota_elapsed = 0;
         }
 
+        // AgentDeck: process outgoing + reconnect polling
+        agentdeck_poll();
+
         // Wait for notification (instant wake on UI request) or timeout
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TICK_MS));
         bridge_elapsed += TICK_MS;
@@ -200,5 +207,5 @@ extern "C" void app_main(void)
     lvgl_port_task_start();
 
     // 4. Network task on core 0
-    xTaskCreatePinnedToCore(network_task, "network", 16 * 1024, NULL, 1, &s_network_task_handle, 0);
+    xTaskCreatePinnedToCore(network_task, "network", 32 * 1024, NULL, 1, &s_network_task_handle, 0);
 }

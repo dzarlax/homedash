@@ -12,66 +12,67 @@ static SemaphoreHandle_t lvgl_mux;
 static TaskHandle_t lvgl_task_handle = NULL;
 static bool lvgl_task_running = false;
 
+/* ---------------------------------------------------------------
+ * Flush callbacks — LVGL 9 API: (lv_display_t*, area, px_map)
+ * --------------------------------------------------------------- */
+
 #if LVGL_PORT_AVOID_TEAR_ENABLE && LVGL_PORT_DIRECT_MODE && (EXAMPLE_LVGL_PORT_ROTATION_DEGREE == 0)
 
-static void flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
+static void flush_callback(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-    esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t) drv->user_data;
-    const int offsetx1 = area->x1;
-    const int offsetx2 = area->x2;
-    const int offsety1 = area->y1;
-    const int offsety2 = area->y2;
+    esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t)lv_display_get_user_data(disp);
 
-    if (lv_disp_flush_is_last(drv)) {
-        esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1, offsetx2 + 1, offsety2 + 1, color_map);
+    if (lv_display_flush_is_last(disp)) {
+        esp_lcd_panel_draw_bitmap(panel_handle,
+                                  area->x1, area->y1,
+                                  area->x2 + 1, area->y2 + 1,
+                                  px_map);
         ulTaskNotifyValueClear(NULL, ULONG_MAX);
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     }
-    lv_disp_flush_ready(drv);
+    lv_display_flush_ready(disp);
 }
 
 #elif LVGL_PORT_AVOID_TEAR_ENABLE && LVGL_PORT_FULL_REFRESH && (LVGL_PORT_LCD_RGB_BUFFER_NUMS == 2)
 
-static void flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
+static void flush_callback(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-    esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t) drv->user_data;
-    const int offsetx1 = area->x1;
-    const int offsetx2 = area->x2;
-    const int offsety1 = area->y1;
-    const int offsety2 = area->y2;
-    esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1, offsetx2 + 1, offsety2 + 1, color_map);
+    esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t)lv_display_get_user_data(disp);
+    esp_lcd_panel_draw_bitmap(panel_handle,
+                              area->x1, area->y1,
+                              area->x2 + 1, area->y2 + 1,
+                              px_map);
     ulTaskNotifyValueClear(NULL, ULONG_MAX);
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    lv_disp_flush_ready(drv);
+    lv_display_flush_ready(disp);
 }
 
 #else
 
-static void flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
+static void flush_callback(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-    esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t) drv->user_data;
-    const int offsetx1 = area->x1;
-    const int offsetx2 = area->x2;
-    const int offsety1 = area->y1;
-    const int offsety2 = area->y2;
-    esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1, offsetx2 + 1, offsety2 + 1, color_map);
-    lv_disp_flush_ready(drv);
+    esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t)lv_display_get_user_data(disp);
+    esp_lcd_panel_draw_bitmap(panel_handle,
+                              area->x1, area->y1,
+                              area->x2 + 1, area->y2 + 1,
+                              px_map);
+    lv_display_flush_ready(disp);
 }
 
 #endif
 
-static lv_disp_t *display_init(esp_lcd_panel_handle_t panel_handle)
+/* ---------------------------------------------------------------
+ * Display init — LVGL 9 API
+ * --------------------------------------------------------------- */
+static lv_display_t *display_init(esp_lcd_panel_handle_t panel_handle)
 {
     assert(panel_handle);
 
-    static lv_disp_draw_buf_t disp_buf = { 0 };
-    static lv_disp_drv_t disp_drv = { 0 };
-
     void *buf1 = NULL;
     void *buf2 = NULL;
-    int buffer_size = 0;
+    size_t buffer_size = 0;
 
-    ESP_LOGD(TAG, "Malloc memory for LVGL buffer");
+    ESP_LOGD(TAG, "Allocating LVGL framebuffers");
 #if LVGL_PORT_AVOID_TEAR_ENABLE
     buffer_size = LVGL_PORT_H_RES * LVGL_PORT_V_RES;
     ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panel_handle, 2, &buf1, &buf2));
@@ -79,28 +80,38 @@ static lv_disp_t *display_init(esp_lcd_panel_handle_t panel_handle)
     buffer_size = LVGL_PORT_H_RES * LVGL_PORT_BUFFER_HEIGHT;
     buf1 = heap_caps_malloc(buffer_size * sizeof(lv_color_t), LVGL_PORT_BUFFER_MALLOC_CAPS);
     assert(buf1);
-    ESP_LOGI(TAG, "LVGL buffer size: %dKB", buffer_size * sizeof(lv_color_t) / 1024);
+    ESP_LOGI(TAG, "LVGL buffer size: %uKB", (unsigned)(buffer_size * sizeof(lv_color_t) / 1024));
 #endif
 
-    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, buffer_size);
+    lv_display_t *disp = lv_display_create(LVGL_PORT_H_RES, LVGL_PORT_V_RES);
+    assert(disp);
 
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res = LVGL_PORT_H_RES;
-    disp_drv.ver_res = LVGL_PORT_V_RES;
-    disp_drv.flush_cb = flush_callback;
-    disp_drv.draw_buf = &disp_buf;
-    disp_drv.user_data = panel_handle;
-#if LVGL_PORT_FULL_REFRESH
-    disp_drv.full_refresh = 1;
-#elif LVGL_PORT_DIRECT_MODE
-    disp_drv.direct_mode = 1;
+    lv_display_set_flush_cb(disp, flush_callback);
+    lv_display_set_user_data(disp, panel_handle);
+
+#if LVGL_PORT_DIRECT_MODE
+    lv_display_set_buffers(disp, buf1, buf2,
+                           buffer_size * sizeof(lv_color_t),
+                           LV_DISPLAY_RENDER_MODE_DIRECT);
+#elif LVGL_PORT_FULL_REFRESH
+    lv_display_set_buffers(disp, buf1, buf2,
+                           buffer_size * sizeof(lv_color_t),
+                           LV_DISPLAY_RENDER_MODE_FULL);
+#else
+    lv_display_set_buffers(disp, buf1, buf2,
+                           buffer_size * sizeof(lv_color_t),
+                           LV_DISPLAY_RENDER_MODE_PARTIAL);
 #endif
-    return lv_disp_drv_register(&disp_drv);
+
+    return disp;
 }
 
-static void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
+/* ---------------------------------------------------------------
+ * Touch input — LVGL 9 API
+ * --------------------------------------------------------------- */
+static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
 {
-    esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)indev_drv->user_data;
+    esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)lv_indev_get_user_data(indev);
     assert(tp);
 
     uint16_t touchpad_x;
@@ -121,14 +132,16 @@ static void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 static lv_indev_t *indev_init(esp_lcd_touch_handle_t tp)
 {
     assert(tp);
-    static lv_indev_drv_t indev_drv_tp;
-    lv_indev_drv_init(&indev_drv_tp);
-    indev_drv_tp.type = LV_INDEV_TYPE_POINTER;
-    indev_drv_tp.read_cb = touchpad_read;
-    indev_drv_tp.user_data = tp;
-    return lv_indev_drv_register(&indev_drv_tp);
+    lv_indev_t *indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, touchpad_read);
+    lv_indev_set_user_data(indev, tp);
+    return indev;
 }
 
+/* ---------------------------------------------------------------
+ * Tick timer
+ * --------------------------------------------------------------- */
 static void tick_increment(void *arg)
 {
     lv_tick_inc(LVGL_PORT_TICK_PERIOD_MS);
@@ -145,6 +158,9 @@ static esp_err_t tick_init(void)
     return esp_timer_start_periodic(lvgl_tick_timer, LVGL_PORT_TICK_PERIOD_MS * 1000);
 }
 
+/* ---------------------------------------------------------------
+ * LVGL task
+ * --------------------------------------------------------------- */
 static void lvgl_port_task(void *arg)
 {
     while (!lvgl_task_running) {
@@ -165,12 +181,15 @@ static void lvgl_port_task(void *arg)
     }
 }
 
+/* ---------------------------------------------------------------
+ * Public API
+ * --------------------------------------------------------------- */
 esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle, esp_lcd_touch_handle_t tp_handle)
 {
     lv_init();
     ESP_ERROR_CHECK(tick_init());
 
-    lv_disp_t *disp = display_init(lcd_handle);
+    lv_display_t *disp = display_init(lcd_handle);
     assert(disp);
 
     if (tp_handle) {

@@ -77,12 +77,16 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 }
 
 // Allocate and perform HTTP GET, return response buffer. Caller must free buf->data.
-static bool http_get(const char *url, http_buf_t *buf)
+// err_out: optional buffer to write error description (e.g. "ESP_OK/403")
+static bool http_get(const char *url, http_buf_t *buf, char *err_out, size_t err_out_size)
 {
     buf->cap = 4096;
     buf->len = 0;
     buf->data = (char *)malloc(buf->cap);
-    if (!buf->data) return false;
+    if (!buf->data) {
+        if (err_out) snprintf(err_out, err_out_size, "OOM");
+        return false;
+    }
 
     esp_http_client_config_t config = {};
     config.url = url;
@@ -97,6 +101,8 @@ static bool http_get(const char *url, http_buf_t *buf)
     esp_http_client_cleanup(client);
 
     if (err != ESP_OK || status != 200) {
+        ESP_LOGE(TAG, "http_get failed: err=%s status=%d url=%s", esp_err_to_name(err), status, url);
+        if (err_out) snprintf(err_out, err_out_size, "%s/%d", esp_err_to_name(err), status);
         free(buf->data);
         buf->data = NULL;
         return false;
@@ -337,8 +343,7 @@ void bridge_fetch_and_update(void)
     snprintf(url, sizeof(url), "%s/api/dashboard?key=%s", s_bridge_url, s_bridge_key);
 
     http_buf_t resp = {};
-    if (!http_get(url, &resp)) {
-        snprintf(s_last_error, sizeof(s_last_error), "HTTP error");
+    if (!http_get(url, &resp, s_last_error, sizeof(s_last_error))) {
         return;
     }
 
@@ -437,8 +442,9 @@ void bridge_fetch_calendar(int year, int month, int day)
              s_bridge_url, year, month, day, s_bridge_key);
 
     http_buf_t resp = {};
-    if (!http_get(url, &resp)) {
-        ESP_LOGE(TAG, "Calendar fetch failed");
+    char cal_err[32];
+    if (!http_get(url, &resp, cal_err, sizeof(cal_err))) {
+        ESP_LOGE(TAG, "Calendar fetch failed: %s", cal_err);
         return;
     }
 
