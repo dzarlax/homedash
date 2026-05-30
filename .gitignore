@@ -25,5 +25,6 @@ sim/esp_stubs/cJSON.c
 sim/esp_stubs/cJSON.h
 
 # Misc
+.superpowers/
 Examples/
 *.DS_Store

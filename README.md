@@ -110,6 +110,16 @@ ota_1      7MB   — firmware slot B
 
 If the new firmware fails to connect to Bridge after boot, the bootloader automatically reverts to the previous working version (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`).
 
+## Desktop UI Simulator
+
+You can preview the real LVGL UI on Windows without flashing the ESP32-S3:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File sim\build_windows.ps1 -Run
+```
+
+The simulator opens a 1024x600 desktop window, compiles the real `src/ui_dashboard.cpp`, and uses local fixture data. It is intended for layout and interaction checks only; it does not validate LCD timing, PSRAM/DMA behavior, WiFi, OTA, or the GT911 touch controller.
+
 ## Key Files
 
 | File | Purpose |

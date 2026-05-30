@@ -1,266 +1,231 @@
-// LVGL SDL2 simulator for homedash UI development
-// Build: make -C sim
-// Run:   ./sim/homedash_sim
+// LVGL Win32 simulator for HomeDash UI development.
+// Build: powershell -ExecutionPolicy Bypass -File sim/build_windows.ps1
+// Run:   .\sim\build\windows\homedash_sim.exe
 
-#include "SDL.h"
-#include <unistd.h>
-#include <pthread.h>
-#include <cstring>
-#include <cstdio>
-#include <cstdlib>
+#include <windows.h>
+#include <windowsx.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
 #include "lvgl.h"
 #include "bridge.h"
 
-// Forward declarations from the real UI code
 void ui_dashboard_create(void);
 void ui_dashboard_update_time(void);
+void ui_dashboard_update_weather(const bridge_weather_t *data);
+void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data);
+void ui_dashboard_update_transport(const bridge_transport_t *data);
 void ui_dashboard_update_bridge(const bridge_data_t *data);
 void ui_dashboard_update_ha(const bridge_data_t *data);
 
-// --- Stubs for hardware-dependent code ---
-void request_calendar_date(int, int, int) {}
-void request_light_toggle(const char *id) {
-    printf("[SIM] Toggle light: %s\n", id);
-}
+extern "C" void sim_init_fixtures(void);
 
-// --- Fetch real data from bridge API via curl ---
-#include "cJSON.h"
+static constexpr int DISP_W = 1024;
+static constexpr int DISP_H = 600;
 
-#define BRIDGE_API_URL "https://esp32-bridge.dzarlax.dev/api/dashboard?key=mEleZGYkFf1W0X0kUJ5YZt0vhWT6NveFcOD2oZVX"
+static HWND s_hwnd = NULL;
+static uint16_t s_fb[DISP_W * DISP_H];
+static uint32_t s_bgra[DISP_W * DISP_H];
+static int s_mouse_x = 0;
+static int s_mouse_y = 0;
+static bool s_mouse_down = false;
 
-static bridge_data_t s_sim_data = {};
-
-static char *exec_curl(const char *url) {
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "curl -sk '%s' 2>/dev/null", url);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return NULL;
-
-    size_t cap = 8192, len = 0;
-    char *buf = (char *)malloc(cap);
-    while (!feof(fp)) {
-        len += fread(buf + len, 1, cap - len - 1, fp);
-        if (len >= cap - 1) { cap *= 2; buf = (char *)realloc(buf, cap); }
-    }
-    pclose(fp);
-    buf[len] = '\0';
-    return buf;
-}
-
-static void parse_json_health(cJSON *obj) {
-    if (!obj || !cJSON_IsObject(obj)) { s_sim_data.health.valid = false; return; }
-    s_sim_data.health.steps      = cJSON_GetObjectItem(obj, "steps")      ? cJSON_GetObjectItem(obj, "steps")->valueint : 0;
-    s_sim_data.health.steps_prev = cJSON_GetObjectItem(obj, "steps_prev") ? cJSON_GetObjectItem(obj, "steps_prev")->valueint : 0;
-    s_sim_data.health.cal        = cJSON_GetObjectItem(obj, "cal")        ? cJSON_GetObjectItem(obj, "cal")->valueint : 0;
-    s_sim_data.health.cal_prev   = cJSON_GetObjectItem(obj, "cal_prev")   ? cJSON_GetObjectItem(obj, "cal_prev")->valueint : 0;
-    s_sim_data.health.sleep      = cJSON_GetObjectItem(obj, "sleep")      ? (float)cJSON_GetObjectItem(obj, "sleep")->valuedouble : 0;
-    s_sim_data.health.sleep_prev = cJSON_GetObjectItem(obj, "sleep_prev") ? (float)cJSON_GetObjectItem(obj, "sleep_prev")->valuedouble : 0;
-    s_sim_data.health.hr         = cJSON_GetObjectItem(obj, "hr")         ? cJSON_GetObjectItem(obj, "hr")->valueint : 0;
-    s_sim_data.health.rhr        = cJSON_GetObjectItem(obj, "rhr")        ? cJSON_GetObjectItem(obj, "rhr")->valueint : 0;
-    s_sim_data.health.hrv        = cJSON_GetObjectItem(obj, "hrv")        ? cJSON_GetObjectItem(obj, "hrv")->valueint : 0;
-    s_sim_data.health.spo2       = cJSON_GetObjectItem(obj, "spo2")       ? cJSON_GetObjectItem(obj, "spo2")->valueint : 0;
-    s_sim_data.health.readiness  = cJSON_GetObjectItem(obj, "readiness")  ? cJSON_GetObjectItem(obj, "readiness")->valueint : 0;
-    s_sim_data.health.valid = true;
-}
-
-static void fetch_bridge_data() {
-    char *json_str = exec_curl(BRIDGE_API_URL);
-    if (!json_str) { printf("[SIM] curl failed\n"); return; }
-
-    cJSON *root = cJSON_Parse(json_str);
-    free(json_str);
-    if (!root) { printf("[SIM] JSON parse failed\n"); return; }
-
-    // Health
-    parse_json_health(cJSON_GetObjectItem(root, "health"));
-
-    // Tasks
-    cJSON *tasks = cJSON_GetObjectItem(root, "tasks");
-    s_sim_data.task_count = 0; s_sim_data.tasks_valid = false;
-    if (tasks && cJSON_IsArray(tasks)) {
-        int n = cJSON_GetArraySize(tasks);
-        if (n > BRIDGE_MAX_TASKS) n = BRIDGE_MAX_TASKS;
-        for (int i = 0; i < n; i++) {
-            cJSON *t = cJSON_GetArrayItem(tasks, i);
-            bridge_task_t *bt = &s_sim_data.tasks[s_sim_data.task_count];
-            memset(bt, 0, sizeof(*bt));
-            cJSON *title = cJSON_GetObjectItem(t, "t");
-            if (title && cJSON_IsString(title)) strncpy(bt->title, title->valuestring, 79);
-            cJSON *p = cJSON_GetObjectItem(t, "p");
-            if (p) bt->priority = p->valueint;
-            cJSON *d = cJSON_GetObjectItem(t, "due");
-            if (d && cJSON_IsString(d)) strncpy(bt->due, d->valuestring, 11);
-            s_sim_data.task_count++;
-        }
-        s_sim_data.tasks_valid = true;
-    }
-
-    // News
-    cJSON *news = cJSON_GetObjectItem(root, "news");
-    s_sim_data.news_count = 0; s_sim_data.news_valid = false;
-    if (news && cJSON_IsArray(news)) {
-        int n = cJSON_GetArraySize(news);
-        if (n > BRIDGE_MAX_NEWS) n = BRIDGE_MAX_NEWS;
-        for (int i = 0; i < n; i++) {
-            cJSON *item = cJSON_GetArrayItem(news, i);
-            bridge_news_t *bn = &s_sim_data.news[s_sim_data.news_count];
-            memset(bn, 0, sizeof(*bn));
-            cJSON *t = cJSON_GetObjectItem(item, "t");
-            if (t && cJSON_IsString(t)) strncpy(bn->title, t->valuestring, 119);
-            cJSON *c = cJSON_GetObjectItem(item, "c");
-            if (c && cJSON_IsString(c)) strncpy(bn->category, c->valuestring, 23);
-            cJSON *h = cJSON_GetObjectItem(item, "h");
-            if (h) bn->hours_ago = h->valueint;
-            s_sim_data.news_count++;
-        }
-        s_sim_data.news_valid = true;
-    }
-
-    // Lights
-    cJSON *lights = cJSON_GetObjectItem(root, "lights");
-    s_sim_data.light_count = 0; s_sim_data.lights_valid = false;
-    if (lights && cJSON_IsArray(lights)) {
-        int n = cJSON_GetArraySize(lights);
-        if (n > BRIDGE_MAX_LIGHTS) n = BRIDGE_MAX_LIGHTS;
-        for (int i = 0; i < n; i++) {
-            cJSON *item = cJSON_GetArrayItem(lights, i);
-            bridge_light_t *bl = &s_sim_data.lights[s_sim_data.light_count];
-            memset(bl, 0, sizeof(*bl));
-            cJSON *id = cJSON_GetObjectItem(item, "id");
-            if (id && cJSON_IsString(id)) strncpy(bl->entity_id, id->valuestring, 47);
-            cJSON *nm = cJSON_GetObjectItem(item, "n");
-            if (nm && cJSON_IsString(nm)) strncpy(bl->name, nm->valuestring, 39);
-            cJSON *on = cJSON_GetObjectItem(item, "on");
-            if (on) bl->on = cJSON_IsTrue(on);
-            cJSON *br = cJSON_GetObjectItem(item, "br");
-            if (br) bl->brightness = br->valueint;
-            s_sim_data.light_count++;
-        }
-        s_sim_data.lights_valid = true;
-    }
-
-    // Sensors
-    cJSON *sensors = cJSON_GetObjectItem(root, "sensors");
-    s_sim_data.sensor_count = 0; s_sim_data.sensors_valid = false;
-    if (sensors && cJSON_IsArray(sensors)) {
-        int n = cJSON_GetArraySize(sensors);
-        if (n > BRIDGE_MAX_SENSORS) n = BRIDGE_MAX_SENSORS;
-        for (int i = 0; i < n; i++) {
-            cJSON *item = cJSON_GetArrayItem(sensors, i);
-            bridge_sensor_t *bs = &s_sim_data.sensors[s_sim_data.sensor_count];
-            memset(bs, 0, sizeof(*bs));
-            cJSON *nm = cJSON_GetObjectItem(item, "n");
-            if (nm && cJSON_IsString(nm)) strncpy(bs->name, nm->valuestring, 39);
-            cJSON *v = cJSON_GetObjectItem(item, "v");
-            if (v && cJSON_IsString(v)) strncpy(bs->value, v->valuestring, 15);
-            cJSON *u = cJSON_GetObjectItem(item, "u");
-            if (u && cJSON_IsString(u)) strncpy(bs->unit, u->valuestring, 7);
-            s_sim_data.sensor_count++;
-        }
-        s_sim_data.sensors_valid = true;
-    }
-
-    cJSON_Delete(root);
-    printf("[SIM] Fetched: health=%d tasks=%d news=%d lights=%d sensors=%d\n",
-           s_sim_data.health.valid, s_sim_data.task_count,
-           s_sim_data.news_count, s_sim_data.light_count, s_sim_data.sensor_count);
-}
-
-// --- SDL + LVGL glue ---
-#define DISP_W 1024
-#define DISP_H 600
-
-static SDL_Window   *sdl_win = NULL;
-static SDL_Renderer *sdl_ren = NULL;
-static SDL_Texture  *sdl_tex = NULL;
-static lv_color_t    fb[DISP_W * DISP_H];
-
-static void sdl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p)
+static uint32_t rgb565_to_bgra(uint16_t px)
 {
-    for (int y = area->y1; y <= area->y2; y++) {
-        memcpy(&fb[y * DISP_W + area->x1], color_p, (area->x2 - area->x1 + 1) * sizeof(lv_color_t));
-        color_p += (area->x2 - area->x1 + 1);
+    uint32_t r = (px >> 11) & 0x1f;
+    uint32_t g = (px >> 5) & 0x3f;
+    uint32_t b = px & 0x1f;
+
+    r = (r * 255) / 31;
+    g = (g * 255) / 63;
+    b = (b * 255) / 31;
+    return (r << 16) | (g << 8) | b;
+}
+
+static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
+{
+    const int32_t width = area->x2 - area->x1 + 1;
+    const uint16_t *src = (const uint16_t *)px_map;
+
+    for (int32_t y = area->y1; y <= area->y2; y++) {
+        memcpy(&s_fb[y * DISP_W + area->x1], src, width * sizeof(uint16_t));
+        src += width;
     }
-    lv_disp_flush_ready(drv);
+
+    if (s_hwnd) {
+        RECT rect = {(LONG)area->x1, (LONG)area->y1, (LONG)area->x2 + 1, (LONG)area->y2 + 1};
+        InvalidateRect(s_hwnd, &rect, FALSE);
+    }
+
+    lv_display_flush_ready(disp);
 }
 
-static void sdl_mouse_read(lv_indev_drv_t *drv, lv_indev_data_t *data)
+static void pointer_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
-    int x, y;
-    uint32_t buttons = SDL_GetMouseState(&x, &y);
-    data->point.x = x;
-    data->point.y = y;
-    data->state = (buttons & SDL_BUTTON(1)) ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    (void)indev;
+    data->point.x = s_mouse_x;
+    data->point.y = s_mouse_y;
+    data->state = s_mouse_down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
 
-int main()
+static void paint_window(HWND hwnd)
 {
-    SDL_Init(SDL_INIT_VIDEO);
-    sdl_win = SDL_CreateWindow("HomeDash Simulator", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, DISP_W, DISP_H, 0);
-    sdl_ren = SDL_CreateRenderer(sdl_win, -1, SDL_RENDERER_ACCELERATED);
-    sdl_tex = SDL_CreateTexture(sdl_ren, SDL_PIXELFORMAT_RGB565, SDL_TEXTUREACCESS_STREAMING, DISP_W, DISP_H);
+    for (int i = 0; i < DISP_W * DISP_H; i++) {
+        s_bgra[i] = rgb565_to_bgra(s_fb[i]);
+    }
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = DISP_W;
+    bmi.bmiHeader.biHeight = -DISP_H;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    PAINTSTRUCT ps;
+    HDC hdc = BeginPaint(hwnd, &ps);
+    SetDIBitsToDevice(hdc, 0, 0, DISP_W, DISP_H, 0, 0, 0, DISP_H, s_bgra, &bmi, DIB_RGB_COLORS);
+    EndPaint(hwnd, &ps);
+}
+
+static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    switch (msg) {
+    case WM_PAINT:
+        paint_window(hwnd);
+        return 0;
+    case WM_MOUSEMOVE:
+        s_mouse_x = GET_X_LPARAM(lparam);
+        s_mouse_y = GET_Y_LPARAM(lparam);
+        return 0;
+    case WM_LBUTTONDOWN:
+        SetCapture(hwnd);
+        s_mouse_down = true;
+        s_mouse_x = GET_X_LPARAM(lparam);
+        s_mouse_y = GET_Y_LPARAM(lparam);
+        return 0;
+    case WM_LBUTTONUP:
+        ReleaseCapture();
+        s_mouse_down = false;
+        s_mouse_x = GET_X_LPARAM(lparam);
+        s_mouse_y = GET_Y_LPARAM(lparam);
+        return 0;
+    case WM_KEYDOWN:
+        if (wparam == VK_ESCAPE) {
+            PostQuitMessage(0);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProc(hwnd, msg, wparam, lparam);
+}
+
+static bool create_window(HINSTANCE instance)
+{
+    const char *class_name = "HomeDashSimulatorWindow";
+
+    WNDCLASSA wc = {};
+    wc.lpfnWndProc = wnd_proc;
+    wc.hInstance = instance;
+    wc.lpszClassName = class_name;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+
+    if (!RegisterClassA(&wc)) {
+        return false;
+    }
+
+    RECT rc = {0, 0, DISP_W, DISP_H};
+    AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+
+    s_hwnd = CreateWindowExA(
+        0, class_name, "HomeDash Simulator",
+        WS_OVERLAPPEDWINDOW,
+        20, 20,
+        rc.right - rc.left, rc.bottom - rc.top,
+        NULL, NULL, instance, NULL);
+
+    if (!s_hwnd) {
+        return false;
+    }
+
+    ShowWindow(s_hwnd, SW_SHOW);
+    UpdateWindow(s_hwnd);
+    return true;
+}
+
+static void refresh_all_data(void)
+{
+    const bridge_data_t *data = bridge_get_data();
+    const bridge_cal_data_t *calendar = bridge_get_calendar_data();
+
+    ui_dashboard_update_time();
+    ui_dashboard_update_weather(&data->weather);
+    ui_dashboard_update_ha_calendar(calendar);
+    ui_dashboard_update_transport(&data->transport);
+    ui_dashboard_update_bridge(data);
+    ui_dashboard_update_ha(data);
+}
+
+int main(void)
+{
+    HINSTANCE instance = GetModuleHandleW(NULL);
+    if (!create_window(instance)) {
+        fprintf(stderr, "[SIM] Failed to create Win32 window\n");
+        return 1;
+    }
 
     lv_init();
 
-    // Display driver
-    static lv_disp_draw_buf_t draw_buf;
-    static lv_color_t buf1[DISP_W * 60];
-    lv_disp_draw_buf_init(&draw_buf, buf1, NULL, DISP_W * 60);
+    lv_display_t *display = lv_display_create(DISP_W, DISP_H);
+    if (!display) {
+        fprintf(stderr, "[SIM] Failed to create LVGL display\n");
+        return 1;
+    }
 
-    static lv_disp_drv_t disp_drv;
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res = DISP_W;
-    disp_drv.ver_res = DISP_H;
-    disp_drv.flush_cb = sdl_flush_cb;
-    disp_drv.draw_buf = &draw_buf;
-    lv_disp_drv_register(&disp_drv);
+    static uint16_t draw_buf_1[DISP_W * 80];
+    static uint16_t draw_buf_2[DISP_W * 80];
+    lv_display_set_flush_cb(display, flush_cb);
+    lv_display_set_buffers(display, draw_buf_1, draw_buf_2, sizeof(draw_buf_1), LV_DISPLAY_RENDER_MODE_PARTIAL);
 
-    // Mouse input
-    static lv_indev_drv_t indev_drv;
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = sdl_mouse_read;
-    lv_indev_drv_register(&indev_drv);
+    lv_indev_t *pointer = lv_indev_create();
+    lv_indev_set_type(pointer, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(pointer, pointer_read_cb);
 
-    // Create UI
+    sim_init_fixtures();
     ui_dashboard_create();
+    refresh_all_data();
 
-    // Fetch real data from bridge API
-    fetch_bridge_data();
-    ui_dashboard_update_bridge(&s_sim_data);
-    ui_dashboard_update_ha(&s_sim_data);
-
-    // Main loop — refresh data every 30s
+    MSG msg;
     bool running = true;
-    uint32_t last_fetch = SDL_GetTicks();
+    DWORD last_data_refresh = GetTickCount();
     while (running) {
-        // Refresh data periodically
-        if (SDL_GetTicks() - last_fetch > 30000) {
-            fetch_bridge_data();
-            ui_dashboard_update_bridge(&s_sim_data);
-            ui_dashboard_update_ha(&s_sim_data);
-            last_fetch = SDL_GetTicks();
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                running = false;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) running = false;
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) running = false;
+
+        DWORD now = GetTickCount();
+        if (now - last_data_refresh >= 30000) {
+            refresh_all_data();
+            last_data_refresh = now;
         }
 
         lv_tick_inc(5);
         lv_timer_handler();
-
-        // Render framebuffer to SDL
-        SDL_UpdateTexture(sdl_tex, NULL, fb, DISP_W * sizeof(lv_color_t));
-        SDL_RenderCopy(sdl_ren, sdl_tex, NULL, NULL);
-        SDL_RenderPresent(sdl_ren);
-
-        SDL_Delay(5);
+        Sleep(5);
     }
 
-    SDL_DestroyTexture(sdl_tex);
-    SDL_DestroyRenderer(sdl_ren);
-    SDL_DestroyWindow(sdl_win);
-    SDL_Quit();
     return 0;
 }

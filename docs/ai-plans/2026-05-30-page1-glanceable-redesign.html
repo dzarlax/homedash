@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Page 1 Glanceable Redesign Plan</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+      color: #1f2933;
+      background: #f5f7fa;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin: 16px 0;
+    }
+    h1, h2 {
+      margin: 0 0 12px;
+      line-height: 1.2;
+    }
+    h1 { font-size: 30px; }
+    h2 { font-size: 20px; color: #102a43; }
+    code {
+      background: #eef2f7;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 0.95em;
+    }
+    ul, ol { padding-left: 22px; }
+    .note { border-left: 4px solid #2f80ed; background: #eef6ff; }
+    .gate { border-left: 4px solid #b7791f; background: #fffaf0; }
+    .risk { border-left: 4px solid #c53030; background: #fff5f5; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Page 1 Glanceable Redesign Plan</h1>
+  <p>
+    Goal: make Page 1 feel like a calm home overview where the active or next calendar event is
+    the most important element, while calendar navigation, weather, transport, and diagnostics remain useful.
+  </p>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li>Page 1 uses a two-column layout: calendar panel on the left and schedule/transport panel on the right.</li>
+      <li>Calendar events are rendered as equally weighted lines inside <code>events_scroll</code>.</li>
+      <li>The current event can get a subtle background highlight, or a red line can be placed between events.</li>
+      <li>The selected calendar date stays selected until the user taps another date, taps <code>Сегодня</code>, or the UI reloads.</li>
+      <li>Transport is displayed as a separate block below the event list.</li>
+      <li>The simulator now exists, so Page 1 layout changes can be checked before flashing hardware.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>The active event, if one is happening now, becomes the hero element.</li>
+      <li>If no event is active, the next upcoming event becomes the hero element.</li>
+      <li>All-day events remain visible, but they do not outrank active or upcoming timed events.</li>
+      <li>If the selected date is not today, the first event for that selected day becomes the hero element and the UI clearly shows that this is a temporary date view.</li>
+      <li>Remaining events become a quieter compact list under the hero block.</li>
+      <li>The calendar remains visible and interactive, but it should not visually overpower the nearest-event summary.</li>
+      <li>After choosing a non-today date, Page 1 automatically returns to today after an idle timeout.</li>
+      <li>The redesign should stay within Page 1 and avoid changes to Bridge API contracts.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Recommended Layout</h2>
+    <ul>
+      <li>Keep the existing top bar height and left/right page split to minimize risk.</li>
+      <li>Right panel top:
+        <ul>
+          <li>small status label: <code>Сейчас</code>, <code>Следующее</code>, or <code>Выбранный день</code>;</li>
+          <li>large event title, using the existing Cyrillic 24px font or the 32px built-in font only if text still fits cleanly;</li>
+          <li>time range and relative cue, for example <code>18:30-19:30 · через 42 мин</code> or <code>до 19:30</code>.</li>
+        </ul>
+      </li>
+      <li>Right panel middle: compact list of the next 3-5 events, excluding the hero event.</li>
+      <li>Right panel bottom: compact transport summary, still two directions but visually quieter than the hero event.</li>
+      <li>Left panel: keep the calendar, but tone down ordinary dates and make today/selected date clearer if LVGL calendar styling allows it without brittle hacks.</li>
+      <li>Top bar: keep weather compact; avoid introducing a new large weather card in this pass.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Calendar Auto-Return</h2>
+    <ul>
+      <li>When the user taps a non-today date, record the interaction timestamp with <code>esp_timer_get_time()</code>.</li>
+      <li>Use an idle timeout of 5 minutes by default.</li>
+      <li>The existing time timer can check whether the selected date is non-today and whether the timeout elapsed.</li>
+      <li>On timeout, set selected date back to today and call <code>request_calendar_date(today)</code>.</li>
+      <li>Do not change the active tile/page when auto-return happens.</li>
+      <li>Manual <code>Сегодня</code> should clear the pending timeout immediately.</li>
+      <li>Keep the auto-return quiet: no countdown label in the first implementation. The visible <code>Сегодня</code> button and selected-day title are enough.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Plan</h2>
+    <ol>
+      <li>Add Page 1 UI references for the hero event block: status label, title label, time label, and optional empty-state label.</li>
+      <li>Replace the current equal-weight event list positioning with a hero area plus compact list area.</li>
+      <li>Refactor calendar rendering logic to choose a hero event:
+        <ul>
+          <li>prefer active timed event for today;</li>
+          <li>otherwise choose next timed event for today;</li>
+          <li>otherwise use an all-day event only when there is no active or upcoming timed event;</li>
+          <li>otherwise choose the first timed event for selected non-today date, with all-day as fallback;</li>
+          <li>fallback to a calm empty state if no events exist.</li>
+        </ul>
+      </li>
+      <li>Render compact events below the hero, excluding the hero item when possible.</li>
+      <li>Keep existing calendar fetch flow: UI calls <code>request_calendar_date</code>, network task calls <code>bridge_fetch_calendar</code>, UI timer reads <code>bridge_get_calendar_data</code>.</li>
+      <li>Add the 5-minute selected-date auto-return logic.</li>
+      <li>Update simulator fixtures if needed so one event is active or upcoming enough to see the hero state clearly.</li>
+      <li>Check the result in the simulator before any firmware build or release.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Likely File Changes</h2>
+    <ul>
+      <li><code>src/ui_dashboard.cpp</code>: Page 1 layout, calendar event rendering, selected-date idle timeout.</li>
+      <li><code>sim/stubs.cpp</code>: fixture event times if useful for testing active/upcoming states.</li>
+      <li><code>docs/ai-plans/2026-05-30-page1-glanceable-redesign.html</code>: update with actual changes and checks after implementation.</li>
+      <li>Possibly <code>AGENTS.md</code>: add a short note that simulator should be used for Page 1 UI edits.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li>Run <code>powershell -ExecutionPolicy Bypass -File sim\build_windows.ps1 -Run</code> and inspect Page 1.</li>
+      <li>Verify hero block shows active event when current time falls inside an event.</li>
+      <li>Verify hero block shows next event when no event is active.</li>
+      <li>Verify selecting a different calendar day changes the hero and compact list.</li>
+      <li>Verify <code>Сегодня</code> returns to today.</li>
+      <li>Temporarily reduce timeout during local testing or expose a simulator-only constant to verify auto-return without waiting 5 minutes.</li>
+      <li>Run <code>C:\Users\me\.platformio\penv\Scripts\pio.exe run</code>.</li>
+      <li>Do not flash or release firmware until the user explicitly asks.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks</h2>
+    <ul>
+      <li>Long event names can overflow the hero block. Use fixed widths and scrolling/ellipsis modes where needed.</li>
+      <li>LVGL calendar styling may not expose enough per-day control for a refined selected/today visual without deeper customization.</li>
+      <li>Auto-return should not fight user interaction while they are actively browsing dates.</li>
+      <li>The simulator validates layout, but hardware touch feel still requires device QA later.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <ul>
+      <li>Keep changes scoped to Page 1 UI logic so rollback is a single-file revert if the design feels worse.</li>
+      <li>Leave Bridge data contracts unchanged.</li>
+      <li>Do not include this in an OTA release until the simulator view feels right and a firmware build passes.</li>
+    </ul>
+  </section>
+
+  <section class="note">
+    <h2>Implementation Result</h2>
+    <ul>
+      <li>Added a hero event block to Page 1 with status, title, and time/relative cue.</li>
+      <li>Changed event priority so active timed events win first, upcoming timed events win second, and all-day events are used as hero only when no timed event is available.</li>
+      <li>Rendered all-day items as quieter compact-list context when a timed hero exists.</li>
+      <li>Moved the remaining schedule into a compact list below the hero and kept transport pinned near the bottom of the right panel.</li>
+      <li>Reduced the top bar to a quieter single-row weather summary so the calendar hero remains the visual priority.</li>
+      <li>Compressed the transport section into two compact direction rows with route numbers, arrival times, and overflow counters.</li>
+      <li>Softened the calendar button matrix styling so the left panel is less visually dominant.</li>
+      <li>Added a stronger selected-day style and a quieter today highlight, so the active calendar day is easier to read without overpowering the hero event.</li>
+      <li>Added 5-minute auto-return from a selected non-today date back to today via <code>esp_timer_get_time()</code>.</li>
+      <li>Removed the custom page dots and disabled the built-in tileview scrollbar to avoid duplicate navigation indicators.</li>
+      <li>Added simulator support for <code>esp_timer_get_time()</code> and fixture coverage for all-day events.</li>
+      <li>Removed a stale unused news buffer while cleaning compiler warnings.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Checks Run</h2>
+    <ul>
+      <li><code>powershell -ExecutionPolicy Bypass -File sim\build_windows.ps1</code> succeeded and rebuilt <code>sim\build\windows\homedash_sim.exe</code>.</li>
+      <li><code>C:\Users\me\.platformio\penv\Scripts\pio.exe run</code> succeeded and rebuilt <code>.pio\build\esp32-s3-touch-lcd-7b\firmware.bin</code>.</li>
+      <li>The Windows simulator was started from <code>sim\build\windows\homedash_sim.exe</code> for visual inspection.</li>
+      <li>The simulator build still emits warnings from LVGL source files under MSVC; no project-source warning remains from the Page 1 changes.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>The 5-minute auto-return was implemented through the regular timer path; a full real-time wait was not performed in this pass.</li>
+      <li>Hardware touch feel and real calendar data still need device QA after OTA install.</li>
+    </ul>
+  </section>
+
+  <section class="gate">
+    <h2>Approval Gate</h2>
+    <p>
+      Stop here before implementation. After approval, implement the Page 1 hero-event redesign,
+      verify in the simulator, and run the firmware build. Do not flash or release firmware as part of this step.
+    </p>
+  </section>
+</main>
+</body>
+</html>

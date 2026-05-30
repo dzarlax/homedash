@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Native HomeDash UI Simulator Plan</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+      color: #1f2933;
+      background: #f5f7fa;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+    }
+    section {
+      background: #fff;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin: 16px 0;
+    }
+    h1, h2 {
+      margin: 0 0 12px;
+      line-height: 1.2;
+    }
+    h1 {
+      font-size: 30px;
+    }
+    h2 {
+      font-size: 20px;
+      color: #102a43;
+    }
+    code {
+      background: #eef2f7;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 0.95em;
+    }
+    pre {
+      overflow: auto;
+      background: #102a43;
+      color: #f0f4f8;
+      border-radius: 6px;
+      padding: 14px 16px;
+    }
+    ul, ol {
+      padding-left: 22px;
+    }
+    .note {
+      border-left: 4px solid #2f80ed;
+      background: #eef6ff;
+    }
+    .gate {
+      border-left: 4px solid #b7791f;
+      background: #fffaf0;
+    }
+    .risk {
+      border-left: 4px solid #c53030;
+      background: #fff5f5;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Native HomeDash UI Simulator Plan</h1>
+  <p>
+    Goal: make it possible to preview and interact with the real HomeDash LVGL UI on the desktop
+    without flashing the ESP32-S3 device.
+  </p>
+
+  <section>
+    <h2>Current State</h2>
+    <ul>
+      <li>The repository already has a <code>sim/</code> directory with an SDL2-based LVGL simulator.</li>
+      <li>The checked-in <code>sim/homedash_sim</code> binary is not usable on this Windows machine; its header is Mach-O, so it is an old macOS binary.</li>
+      <li><code>sim/Makefile</code> assumes Unix tools: <code>make</code>, <code>gcc/g++</code>, <code>sdl2-config</code>, <code>find</code>, and <code>grep</code>.</li>
+      <li>Those tools are not currently available in this Windows shell.</li>
+      <li><code>sim/main_sim.cpp</code> uses old LVGL display/input APIs such as <code>lv_disp_drv_t</code> and <code>lv_disp_draw_buf_t</code>, while the firmware now uses LVGL 9.2.2.</li>
+      <li>The simulator source has a hardcoded Bridge URL and API key. That should be removed before relying on the simulator.</li>
+      <li>After AgentDeck removal, the simulator also needs an additional stub for <code>request_ota_check()</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Run a desktop window sized <code>1024x600</code> that renders the same <code>src/ui_dashboard.cpp</code> UI used by firmware.</li>
+      <li>Support mouse/touch-like interaction for tileview swipes, calendar clicks, the Today button, light buttons, and the OTA button stub.</li>
+      <li>Use fixture data by default so the simulator works offline and never requires real secrets.</li>
+      <li>Optionally load Bridge data from environment variables for realistic manual checks.</li>
+      <li>Provide a single documented command for this Windows machine.</li>
+      <li>Keep simulator changes isolated from firmware behavior and OTA release flow.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Recommended Approach</h2>
+    <p>
+      Use a native desktop SDL2 simulator, but modernize it for LVGL 9 and make it Windows-friendly.
+      The simulator should continue to compile the real UI source instead of building an HTML imitation,
+      because the goal is to catch layout, font, tileview, and calendar behavior before flashing.
+    </p>
+    <p>
+      Prefer a small simulator-specific build setup over changing firmware build settings. If a bundled
+      or already-installed compiler/SDL2 is available, use it. If not, document the missing prerequisite
+      clearly before installing anything.
+    </p>
+  </section>
+
+  <section>
+    <h2>Likely File Changes</h2>
+    <ul>
+      <li><code>sim/main_sim.cpp</code>: port display/input glue from LVGL 8-style APIs to LVGL 9 APIs.</li>
+      <li><code>sim/stubs.cpp</code>: update or remove stale module stubs; add <code>request_ota_check()</code>; ensure Bridge accessors match current firmware headers.</li>
+      <li><code>sim/Makefile</code> or new simulator build file: make the build reproducible from Windows.</li>
+      <li><code>sim/fixtures/</code> or similar: add sample dashboard/calendar payloads for offline UI preview.</li>
+      <li><code>README.md</code> and/or <code>AGENTS.md</code>: document simulator build/run commands and limitations.</li>
+      <li><code>.gitignore</code>: keep simulator build outputs ignored, not source fixtures or build scripts.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Audit available local toolchains: Node/Python bundles, PlatformIO packages, CMake, MSVC, MinGW, SDL2 availability.</li>
+      <li>Choose the least invasive desktop build path that works on this machine.</li>
+      <li>Port the LVGL simulator glue to LVGL 9:
+        <ul>
+          <li>create display with <code>lv_display_create(1024, 600)</code>;</li>
+          <li>set draw buffers with <code>lv_display_set_buffers</code>;</li>
+          <li>register flush callback with LVGL 9 signature;</li>
+          <li>create pointer input with <code>lv_indev_create()</code>.</li>
+        </ul>
+      </li>
+      <li>Replace hardcoded Bridge credentials with fixtures by default and optional environment variables such as <code>HOMEDASH_SIM_BRIDGE_URL</code> and <code>HOMEDASH_SIM_BRIDGE_KEY</code>.</li>
+      <li>Populate realistic fixture data for weather, calendar, transport, health, tasks, news, lights, and sensors.</li>
+      <li>Build the simulator locally.</li>
+      <li>Run it and visually verify all 3 pages, calendar click behavior, Today button, tile navigation, and Page 3 button stubs.</li>
+      <li>Update docs and <code>AGENTS.md</code> with the final command.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li>Simulator build command passes from a clean shell.</li>
+      <li>Firmware build still passes with <code>C:\Users\me\.platformio\penv\Scripts\pio.exe run</code>.</li>
+      <li>Simulator opens a <code>1024x600</code> window and renders nonblank UI.</li>
+      <li>Page indicator dots update while swiping/click-dragging between pages.</li>
+      <li>Calendar date click changes the schedule title and invokes simulator calendar data flow.</li>
+      <li>Today button returns the schedule to the current date.</li>
+      <li>Page 3 OTA button prints a simulator log instead of attempting firmware update.</li>
+      <li>No real secrets are present in source code or committed fixtures.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Risks</h2>
+    <ul>
+      <li>SDL2 may not be installed locally. If so, we need either a lightweight install step or a different build path.</li>
+      <li>LVGL 9 desktop APIs may need small config changes, and those changes must not bloat firmware builds.</li>
+      <li>Simulator rendering is useful for layout and interactions, but it cannot validate ESP32-specific LCD tearing, PSRAM, DMA, WiFi, OTA, or touch-controller behavior.</li>
+      <li>Real Bridge live data may expose secrets if handled casually; fixture-first mode avoids that.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <ul>
+      <li>Simulator work is isolated under <code>sim/</code> plus documentation. If it fails, revert those files without touching firmware source.</li>
+      <li>If a shared config change is required and later proves risky, restore the previous firmware <code>lv_conf.h</code> behavior and keep simulator-only config separate.</li>
+      <li>Do not tag or release firmware as part of this simulator task.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should live Bridge data be supported in the first pass, or should the first pass be fixture-only?</li>
+      <li>Is installing a missing Windows build prerequisite acceptable, or should the solution only use tools already installed on this machine?</li>
+      <li>Should screenshots from the simulator be part of the workflow for UI review?</li>
+    </ul>
+  </section>
+
+  <section class="gate">
+    <h2>Approval Gate</h2>
+    <p>
+      No simulator implementation or build-tool changes should happen until this plan is approved.
+      After approval, implementation should stop before any firmware flash. This task does not require
+      flashing the ESP32-S3.
+    </p>
+  </section>
+
+  <section>
+    <h2>Actual Changes</h2>
+    <ul>
+      <li>Replaced the stale SDL2 simulator entrypoint with a Windows Win32/LVGL 9 simulator in <code>sim/main_sim.cpp</code>.</li>
+      <li>Added <code>sim/build_windows.ps1</code>, which uses the installed Visual Studio C++ tools and builds <code>sim/build/windows/homedash_sim.exe</code>.</li>
+      <li>Reworked <code>sim/stubs.cpp</code> to use fixture data and removed the hardcoded live Bridge URL/API key.</li>
+      <li>Added simulator-only compatibility for Windows <code>localtime_r</code> and ESP heap stubs under <code>sim/esp_stubs/</code>.</li>
+      <li>Documented the simulator command in <code>README.md</code> and <code>AGENTS.md</code>.</li>
+      <li>Added <code>.superpowers/</code> to <code>.gitignore</code> for brainstorming companion output.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Checks Run</h2>
+    <ul>
+      <li><code>powershell -ExecutionPolicy Bypass -File sim\build_windows.ps1</code> passed and produced <code>sim/build/windows/homedash_sim.exe</code>.</li>
+      <li>The simulator was launched as a GUI app and rendered the HomeDash first page with fixture data in a <code>1024x600</code> LVGL window.</li>
+      <li>The user confirmed the simulator works locally.</li>
+      <li><code>C:\Users\me\.platformio\penv\Scripts\pio.exe run</code> passed after simulator changes.</li>
+      <li>A simulator rebuild while the window was still open failed because Windows locked <code>homedash_sim.exe</code>; after closing the simulator process, the rebuild passed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations After Implementation</h2>
+    <ul>
+      <li>The simulator is fixture-only for now; it does not fetch live Bridge data.</li>
+      <li>It validates desktop LVGL layout and mouse interaction, not ESP32 hardware display timing, PSRAM/DMA, WiFi, OTA, or the GT911 touch controller.</li>
+      <li>It currently depends on Visual Studio C++ tools being installed at one of the scripted paths.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
