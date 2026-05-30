@@ -40,7 +40,18 @@ static void set_calendar_for_date(int year, int month, int day)
     int today_m = t.tm_mon + 1;
     int today_d = t.tm_mday;
 
-    if (year != today_y || month != today_m || day != today_d) {
+    struct tm tomorrow = t;
+    tomorrow.tm_mday += 1;
+    mktime(&tomorrow);
+    int tomorrow_y = tomorrow.tm_year + 1900;
+    int tomorrow_m = tomorrow.tm_mon + 1;
+    int tomorrow_d = tomorrow.tm_mday;
+
+    if (year == tomorrow_y && month == tomorrow_m && day == tomorrow_d) {
+        s_calendar.count = 2;
+        s_calendar.events[0] = {"Домашний день", 0, 0, 0, 0, true, 5};
+        s_calendar.events[1] = {"Не планировать встречи", 0, 0, 0, 0, true, 0};
+    } else if (year != today_y || month != today_m || day != today_d) {
         s_calendar.count = 3;
         s_calendar.events[0] = {"Запланированное событие", 10, 0, 11, 0, false, 0};
         s_calendar.events[1] = {"Встреча вне дома", 15, 30, 16, 30, false, 2};

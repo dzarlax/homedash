@@ -717,14 +717,14 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
 
     int hero_idx = -1;
     bool hero_active = false;
+    bool has_all_day = false;
 
     if (display_count > 0) {
-        int all_day_idx = -1;
         if (selected_today) {
             for (int i = 0; i < display_count; i++) {
                 const bridge_cal_event_t *ev = &data->events[i];
                 if (ev->all_day) {
-                    if (all_day_idx < 0) all_day_idx = i;
+                    has_all_day = true;
                     continue;
                 }
                 int start_min = ev->start_hour * 60 + ev->start_min;
@@ -746,21 +746,15 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
                     }
                 }
             }
-            if (hero_idx < 0) {
-                hero_idx = all_day_idx;
-            }
         } else {
             for (int i = 0; i < display_count; i++) {
                 const bridge_cal_event_t *ev = &data->events[i];
                 if (ev->all_day) {
-                    if (all_day_idx < 0) all_day_idx = i;
+                    has_all_day = true;
                     continue;
                 }
                 hero_idx = i;
                 break;
-            }
-            if (hero_idx < 0) {
-                hero_idx = all_day_idx;
             }
         }
     }
@@ -821,11 +815,13 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     } else {
         if (lbl_hero_status) lv_label_set_text(lbl_hero_status, selected_today ? "Сегодня" : "Выбранный день");
         if (lbl_hero_title) {
-            lv_label_set_text(lbl_hero_title, "Свободный день");
+            lv_label_set_text(lbl_hero_title, has_all_day ? "Нет событий по времени" : "Свободный день");
             lv_obj_set_style_text_color(lbl_hero_title, COLOR_TEXT, 0);
         }
         if (lbl_hero_time) {
-            lv_label_set_text(lbl_hero_time, selected_today ? "Нет событий в расписании" : "На эту дату нет событий");
+            lv_label_set_text(lbl_hero_time,
+                has_all_day ? "События на весь день ниже" :
+                (selected_today ? "Нет событий в расписании" : "На эту дату нет событий"));
             lv_obj_set_style_text_color(lbl_hero_time, COLOR_TEXT_DIM, 0);
         }
         if (hero_event_card) {
