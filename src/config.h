@@ -1,7 +1,7 @@
 #pragma once
 
 // --- Firmware version (bump before each release) ---
-#define FW_VERSION  "1.0.1"
+#define FW_VERSION  "1.0.2"
 
 // --- Location ---
 #define WEATHER_CITY "Belgrade"

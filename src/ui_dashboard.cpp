@@ -1,9 +1,7 @@
 #include "ui_dashboard.h"
-#include "ui_agentdeck.h"
 #include "config.h"
 #include "wifi_manager.h"
 #include "bridge.h"
-#include "agentdeck.h"
 #include "weather_icons.h"
 #include "lvgl.h"
 #include "esp_timer.h"
@@ -122,7 +120,7 @@ static lv_obj_t *room_sensor_val_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 static lv_obj_t *room_sensor_name_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 
 // Page indicator dots
-static lv_obj_t *dot_indicators[4] = {};
+static lv_obj_t *dot_indicators[3] = {};
 
 #define COLOR_NOW lv_color_hex(0xFF4444)  // red "now" line
 
@@ -206,16 +204,9 @@ static void timer_bridge_cb(lv_timer_t *timer)
     ui_dashboard_update_ha(d);
 }
 
-static void timer_agentdeck_cb(lv_timer_t *timer)
-{
-    (void)timer;
-    const agentdeck_data_t *d = agentdeck_get_data();
-    ui_agentdeck_update(d);
-}
-
 static void update_dot_indicators(int active)
 {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         if (dot_indicators[i]) {
             lv_obj_set_style_bg_opa(dot_indicators[i],
                 (i == active) ? LV_OPA_COVER : LV_OPA_50, 0);
@@ -308,15 +299,14 @@ void ui_dashboard_create(void)
 
     lv_obj_t *tile1 = lv_tileview_add_tile(tileview, 0, 0, (lv_dir_t)LV_DIR_RIGHT);
     lv_obj_t *tile2 = lv_tileview_add_tile(tileview, 1, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
-    lv_obj_t *tile3 = lv_tileview_add_tile(tileview, 2, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
-    lv_obj_t *tile4 = lv_tileview_add_tile(tileview, 3, 0, (lv_dir_t)LV_DIR_LEFT);
+    lv_obj_t *tile3 = lv_tileview_add_tile(tileview, 2, 0, (lv_dir_t)LV_DIR_LEFT);
 
     // Page indicator dots (bottom center, above bottom bar)
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 3; i++) {
         dot_indicators[i] = lv_obj_create(scr);
         lv_obj_remove_style_all(dot_indicators[i]);
         lv_obj_set_size(dot_indicators[i], 8, 8);
-        lv_obj_set_pos(dot_indicators[i], 488 + i * 16, 572);
+        lv_obj_set_pos(dot_indicators[i], 496 + i * 16, 572);
         lv_obj_set_style_bg_color(dot_indicators[i], COLOR_TEXT, 0);
         lv_obj_set_style_bg_opa(dot_indicators[i], (i == 0) ? LV_OPA_COVER : LV_OPA_50, 0);
         lv_obj_set_style_radius(dot_indicators[i], LV_RADIUS_CIRCLE, 0);
@@ -543,16 +533,12 @@ void ui_dashboard_create(void)
     // ===== PAGE 3: HA Control =====
     create_page3(tile3);
 
-    // ===== PAGE 4: AgentDeck =====
-    ui_agentdeck_create(tile4);
-
     // Timers
     lv_timer_create(timer_time_cb, 5000, NULL);
     lv_timer_create(timer_weather_cb, 10000, NULL);
     lv_timer_create(timer_ha_cal_cb, 5000, NULL);
     lv_timer_create(timer_transport_cb, 5000, NULL);
     lv_timer_create(timer_bridge_cb, 5000, NULL);
-    lv_timer_create(timer_agentdeck_cb, 2000, NULL);
 
     // Initial update
     ui_dashboard_update_time();

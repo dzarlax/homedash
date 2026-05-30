@@ -66,7 +66,20 @@ Fetches real-time bus arrivals from `transport-api.dzarlax.dev` (city-dashboard 
 
 Cyrillic support for HA calendar events uses a custom font generated with `lv_font_conv`. The font (`src/fonts/font_montserrat_16_cyr.c`) covers only Cyrillic range (0x400-0x4FF) with fallback to built-in `lv_font_montserrat_16` for Latin.
 
-**Critical**: Generate fonts with `--no-compress --no-prefilter` flags — `LV_USE_FONT_COMPRESSED` is disabled in lv_conf.h, so compressed fonts render as invisible.
+**Generate command:**
+```bash
+lv_font_conv --font Montserrat-Medium.ttf \
+  --range 0x400-0x4FF --size 16 --bpp 4 \
+  --no-compress --no-prefilter \
+  --format lvgl --lv-fallback lv_font_montserrat_16 \
+  -o src/fonts/font_montserrat_16_cyr.c
+```
+
+**Critical**: `--no-compress --no-prefilter` are required — `LV_USE_FONT_COMPRESSED` is disabled in lv_conf.h, compressed fonts render as invisible.
+
+### Anti-tear
+
+Uses `LVGL_PORT_AVOID_TEAR_MODE=3` (double-buffer + direct mode). Key rule: register **only** `on_bounce_frame_finish` ISR with bounce buffers, OR **only** `on_vsync` without bounce buffers. Registering both causes flicker.
 
 ## UI Layout (1024x600)
 

@@ -100,12 +100,11 @@ ota_1      7MB   — firmware slot B
    git push --tags
    ```
 3. GitHub Actions builds firmware and creates a Release with `firmware.bin`
-4. Update Bridge `.env`:
+4. Ensure Bridge `.env` points at the firmware repository:
    ```
-   OTA_FIRMWARE_VERSION=1.0.1
-   OTA_FIRMWARE_URL=https://github.com/dzarlax/homedash/releases/download/v1.0.1/firmware.bin
+   OTA_GITHUB_REPO=dzarlax/homedash
    ```
-5. Restart Bridge — the display picks up the update within 30 minutes (or tap "Обновить" on Page 3)
+5. The display picks up the new GitHub Release within 30 minutes (or tap "Обновить" on Page 3).
 
 ### OTA Rollback
 

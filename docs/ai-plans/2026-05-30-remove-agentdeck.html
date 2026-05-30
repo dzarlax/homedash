@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remove AgentDeck Firmware Screen - Implementation Plan</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.5;
+      color: #20242a;
+      background: #f6f7f9;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+      background: #fff;
+    }
+    h1, h2 {
+      color: #142033;
+      line-height: 1.2;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+    h2 {
+      margin-top: 28px;
+      padding-top: 18px;
+      border-top: 1px solid #dde2ea;
+      font-size: 20px;
+    }
+    p {
+      margin: 10px 0;
+    }
+    ul, ol {
+      padding-left: 24px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    code {
+      padding: 1px 4px;
+      border-radius: 4px;
+      background: #eef1f5;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 0.95em;
+    }
+    .meta {
+      color: #526070;
+      margin-bottom: 24px;
+    }
+    .gate {
+      padding: 14px 16px;
+      border: 1px solid #c88922;
+      border-left-width: 5px;
+      background: #fff7e8;
+    }
+    .note {
+      padding: 12px 14px;
+      border: 1px solid #c7d2e3;
+      border-left-width: 5px;
+      background: #f3f7fc;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+    }
+    th, td {
+      padding: 8px 10px;
+      border: 1px solid #d9dee7;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eef2f7;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Remove AgentDeck Firmware Screen</h1>
+  <p class="meta">Created: 2026-05-30. Scope: <code>homedash</code> ESP32 firmware.</p>
+
+  <section>
+    <h2>Task Summary</h2>
+    <p>
+      Remove the fourth AgentDeck screen from the HomeDash firmware and remove the associated
+      AgentDeck runtime logic. The firmware should return to a three-page dashboard: main
+      dashboard, health/tasks/news, and Home Assistant controls.
+    </p>
+  </section>
+
+  <section>
+    <h2>Current Behavior</h2>
+    <ul>
+      <li><code>src/ui_dashboard.cpp</code> includes <code>ui_agentdeck.h</code> and <code>agentdeck.h</code>.</li>
+      <li>The LVGL tileview creates four horizontal tiles and four page indicator dots.</li>
+      <li>Page 4 is created by <code>ui_agentdeck_create(tile4)</code>.</li>
+      <li>A 2-second LVGL timer calls <code>agentdeck_get_data()</code> and <code>ui_agentdeck_update()</code>.</li>
+      <li><code>src/main.cpp</code> includes <code>agentdeck.h</code>, calls <code>agentdeck_init()</code> after WiFi/NTP, and calls <code>agentdeck_poll()</code> on every network loop.</li>
+      <li><code>src/agentdeck.cpp/.h</code> implement mDNS/HTTP discovery, WebSocket connection, state parsing, and outgoing AgentDeck commands.</li>
+      <li><code>src/ui_agentdeck.cpp/.h</code> implement the AgentDeck LVGL screen.</li>
+      <li><code>src/idf_component.yml</code> adds <code>esp_websocket_client</code> and <code>mdns</code> dependencies only used by AgentDeck.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Desired Behavior</h2>
+    <ul>
+      <li>Only three tiles exist and swiping stops at the Home Assistant controls page.</li>
+      <li>Only three page indicator dots are rendered and updated.</li>
+      <li>No AgentDeck UI is created or refreshed.</li>
+      <li>No AgentDeck network discovery, WebSocket connection, reconnect polling, or command queue runs on the ESP32.</li>
+      <li>Build dependencies no longer include AgentDeck-only WebSocket/mDNS components unless another source file still needs them.</li>
+      <li>Dashboard data, calendar, lights, OTA, WiFi, NTP, and rollback behavior remain unchanged.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Approaches Considered</h2>
+    <table>
+      <tr>
+        <th>Approach</th>
+        <th>Tradeoff</th>
+        <th>Decision</th>
+      </tr>
+      <tr>
+        <td>Disable only the fourth screen</td>
+        <td>Smallest UI diff, but AgentDeck network code and dependencies remain in firmware.</td>
+        <td>Not enough for "всю его логику".</td>
+      </tr>
+      <tr>
+        <td>Remove screen and runtime calls, leave files present</td>
+        <td>Build would stop using AgentDeck if includes are gone, but dead source files stay in the tree.</td>
+        <td>Acceptable fallback if deletion conflicts with uncommitted work.</td>
+      </tr>
+      <tr>
+        <td>Remove screen, runtime calls, source files, and dependencies</td>
+        <td>Largest but cleanest removal; requires careful build verification.</td>
+        <td>Recommended.</td>
+      </tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Assumptions</h2>
+    <ul>
+      <li>AgentDeck is no longer needed anywhere in the firmware.</li>
+      <li>The existing three dashboard pages should keep their current layout and behavior.</li>
+      <li>The task does not require changing <code>esp32-bridge</code>; AgentDeck is local firmware/UI logic.</li>
+      <li>No physical flashing should happen without explicit confirmation.</li>
+      <li>The current uncommitted changes in <code>CLAUDE.md</code>, <code>tools/gen_nvs.py</code>, generated/managed component files, and file-mode changes must be preserved.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Likely File Changes</h2>
+    <ul>
+      <li><code>src/ui_dashboard.cpp</code>: remove AgentDeck includes, timer, fourth tile, fourth dot, and page creation call; change dot array/count from 4 to 3.</li>
+      <li><code>src/main.cpp</code>: remove <code>agentdeck.h</code>, <code>agentdeck_init()</code>, and <code>agentdeck_poll()</code>.</li>
+      <li><code>src/idf_component.yml</code>: remove <code>esp_websocket_client</code> and <code>mdns</code> if no longer referenced.</li>
+      <li><code>src/agentdeck.cpp</code>, <code>src/agentdeck.h</code>, <code>src/ui_agentdeck.cpp</code>, <code>src/ui_agentdeck.h</code>: delete after confirming no remaining references.</li>
+      <li><code>README.md</code> and/or <code>CLAUDE.md</code>: update any architecture notes if they mention AgentDeck or a fourth page. Preserve unrelated existing edits.</li>
+      <li><code>dependencies.lock</code>: regenerate only through the normal build/dependency process if PlatformIO changes it; do not hand-edit generated lock content.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation Steps</h2>
+    <ol>
+      <li>Re-check references with <code>rg "agentdeck|AgentDeck|ui_agentdeck|esp_websocket_client|mdns"</code>.</li>
+      <li>Edit <code>ui_dashboard.cpp</code> to make the tileview three pages again.</li>
+      <li>Edit <code>main.cpp</code> to remove AgentDeck initialization and polling from the network task.</li>
+      <li>Remove AgentDeck-only source/header files if no references remain.</li>
+      <li>Remove AgentDeck-only dependencies from <code>src/idf_component.yml</code>.</li>
+      <li>Update docs that describe the firmware screen count or network task responsibilities.</li>
+      <li>Run static reference checks to confirm no AgentDeck symbols remain in active source/docs except the plan or git history.</li>
+      <li>Run a firmware build with PlatformIO if the local environment can build it.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Test Plan</h2>
+    <ul>
+      <li><code>rg "agentdeck|AgentDeck|ui_agentdeck"</code> should show no active firmware references outside this plan or removed-file history.</li>
+      <li><code>pio run</code> from <code>homedash</code> should compile successfully.</li>
+      <li>If PlatformIO regenerates dependency metadata, inspect the diff before accepting it.</li>
+      <li>No USB flash will be attempted during implementation unless explicitly approved.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Manual QA Checklist</h2>
+    <ul>
+      <li>Device boots to the main dashboard page.</li>
+      <li>Swiping cycles through exactly three pages and cannot reach a blank fourth page.</li>
+      <li>Page indicator shows exactly three dots and highlights the active page correctly.</li>
+      <li>Calendar date requests still wake the network task.</li>
+      <li>Home Assistant light toggles still work from page 3.</li>
+      <li>Manual OTA button still triggers an OTA check.</li>
+      <li>Logs no longer contain AgentDeck discovery, mDNS, or WebSocket messages.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Risks</h2>
+    <ul>
+      <li>The auto-generated <code>src/CMakeLists.txt</code> uses a recursive source glob, so leaving dead <code>.cpp</code> files in <code>src</code> can still compile them. Deletion or moving out of <code>src</code> is required for true removal.</li>
+      <li>Removing dependencies may require PlatformIO to refresh managed component metadata.</li>
+      <li>The working tree already contains unrelated uncommitted changes; implementation must avoid reverting them.</li>
+      <li>A build-only pass cannot prove touch/swipe behavior on hardware; final confidence needs device QA after OTA or USB flash.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Rollback Plan</h2>
+    <ul>
+      <li>Before implementation, capture the exact diff for touched files.</li>
+      <li>If build fails due to dependency removal, restore <code>src/idf_component.yml</code> first and re-check remaining references.</li>
+      <li>If UI behavior regresses, revert only the AgentDeck-removal edits in <code>ui_dashboard.cpp</code> and <code>main.cpp</code>; do not touch unrelated existing changes.</li>
+      <li>For a device regression after OTA, rely on the existing OTA rollback path if the app cannot validate via Bridge, or flash the previous working firmware over USB if needed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>Should the release version <code>FW_VERSION</code> be bumped as part of this change, or handled separately when creating the OTA release?</li>
+      <li>Should docs remove all AgentDeck mentions completely, or keep a short note that the feature was removed?</li>
+    </ul>
+  </section>
+
+  <section class="gate">
+    <h2>Approval Gate</h2>
+    <p>
+      Approved by user on 2026-05-30. Implementation proceeded after this gate.
+    </p>
+  </section>
+
+  <section>
+    <h2>Actual Changes</h2>
+    <ul>
+      <li>Removed AgentDeck includes, fourth tile creation, fourth dot, AgentDeck page creation, and AgentDeck refresh timer from <code>src/ui_dashboard.cpp</code>.</li>
+      <li>Changed the Home Assistant controls tile to be the final left-only tile.</li>
+      <li>Changed page indicators from four dots to three and re-centered them.</li>
+      <li>Removed AgentDeck include, initialization, and polling from <code>src/main.cpp</code>.</li>
+      <li>Deleted <code>src/agentdeck.cpp</code>, <code>src/agentdeck.h</code>, <code>src/ui_agentdeck.cpp</code>, and <code>src/ui_agentdeck.h</code>.</li>
+      <li>Deleted <code>src/idf_component.yml</code> because its only dependencies were AgentDeck-only <code>esp_websocket_client</code> and <code>mdns</code>.</li>
+      <li>Trimmed unused LVGL widgets, themes, and built-in font sizes from <code>src/lv_conf.h</code>.</li>
+      <li>Added ESP-IDF component manager output to <code>.gitignore</code>: <code>dependencies.lock</code> and <code>managed_components/</code>.</li>
+      <li>Bumped <code>FW_VERSION</code> from <code>1.0.1</code> to <code>1.0.2</code> for OTA release.</li>
+      <li>Updated release instructions in <code>README.md</code> to match the current Bridge latest-GitHub-Release OTA flow.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Checks Run</h2>
+    <ul>
+      <li><code>rg "AgentDeck|agentdeck|ui_agentdeck|esp_websocket_client|mdns|mDNS|WebSocket"</code> found no active source or README/CLAUDE references after deletion; only this plan mentions the removed feature.</li>
+      <li><code>C:\Users\me\.platformio\penv\Scripts\pio.exe run</code> passed.</li>
+      <li>Final build reported RAM <code>47,108 / 327,680 bytes</code> and Flash <code>1,515,826 / 7,340,032 bytes</code>.</li>
+      <li>Final <code>firmware.bin</code> size was <code>1,516,192 bytes</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Known Limitations</h2>
+    <ul>
+      <li>Generated PlatformIO/ESP-IDF artifacts may still exist on disk locally, but <code>dependencies.lock</code> and <code>managed_components/</code> are now ignored.</li>
+      <li>Hardware swipe/touch behavior still needs device QA after firmware build and OTA release.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Follow-Up Recommendations</h2>
+    <ul>
+      <li><code>FW_VERSION</code> was bumped for the OTA release tag.</li>
+      <li>After a clean build without AgentDeck dependencies, remove stale generated dependency artifacts from the working tree if they are still untracked.</li>
+      <li>Keep the existing unrelated <code>CLAUDE.md</code> documentation improvement if it was intentional; it documents font generation and anti-tear behavior.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
