@@ -815,7 +815,8 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     } else {
         if (lbl_hero_status) lv_label_set_text(lbl_hero_status, selected_today ? "Сегодня" : "Выбранный день");
         if (lbl_hero_title) {
-            lv_label_set_text(lbl_hero_title, has_all_day ? "Нет событий по времени" : "Свободный день");
+            lv_label_set_text(lbl_hero_title,
+                has_all_day ? (selected_today ? "На сегодня больше событий нет" : "На эту дату больше событий нет") : "Свободный день");
             lv_obj_set_style_text_color(lbl_hero_title, COLOR_TEXT, 0);
         }
         if (lbl_hero_time) {
