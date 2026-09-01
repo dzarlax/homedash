@@ -7,16 +7,19 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "bridge";
 
 static char s_bridge_url[128] = {};
 static char s_bridge_key[64] = {};
+static SemaphoreHandle_t s_data_mutex = NULL;
 
 void bridge_init(const char *url, const char *api_key)
 {
     strncpy(s_bridge_url, url, sizeof(s_bridge_url) - 1);
     strncpy(s_bridge_key, api_key, sizeof(s_bridge_key) - 1);
+    if (!s_data_mutex) s_data_mutex = xSemaphoreCreateMutex();
 }
 
 const char *bridge_get_url(void) { return s_bridge_url; }
@@ -96,12 +99,13 @@ static bool http_get(const char *url, http_buf_t *buf, char *err_out, size_t err
     config.crt_bundle_attach = esp_crt_bundle_attach;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_set_header(client, "X-API-Key", s_bridge_key);
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
     if (err != ESP_OK || status != 200) {
-        ESP_LOGE(TAG, "http_get failed: err=%s status=%d url=%s", esp_err_to_name(err), status, url);
+        ESP_LOGE(TAG, "http_get failed: err=%s status=%d", esp_err_to_name(err), status);
         if (err_out) snprintf(err_out, err_out_size, "%s/%d", esp_err_to_name(err), status);
         free(buf->data);
         buf->data = NULL;
@@ -340,7 +344,7 @@ void bridge_fetch_and_update(void)
     snprintf(s_last_error, sizeof(s_last_error), "Fetching...");
 
     char url[256];
-    snprintf(url, sizeof(url), "%s/api/dashboard?key=%s", s_bridge_url, s_bridge_key);
+    snprintf(url, sizeof(url), "%s/api/dashboard", s_bridge_url);
 
     http_buf_t resp = {};
     if (!http_get(url, &resp, s_last_error, sizeof(s_last_error))) {
@@ -354,6 +358,7 @@ void bridge_fetch_and_update(void)
         return;
     }
 
+    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
     cJSON *ts = cJSON_GetObjectItem(root, "ts");
     if (ts) s_data.ts = (uint32_t)ts->valueint;
 
@@ -364,24 +369,38 @@ void bridge_fetch_and_update(void)
     parse_lights(cJSON_GetObjectItem(root, "lights"));
     parse_weather(cJSON_GetObjectItem(root, "weather"));
     parse_transport(cJSON_GetObjectItem(root, "transport"));
+    xSemaphoreGive(s_data_mutex);
 
     cJSON_Delete(root);
     snprintf(s_last_error, sizeof(s_last_error), "OK");
 }
 
-const bridge_data_t *bridge_get_data(void)
+bool bridge_copy_data(bridge_data_t *out)
 {
-    return &s_data;
+    if (!out || !s_data_mutex) return false;
+    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
+    *out = s_data;
+    xSemaphoreGive(s_data_mutex);
+    return true;
 }
 
-const bridge_cal_data_t *bridge_get_calendar_data(void)
+bool bridge_copy_calendar_data(bridge_cal_data_t *out)
 {
-    return &s_cal_data;
+    if (!out || !s_data_mutex) return false;
+    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
+    *out = s_cal_data;
+    xSemaphoreGive(s_data_mutex);
+    return true;
 }
 
-const char *bridge_get_last_error(void)
+bool bridge_copy_last_error(char *out, size_t out_size)
 {
-    return s_last_error;
+    if (!out || out_size == 0 || !s_data_mutex) return false;
+    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
+    strncpy(out, s_last_error, out_size - 1);
+    out[out_size - 1] = '\0';
+    xSemaphoreGive(s_data_mutex);
+    return true;
 }
 
 void bridge_toggle_light(const char *entity_id)
@@ -389,7 +408,7 @@ void bridge_toggle_light(const char *entity_id)
     if (!wifi_is_connected() || !entity_id) return;
 
     char url[256];
-    snprintf(url, sizeof(url), "%s/api/ha/action?key=%s", s_bridge_url, s_bridge_key);
+    snprintf(url, sizeof(url), "%s/api/ha/action", s_bridge_url);
 
     char body[128];
     snprintf(body, sizeof(body), "{\"entity_id\":\"%s\",\"action\":\"toggle\"}", entity_id);
@@ -410,6 +429,7 @@ void bridge_toggle_light(const char *entity_id)
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "X-API-Key", s_bridge_key);
     esp_http_client_set_post_field(client, body, strlen(body));
 
     esp_err_t err = esp_http_client_perform(client);
@@ -423,7 +443,9 @@ void bridge_toggle_light(const char *entity_id)
         if (root) {
             cJSON *lights = cJSON_GetObjectItem(root, "lights");
             if (lights) {
+                xSemaphoreTake(s_data_mutex, portMAX_DELAY);
                 parse_lights(lights);
+                xSemaphoreGive(s_data_mutex);
             }
             cJSON_Delete(root);
         }
@@ -438,8 +460,7 @@ void bridge_fetch_calendar(int year, int month, int day)
     if (!wifi_is_connected()) return;
 
     char url[256];
-    snprintf(url, sizeof(url), "%s/api/calendar?date=%04d-%02d-%02d&key=%s",
-             s_bridge_url, year, month, day, s_bridge_key);
+    snprintf(url, sizeof(url), "%s/api/calendar?date=%04d-%02d-%02d", s_bridge_url, year, month, day);
 
     http_buf_t resp = {};
     char cal_err[32];
@@ -455,6 +476,7 @@ void bridge_fetch_calendar(int year, int month, int day)
         return;
     }
 
+    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
     s_cal_data.count = 0;
     s_cal_data.year = year;
     s_cal_data.month = month;
@@ -484,5 +506,6 @@ void bridge_fetch_calendar(int year, int month, int day)
         s_cal_data.count++;
     }
     s_cal_data.valid = true;
+    xSemaphoreGive(s_data_mutex);
     cJSON_Delete(root);
 }

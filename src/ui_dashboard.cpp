@@ -229,30 +229,29 @@ static void timer_time_cb(lv_timer_t *timer)
 static void timer_weather_cb(lv_timer_t *timer)
 {
     (void)timer;
-    const bridge_data_t *d = bridge_get_data();
-    ui_dashboard_update_weather(&d->weather);
+    bridge_data_t d = {};
+    if (bridge_copy_data(&d)) ui_dashboard_update_weather(&d.weather);
 }
 
 static void timer_ha_cal_cb(lv_timer_t *timer)
 {
     (void)timer;
-    const bridge_cal_data_t *d = bridge_get_calendar_data();
-    ui_dashboard_update_ha_calendar(d);
+    bridge_cal_data_t d = {};
+    if (bridge_copy_calendar_data(&d)) ui_dashboard_update_ha_calendar(&d);
 }
 
 static void timer_transport_cb(lv_timer_t *timer)
 {
     (void)timer;
-    const bridge_data_t *d = bridge_get_data();
-    ui_dashboard_update_transport(&d->transport);
+    bridge_data_t d = {};
+    if (bridge_copy_data(&d)) ui_dashboard_update_transport(&d.transport);
 }
 
 static void timer_bridge_cb(lv_timer_t *timer)
 {
     (void)timer;
-    const bridge_data_t *d = bridge_get_data();
-    ui_dashboard_update_bridge(d);
-    ui_dashboard_update_ha(d);
+    bridge_data_t d = {};
+    if (bridge_copy_data(&d)) { ui_dashboard_update_bridge(&d); ui_dashboard_update_ha(&d); }
 }
 
 static bool is_today(int y, int m, int d)
@@ -683,7 +682,8 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     if (!data || !data->valid) {
         if (lbl_hero_status) lv_label_set_text(lbl_hero_status, "Календарь");
         if (lbl_hero_title) lv_label_set_text(lbl_hero_title, "Нет данных");
-        if (lbl_hero_time) lv_label_set_text(lbl_hero_time, bridge_get_last_error());
+        char error[64] = {};
+        if (lbl_hero_time && bridge_copy_last_error(error, sizeof(error))) lv_label_set_text(lbl_hero_time, error);
         if (lbl_no_events) lv_obj_add_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
         for (int i = 0; i < MAX_EVENT_LINES; i++) {
             if (lbl_events[i]) lv_obj_add_flag(lbl_events[i], LV_OBJ_FLAG_HIDDEN);
@@ -980,11 +980,13 @@ void ui_dashboard_update_time(void)
     // Update bottom bar
     if (lbl_bottom) {
         char buf[128];
+        char error[64] = {};
+        bridge_copy_last_error(error, sizeof(error));
         snprintf(buf, sizeof(buf), "WiFi:%s H:%.0f/%.0fKB Br:%s v%s",
                  wifi_is_connected() ? "OK" : "--",
                  esp_get_free_heap_size() / 1024.0f,
                  esp_get_free_internal_heap_size() / 1024.0f,
-                 bridge_get_last_error(),
+                 error,
                  FW_VERSION);
         lv_label_set_text(lbl_bottom, buf);
     }

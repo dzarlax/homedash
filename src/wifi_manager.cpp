@@ -1,12 +1,14 @@
 #include "wifi_manager.h"
 
 #include <string.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_netif_sntp.h"
 
 static const char *TAG = "wifi";
 
@@ -14,6 +16,20 @@ static const char *TAG = "wifi";
 
 static EventGroupHandle_t s_wifi_event_group = NULL;
 static bool s_wifi_started = false;
+static bool s_sntp_started = false;
+static const char *s_timezone = NULL;
+static const char *s_ntp_server = NULL;
+
+static void start_sntp_once(void)
+{
+    if (s_sntp_started || !s_ntp_server) return;
+    setenv("TZ", s_timezone ? s_timezone : "UTC0", 1);
+    tzset();
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(s_ntp_server);
+    esp_netif_sntp_init(&cfg);
+    s_sntp_started = true;
+    ESP_LOGI(TAG, "SNTP started");
+}
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
@@ -35,10 +51,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        start_sntp_once();
     }
 }
 
-void wifi_init(const char *ssid, const char *password)
+void wifi_init(const char *ssid, const char *password, const char *timezone, const char *ntp_server)
 {
     if (!ssid || strlen(ssid) == 0) {
         ESP_LOGW(TAG, "SSID not configured, skipping");
@@ -46,6 +63,8 @@ void wifi_init(const char *ssid, const char *password)
     }
 
     s_wifi_event_group = xEventGroupCreate();
+    s_timezone = timezone;
+    s_ntp_server = ntp_server;
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -85,4 +104,11 @@ bool wifi_is_connected(void)
 {
     if (!s_wifi_started || !s_wifi_event_group) return false;
     return (xEventGroupGetBits(s_wifi_event_group) & WIFI_CONNECTED_BIT) != 0;
+}
+
+bool wifi_time_is_valid(void)
+{
+    time_t now; time(&now);
+    struct tm t = {}; localtime_r(&now, &t);
+    return t.tm_year >= 100;
 }

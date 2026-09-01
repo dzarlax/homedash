@@ -16,6 +16,11 @@ static const char *TAG = "ota";
 static char s_url[128] = {};
 static char s_key[64] = {};
 
+static esp_err_t ota_http_client_init(esp_http_client_handle_t client)
+{
+    return esp_http_client_set_header(client, "X-API-Key", s_key);
+}
+
 void ota_init(const char *bridge_url, const char *api_key)
 {
     strncpy(s_url, bridge_url, sizeof(s_url) - 1);
@@ -56,6 +61,7 @@ static char *http_get_body(const char *url, int *out_status)
     config.crt_bundle_attach = esp_crt_bundle_attach;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_set_header(client, "X-API-Key", s_key);
     esp_err_t err = esp_http_client_perform(client);
     *out_status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
@@ -73,7 +79,7 @@ void ota_check_and_update(void)
 
     // 1. Check for update
     char check_url[256];
-    snprintf(check_url, sizeof(check_url), "%s/api/ota/check?v=%s&key=%s", s_url, FW_VERSION, s_key);
+    snprintf(check_url, sizeof(check_url), "%s/api/ota/check?v=%s", s_url, FW_VERSION);
 
     int status = 0;
     char *body = http_get_body(check_url, &status);
@@ -105,7 +111,7 @@ void ota_check_and_update(void)
 
     // 2. Download and flash firmware
     char fw_url[256];
-    snprintf(fw_url, sizeof(fw_url), "%s/api/ota/firmware?key=%s", s_url, s_key);
+    snprintf(fw_url, sizeof(fw_url), "%s/api/ota/firmware", s_url);
 
     esp_http_client_config_t ota_config = {};
     ota_config.url = fw_url;
@@ -115,6 +121,7 @@ void ota_check_and_update(void)
 
     esp_https_ota_config_t ota_cfg = {};
     ota_cfg.http_config = &ota_config;
+    ota_cfg.http_client_init_cb = ota_http_client_init;
 
     esp_err_t err = esp_https_ota(&ota_cfg);
     if (err == ESP_OK) {
