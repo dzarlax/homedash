@@ -5,9 +5,9 @@ A smart home dashboard for the **Waveshare ESP32-S3-Touch-LCD-7B** (7" 1024×600
 ## Features
 
 - **3-page tileview** — swipe between pages:
-  - **Page 1**: Weather, HA Calendar events, real-time bus arrivals
-  - **Page 2**: Health metrics (readiness, steps, sleep, HR, HRV, SpO2), Todoist tasks, news
-  - **Page 3**: Home Assistant light controls + air quality sensors per room
+  - **День**: weekly strip, closest calendar event, weather, transport and a home-air summary
+  - **Самочувствие**: health metrics (readiness, steps, sleep, HR, HRV, SpO2), Todoist tasks and news
+  - **Дом**: Home Assistant light controls and air-quality sensors per room
 - **OTA updates** — firmware updates over WiFi via Bridge, with automatic rollback
 - **Full Cyrillic UI** — Russian-localized interface with custom Montserrat fonts
 - **Dual-core** — LVGL renders on Core 1, all network I/O on Core 0
@@ -112,13 +112,22 @@ If the new firmware fails to connect to Bridge after boot, the bootloader automa
 
 ## Desktop UI Simulator
 
-You can preview the real LVGL UI on Windows without flashing the ESP32-S3:
+You can preview the real LVGL UI without flashing the ESP32-S3:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File sim\build_windows.ps1 -Run
 ```
 
-The simulator opens a 1024x600 desktop window, compiles the real `src/ui_dashboard.cpp`, and uses local fixture data. It is intended for layout and interaction checks only; it does not validate LCD timing, PSRAM/DMA behavior, WiFi, OTA, or the GT911 touch controller.
+On macOS or Linux with SDL2 installed:
+
+```bash
+make -C sim clean all
+./sim/homedash_sim
+```
+
+The simulator opens a 1024x600 desktop window, compiles the real `src/ui_dashboard.cpp`, and uses local fixture data. It supports swipe and the persistent `День` / `Самочувствие` / `Дом` navigation. It is intended for layout and interaction checks only; it does not validate LCD timing, PSRAM/DMA behavior, WiFi, OTA, or the GT911 touch controller. Fixture actions are local only: neither light controls nor OTA can affect a real device.
+
+The production firmware keeps Bridge credentials in NVS. Do not put a Bridge URL or API key in simulator source code, command arguments, or logs.
 
 ## Key Files
 

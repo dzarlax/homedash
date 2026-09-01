@@ -50,9 +50,11 @@ static lv_obj_t *right_panel_ref = NULL; // for positioning now_line
 // Transport panel elements
 static lv_obj_t *lbl_transport_out = NULL;
 static lv_obj_t *lbl_transport_in  = NULL;
+static lv_obj_t *lbl_air_summary = NULL;
 
 // Tileview
 static lv_obj_t *tileview = NULL;
+static lv_obj_t *nav_tiles[3] = {};
 
 // Page 2: Health + Tasks + News (redesigned)
 // Readiness arc
@@ -83,11 +85,11 @@ static lv_obj_t *lbl_news_lines[MAX_NEWS_LINES] = {};
 static lv_obj_t *lbl_news_age[MAX_NEWS_LINES] = {};
 static lv_obj_t *lbl_no_news = NULL;
 
-// Design colors (deeper palette)
-#define COLOR_CARD      lv_color_hex(0x1E2140)
-#define COLOR_GOOD      lv_color_hex(0x4CAF50)
-#define COLOR_WARN      lv_color_hex(0xFFC107)
-#define COLOR_BAD       lv_color_hex(0xEF5350)
+// Shared light, warm palette.  Status colours are reserved for real status.
+#define COLOR_CARD      lv_color_hex(0xFFFFFF)
+#define COLOR_GOOD      lv_color_hex(0x4F8B68)
+#define COLOR_WARN      lv_color_hex(0xC58B35)
+#define COLOR_BAD       lv_color_hex(0xC96A5A)
 // Page 3: HA Control — room-based layout
 #define MAX_ROOMS 4
 #define MAX_ROOM_LIGHTS 3
@@ -123,7 +125,7 @@ static lv_obj_t *room_sensor_cards[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 static lv_obj_t *room_sensor_val_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 static lv_obj_t *room_sensor_name_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 
-#define COLOR_NOW lv_color_hex(0xFF4444)  // red "now" line
+#define COLOR_NOW lv_color_hex(0xC96A5A)
 
 // Track last calendar date to avoid unnecessary updates
 static int last_cal_year = 0;
@@ -146,12 +148,12 @@ static const char *DOW_NAMES[] = {"Bc", "Пн", "Вт", "Ср", "Чт", "Пт", 
 static const char *MONTH_NAMES[] = {"Янв", "Фев", "Мар", "Апр", "Май", "Июн",
                                      "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"};
 
-#define COLOR_BG        lv_color_hex(0x1A1A2E)
-#define COLOR_PANEL     lv_color_hex(0x16213E)
-#define COLOR_ACCENT    lv_color_hex(0x0F3460)
-#define COLOR_TEXT      lv_color_hex(0xE0E0E0)
-#define COLOR_TEXT_DIM  lv_color_hex(0x8888AA)
-#define COLOR_HIGHLIGHT lv_color_hex(0x53A8E2)
+#define COLOR_BG        lv_color_hex(0xF4F1EA)
+#define COLOR_PANEL     lv_color_hex(0xE8EDE6)
+#define COLOR_ACCENT    lv_color_hex(0xD7E4DA)
+#define COLOR_TEXT      lv_color_hex(0x24352E)
+#define COLOR_TEXT_DIM  lv_color_hex(0x6B7970)
+#define COLOR_HIGHLIGHT lv_color_hex(0x4F7564)
 
 // Calendar event colors (per calendar index)
 #define NUM_CAL_COLORS 6
@@ -343,6 +345,134 @@ static void sync_calendar_selection(void)
 
 static void create_page2(lv_obj_t *tile);
 static void create_page3(lv_obj_t *tile);
+static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h);
+
+static void nav_click_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        lv_obj_scroll_to_view((lv_obj_t *)lv_event_get_user_data(e), LV_ANIM_ON);
+    }
+}
+
+static void create_bottom_nav(lv_obj_t *page, int active_index)
+{
+    static const char *names[] = {"День", "Самочувствие", "Дом"};
+    lv_obj_t *nav = lv_obj_create(page);
+    lv_obj_remove_style_all(nav);
+    lv_obj_set_size(nav, 1024, 60);
+    lv_obj_set_pos(nav, 0, 540);
+    lv_obj_set_style_bg_color(nav, COLOR_CARD, 0);
+    lv_obj_set_style_bg_opa(nav, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(nav, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_width(nav, 1, 0);
+    lv_obj_set_style_border_color(nav, COLOR_ACCENT, 0);
+    lv_obj_clear_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *btn = lv_btn_create(nav);
+        lv_obj_set_size(btn, 300, 44);
+        lv_obj_set_pos(btn, 48 + i * 316, 8);
+        lv_obj_set_style_radius(btn, 10, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        bool selected = i == active_index;
+        lv_obj_set_style_bg_color(btn, selected ? COLOR_ACCENT : COLOR_BG, 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_t *label = lv_label_create(btn);
+        lv_obj_set_style_text_color(label, selected ? COLOR_HIGHLIGHT : COLOR_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(label, &font_montserrat_16_cyr, 0);
+        lv_label_set_text(label, names[i]);
+        lv_obj_center(label);
+        lv_obj_add_event_cb(btn, nav_click_cb, LV_EVENT_CLICKED, nav_tiles[i]);
+    }
+}
+
+static lv_obj_t *day_label(lv_obj_t *parent, int x, int y, int w, const char *text,
+                           const lv_font_t *font, lv_color_t color)
+{
+    lv_obj_t *label = lv_label_create(parent);
+    lv_obj_set_pos(label, x, y);
+    lv_obj_set_width(label, w);
+    lv_obj_set_style_text_font(label, font, 0);
+    lv_obj_set_style_text_color(label, color, 0);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_label_set_text(label, text);
+    return label;
+}
+
+static void create_day_planner(lv_obj_t *page)
+{
+    // This is intentionally an overlay: the original dashboard stays below it
+    // while the same update callbacks now target these glanceable components.
+    lv_obj_t *surface = lv_obj_create(page);
+    lv_obj_remove_style_all(surface);
+    lv_obj_set_size(surface, 1024, 540);
+    lv_obj_set_pos(surface, 0, 0);
+    lv_obj_set_style_bg_color(surface, COLOR_BG, 0);
+    lv_obj_set_style_bg_opa(surface, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(surface, LV_OBJ_FLAG_SCROLLABLE);
+
+    lbl_datetime = day_label(surface, 28, 18, 600, "План на день", &font_montserrat_24_cyr, COLOR_TEXT);
+    day_label(surface, 28, 54, 240, "НЕДЕЛЯ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+
+    int y, m, d;
+    get_today_date(&y, &m, &d);
+    for (int i = 0; i < 7; i++) {
+        lv_obj_t *day = lv_obj_create(surface);
+        lv_obj_remove_style_all(day);
+        lv_obj_set_size(day, 78, 58);
+        lv_obj_set_pos(day, 28 + i * 86, 78);
+        lv_obj_set_style_radius(day, 10, 0);
+        lv_obj_set_style_bg_color(day, i == 0 ? COLOR_ACCENT : COLOR_CARD, 0);
+        lv_obj_set_style_bg_opa(day, LV_OPA_COVER, 0);
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%s\n%d", DOW_NAMES[(i + 1 + 6) % 7], d + i);
+        lv_obj_t *label = day_label(day, 0, 7, 78, buf, &font_montserrat_16_cyr,
+                                    i == 0 ? COLOR_HIGHLIGHT : COLOR_TEXT_DIM);
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+        if (i == 0) {
+            lv_obj_t *dot = lv_obj_create(day);
+            lv_obj_remove_style_all(dot);
+            lv_obj_set_size(dot, 6, 6);
+            lv_obj_set_pos(dot, 36, 46);
+            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(dot, COLOR_HIGHLIGHT, 0);
+        }
+    }
+
+    lv_obj_t *plan = make_card(surface, 28, 154, 622, 360);
+    lbl_sched_title = day_label(plan, 18, 15, 300, "Сегодня", &font_montserrat_24_cyr, COLOR_TEXT);
+    hero_event_card = make_card(plan, 16, 56, 590, 105);
+    lv_obj_set_style_bg_color(hero_event_card, COLOR_PANEL, 0);
+    lbl_hero_status = day_label(hero_event_card, 14, 10, 540, "Следующее", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_hero_title = day_label(hero_event_card, 14, 35, 540, "Нет событий", &font_montserrat_24_cyr, COLOR_TEXT);
+    lbl_hero_time = day_label(hero_event_card, 14, 72, 540, "", &font_montserrat_16_cyr, COLOR_HIGHLIGHT);
+    events_scroll = lv_obj_create(plan);
+    lv_obj_remove_style_all(events_scroll);
+    lv_obj_set_size(events_scroll, 590, 160);
+    lv_obj_set_pos(events_scroll, 16, 177);
+    lv_obj_set_flex_flow(events_scroll, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(events_scroll, 10, 0);
+    lv_obj_set_scrollbar_mode(events_scroll, LV_SCROLLBAR_MODE_OFF);
+    for (int i = 0; i < MAX_EVENT_LINES; i++) {
+        lbl_events[i] = day_label(events_scroll, 0, 0, 580, "", &font_montserrat_16_cyr, COLOR_TEXT);
+        if (i >= 3) lv_obj_add_flag(lbl_events[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    lbl_no_events = day_label(events_scroll, 0, 0, 580, "Нет событий", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+
+    lv_obj_t *right = make_card(surface, 670, 154, 326, 360);
+    lbl_topbar_temp = day_label(right, 18, 15, 290, WEATHER_CITY, &font_montserrat_24_cyr, COLOR_TEXT);
+    lbl_weather_detail = day_label(right, 18, 52, 290, "Нет данных о погоде", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    day_label(right, 18, 104, 290, "ТРАНСПОРТ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_transport_out = lv_spangroup_create(right);
+    lv_obj_set_pos(lbl_transport_out, 18, 132);
+    lv_obj_set_width(lbl_transport_out, 290);
+    lv_obj_set_style_text_font(lbl_transport_out, &font_montserrat_16_cyr, 0);
+    lbl_transport_in = lv_spangroup_create(right);
+    lv_obj_set_pos(lbl_transport_in, 18, 164);
+    lv_obj_set_width(lbl_transport_in, 290);
+    lv_obj_set_style_text_font(lbl_transport_in, &font_montserrat_16_cyr, 0);
+    day_label(right, 18, 226, 290, "ВОЗДУХ ДОМА", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_air_summary = day_label(right, 18, 254, 290, "Нет данных", &font_montserrat_16_cyr, COLOR_TEXT);
+}
 
 void ui_dashboard_create(void)
 {
@@ -361,6 +491,9 @@ void ui_dashboard_create(void)
     lv_obj_t *tile1 = lv_tileview_add_tile(tileview, 0, 0, (lv_dir_t)LV_DIR_RIGHT);
     lv_obj_t *tile2 = lv_tileview_add_tile(tileview, 1, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
     lv_obj_t *tile3 = lv_tileview_add_tile(tileview, 2, 0, (lv_dir_t)LV_DIR_LEFT);
+    nav_tiles[0] = tile1;
+    nav_tiles[1] = tile2;
+    nav_tiles[2] = tile3;
 
     // ===== PAGE 1: Main Dashboard (existing) =====
     lv_obj_t *page = tile1;
@@ -618,6 +751,11 @@ void ui_dashboard_create(void)
     // ===== PAGE 3: HA Control =====
     create_page3(tile3);
 
+    create_day_planner(tile1);
+    create_bottom_nav(tile1, 0);
+    create_bottom_nav(tile2, 1);
+    create_bottom_nav(tile3, 2);
+
     // Timers
     lv_timer_create(timer_time_cb, 5000, NULL);
     lv_timer_create(timer_weather_cb, 10000, NULL);
@@ -700,7 +838,8 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         update_schedule_title(sel_year, sel_month, sel_day);
     }
 
-    int display_count = data->count < MAX_EVENT_LINES ? data->count : MAX_EVENT_LINES;
+    // The day view deliberately stays glanceable: hero plus three following rows.
+    int display_count = data->count < 4 ? data->count : 4;
     bool selected_today = is_today(sel_year, sel_month, sel_day);
 
     if (lbl_no_events) lv_obj_add_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
@@ -1030,7 +1169,7 @@ static void create_page2(lv_obj_t *tile)
     lv_obj_remove_style(arc_readiness, NULL, LV_PART_KNOB);
     lv_obj_set_style_arc_width(arc_readiness, 10, LV_PART_INDICATOR);
     lv_obj_set_style_arc_width(arc_readiness, 10, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(arc_readiness, lv_color_hex(0x2A2A4A), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc_readiness, COLOR_ACCENT, LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc_readiness, COLOR_GOOD, LV_PART_INDICATOR);
     lv_obj_clear_flag(arc_readiness, LV_OBJ_FLAG_CLICKABLE);
 
@@ -1126,7 +1265,7 @@ static void create_page2(lv_obj_t *tile)
     }
 
     // ===== BOTTOM LEFT: Tasks (500x305) =====
-    lv_obj_t *tasks_panel = make_card(tile, 5, 285, 505, 305);
+    lv_obj_t *tasks_panel = make_card(tile, 5, 285, 505, 245);
 
     lv_obj_t *lbl_ttitle = lv_label_create(tasks_panel);
     lv_obj_set_style_text_color(lbl_ttitle, COLOR_HIGHLIGHT, 0);
@@ -1165,7 +1304,7 @@ static void create_page2(lv_obj_t *tile)
     lv_obj_set_pos(lbl_no_tasks, 15, 38);
 
     // ===== BOTTOM RIGHT: News (505x305) =====
-    lv_obj_t *news_panel = make_card(tile, 514, 285, 505, 305);
+    lv_obj_t *news_panel = make_card(tile, 514, 285, 505, 245);
 
     lv_obj_t *lbl_ntitle = lv_label_create(news_panel);
     lv_obj_set_style_text_color(lbl_ntitle, COLOR_HIGHLIGHT, 0);
@@ -1363,8 +1502,8 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
 
 // ===== PAGE 3: HA Control — rooms =====
 
-#define COLOR_LIGHT_ON  lv_color_hex(0xFFC107)
-#define COLOR_LIGHT_OFF lv_color_hex(0x3A3A5C)
+#define COLOR_LIGHT_ON  lv_color_hex(0xE7C96B)
+#define COLOR_LIGHT_OFF lv_color_hex(0xDCE4DE)
 
 // Encode room_idx and light_idx into one int for event callback
 #define LIGHT_CB_ID(room, light) ((room) * MAX_ROOM_LIGHTS + (light))
@@ -1400,7 +1539,7 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_t *btn_ota = lv_btn_create(tile);
     lv_obj_set_size(btn_ota, 120, 30);
     lv_obj_set_pos(btn_ota, 890, 6);
-    lv_obj_set_style_bg_color(btn_ota, lv_color_hex(0x2A4A6B), 0);
+    lv_obj_set_style_bg_color(btn_ota, COLOR_ACCENT, 0);
     lv_obj_set_style_radius(btn_ota, 15, 0);
     lv_obj_set_style_shadow_width(btn_ota, 0, 0);
     lv_obj_add_event_cb(btn_ota, ota_btn_cb, LV_EVENT_CLICKED, NULL);
@@ -1412,9 +1551,9 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_center(ota_lbl);
 
     // 2x2 grid of room cards
-    int pw = 500, ph = 265;
+    int pw = 500, ph = 235;
     int positions[MAX_ROOMS][2] = {
-        {5, 40}, {512, 40}, {5, 310}, {512, 310}
+        {5, 40}, {512, 40}, {5, 280}, {512, 280}
     };
 
     for (int r = 0; r < MAX_ROOMS; r++) {
@@ -1511,6 +1650,18 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
 {
     if (!data) return;
 
+    if (lbl_air_summary) {
+        if (!data->sensors_valid || data->sensor_count == 0) {
+            lv_label_set_text(lbl_air_summary, "Нет данных");
+            lv_obj_set_style_text_color(lbl_air_summary, COLOR_TEXT_DIM, 0);
+        } else {
+            char summary[48];
+            snprintf(summary, sizeof(summary), "Датчиков: %d", data->sensor_count);
+            lv_label_set_text(lbl_air_summary, summary);
+            lv_obj_set_style_text_color(lbl_air_summary, COLOR_TEXT, 0);
+        }
+    }
+
     // Update lights per room
     if (data->lights_valid) {
         for (int r = 0; r < MAX_ROOMS; r++) {
@@ -1588,8 +1739,9 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
                         lv_label_set_text(room_sensor_val_lbl[r][s], sen->value);
                         lv_label_set_text(room_sensor_name_lbl[r][s], label);
                         lv_obj_clear_flag(room_sensor_cards[r][s], LV_OBJ_FLAG_HIDDEN);
+                        lv_obj_set_style_text_color(room_sensor_val_lbl[r][s], COLOR_TEXT, 0);
 
-                        // CO2 color coding
+                        // A ppm unit is the only unambiguous CO2 signal in this contract.
                         if (strstr(sen->unit, "ppm")) {
                             int co2 = atoi(sen->value);
                             lv_color_t co2_color = co2 < 800 ? COLOR_GOOD :

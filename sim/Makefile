@@ -29,7 +29,7 @@ LVGL_SRCS = $(shell find $(LVGL_DIR)/src -name '*.c' | grep -v 'lv_demo\|lv_exam
 LVGL_OBJS = $(patsubst $(LVGL_DIR)/%.c,$(BUILD)/lvgl/%.o,$(LVGL_SRCS))
 
 # App C++ sources
-CXX_SRCS = main_sim.cpp stubs.cpp $(SRC_DIR)/ui_dashboard.cpp
+CXX_SRCS = main_sim_sdl.cpp stubs.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/weather_icons.cpp
 CXX_OBJS = $(patsubst %.cpp,$(BUILD)/%.o,$(notdir $(CXX_SRCS)))
 
 # Font + cJSON C sources
@@ -45,7 +45,7 @@ $(BUILD)/lvgl/%.o: $(LVGL_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_C) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/main_sim.o: main_sim.cpp
+$(BUILD)/main_sim_sdl.o: main_sim_sdl.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(SDL2_CFLAGS) -c $< -o $@
 
@@ -54,6 +54,10 @@ $(BUILD)/stubs.o: stubs.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD)/ui_dashboard.o: $(SRC_DIR)/ui_dashboard.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/weather_icons.o: $(SRC_DIR)/weather_icons.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 

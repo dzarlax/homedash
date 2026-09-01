@@ -5,10 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <chrono>
+#endif
 
 #include "bridge.h"
 
@@ -35,7 +39,7 @@ static void set_calendar_for_date(int year, int month, int day)
     time_t now;
     time(&now);
     struct tm t = {};
-    localtime_s(&t, &now);
+    localtime_r(&now, &t);
     int today_y = t.tm_year + 1900;
     int today_m = t.tm_mon + 1;
     int today_d = t.tm_mday;
@@ -137,7 +141,7 @@ extern "C" void sim_init_fixtures(void)
     time_t now;
     time(&now);
     struct tm t = {};
-    localtime_s(&t, &now);
+    localtime_r(&now, &t);
     set_calendar_for_date(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
 }
 
@@ -176,6 +180,27 @@ const char *bridge_get_last_error(void) { return s_last_error; }
 const char *bridge_get_url(void) { return "fixture://homedash"; }
 const char *bridge_get_api_key(void) { return ""; }
 
+bool bridge_copy_data(bridge_data_t *out)
+{
+    if (!out) return false;
+    *out = s_data;
+    return true;
+}
+
+bool bridge_copy_calendar_data(bridge_cal_data_t *out)
+{
+    if (!out) return false;
+    *out = s_calendar;
+    return true;
+}
+
+bool bridge_copy_last_error(char *out, size_t out_size)
+{
+    if (!out || out_size == 0) return false;
+    snprintf(out, out_size, "%s", s_last_error);
+    return true;
+}
+
 bool wifi_is_connected(void) { return true; }
 
 extern "C" {
@@ -184,7 +209,13 @@ uint32_t esp_get_free_internal_heap_size(void) { return 78u * 1024u; }
 void *heap_caps_malloc(size_t size, uint32_t) { return malloc(size); }
 int64_t esp_timer_get_time(void)
 {
+#if defined(_WIN32)
     static ULONGLONG start_ms = GetTickCount64();
     return (int64_t)(GetTickCount64() - start_ms) * 1000LL;
+#else
+    static const auto start = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - start).count();
+#endif
 }
 }
