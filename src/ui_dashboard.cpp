@@ -50,11 +50,14 @@ static lv_obj_t *right_panel_ref = NULL; // for positioning now_line
 // Transport panel elements
 static lv_obj_t *lbl_transport_out = NULL;
 static lv_obj_t *lbl_transport_in  = NULL;
-static lv_obj_t *lbl_air_summary = NULL;
+static lv_obj_t *lbl_air_primary = NULL;
+static lv_obj_t *lbl_air_detail = NULL;
 
 // Tileview
 static lv_obj_t *tileview = NULL;
 static lv_obj_t *nav_tiles[3] = {};
+static lv_obj_t *week_day_buttons[7] = {};
+static lv_calendar_date_t week_dates[7] = {};
 
 // Page 2: Health + Tasks + News (redesigned)
 // Readiness arc
@@ -179,6 +182,7 @@ static lv_color_t cal_color(uint8_t idx) {
 static bool is_today(int y, int m, int d);
 static void update_schedule_title(int y, int m, int d);
 static void sync_calendar_selection(void);
+static void update_week_selection(void);
 
 static void get_today_date(int *y, int *m, int *d)
 {
@@ -202,6 +206,7 @@ static void return_calendar_to_today(void)
     selected_non_today_at_us = 0;
 
     update_schedule_title(sel_year, sel_month, sel_day);
+    update_week_selection();
     if (calendar) lv_calendar_set_showed_date(calendar, sel_year, sel_month);
     sync_calendar_selection();
     request_calendar_date(sel_year, sel_month, sel_day);
@@ -292,6 +297,7 @@ static void calendar_click_cb(lv_event_t *e)
     selected_non_today_at_us = is_today(sel_year, sel_month, sel_day) ? 0 : esp_timer_get_time();
 
     update_schedule_title(sel_year, sel_month, sel_day);
+    update_week_selection();
     sync_calendar_selection();
     request_calendar_date(sel_year, sel_month, sel_day);
 }
@@ -305,9 +311,36 @@ static void btn_today_cb(lv_event_t *e)
     selected_non_today_at_us = 0;
 
     update_schedule_title(sel_year, sel_month, sel_day);
+    update_week_selection();
     if (calendar) lv_calendar_set_showed_date(calendar, sel_year, sel_month);
     sync_calendar_selection();
     request_calendar_date(sel_year, sel_month, sel_day);
+}
+
+static void week_day_click_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    const lv_calendar_date_t *date = (const lv_calendar_date_t *)lv_event_get_user_data(e);
+    if (!date) return;
+
+    sel_year = date->year;
+    sel_month = date->month;
+    sel_day = date->day;
+    selected_non_today_at_us = is_today(sel_year, sel_month, sel_day) ? 0 : esp_timer_get_time();
+    update_schedule_title(sel_year, sel_month, sel_day);
+    update_week_selection();
+    request_calendar_date(sel_year, sel_month, sel_day);
+}
+
+static void update_week_selection(void)
+{
+    for (int i = 0; i < 7; i++) {
+        if (!week_day_buttons[i]) continue;
+        bool selected = week_dates[i].year == sel_year &&
+                        week_dates[i].month == sel_month &&
+                        week_dates[i].day == sel_day;
+        lv_obj_set_style_bg_color(week_day_buttons[i], selected ? COLOR_ACCENT : COLOR_CARD, 0);
+    }
 }
 
 static int calendar_button_id_for_date(int y, int m, int d)
@@ -415,7 +448,23 @@ static void create_day_planner(lv_obj_t *page)
 
     int y, m, d;
     get_today_date(&y, &m, &d);
+    if (sel_year == 0) {
+        sel_year = y;
+        sel_month = m;
+        sel_day = d;
+    }
+    struct tm week_tm = {};
+    week_tm.tm_year = y - 1900;
+    week_tm.tm_mon = m - 1;
+    week_tm.tm_mday = d;
+    mktime(&week_tm);
     for (int i = 0; i < 7; i++) {
+        struct tm date_tm = week_tm;
+        date_tm.tm_mday += i;
+        mktime(&date_tm);
+        week_dates[i].year = date_tm.tm_year + 1900;
+        week_dates[i].month = date_tm.tm_mon + 1;
+        week_dates[i].day = date_tm.tm_mday;
         lv_obj_t *day = lv_obj_create(surface);
         lv_obj_remove_style_all(day);
         lv_obj_set_size(day, 78, 58);
@@ -423,8 +472,9 @@ static void create_day_planner(lv_obj_t *page)
         lv_obj_set_style_radius(day, 10, 0);
         lv_obj_set_style_bg_color(day, i == 0 ? COLOR_ACCENT : COLOR_CARD, 0);
         lv_obj_set_style_bg_opa(day, LV_OPA_COVER, 0);
+        lv_obj_add_flag(day, LV_OBJ_FLAG_CLICKABLE);
         char buf[24];
-        snprintf(buf, sizeof(buf), "%s\n%d", DOW_NAMES[(i + 1 + 6) % 7], d + i);
+        snprintf(buf, sizeof(buf), "%s\n%d", DOW_NAMES[date_tm.tm_wday], week_dates[i].day);
         lv_obj_t *label = day_label(day, 0, 7, 78, buf, &font_montserrat_16_cyr,
                                     i == 0 ? COLOR_HIGHLIGHT : COLOR_TEXT_DIM);
         lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
@@ -436,6 +486,8 @@ static void create_day_planner(lv_obj_t *page)
             lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
             lv_obj_set_style_bg_color(dot, COLOR_HIGHLIGHT, 0);
         }
+        week_day_buttons[i] = day;
+        lv_obj_add_event_cb(day, week_day_click_cb, LV_EVENT_CLICKED, &week_dates[i]);
     }
 
     lv_obj_t *plan = make_card(surface, 28, 154, 622, 360);
@@ -471,7 +523,9 @@ static void create_day_planner(lv_obj_t *page)
     lv_obj_set_width(lbl_transport_in, 290);
     lv_obj_set_style_text_font(lbl_transport_in, &font_montserrat_16_cyr, 0);
     day_label(right, 18, 226, 290, "ВОЗДУХ ДОМА", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_air_summary = day_label(right, 18, 254, 290, "Нет данных", &font_montserrat_16_cyr, COLOR_TEXT);
+    lbl_air_primary = day_label(right, 18, 254, 290, "Нет данных о CO₂", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_air_detail = day_label(right, 18, 284, 290, "Нет данных о PM2.5", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    update_week_selection();
 }
 
 void ui_dashboard_create(void)
@@ -836,6 +890,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         sel_month = data->month;
         sel_day   = data->day;
         update_schedule_title(sel_year, sel_month, sel_day);
+        update_week_selection();
     }
 
     // The day view deliberately stays glanceable: hero plus three following rows.
@@ -1650,15 +1705,42 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
 {
     if (!data) return;
 
-    if (lbl_air_summary) {
-        if (!data->sensors_valid || data->sensor_count == 0) {
-            lv_label_set_text(lbl_air_summary, "Нет данных");
-            lv_obj_set_style_text_color(lbl_air_summary, COLOR_TEXT_DIM, 0);
+    if (lbl_air_primary && lbl_air_detail) {
+        const bridge_sensor_t *co2 = NULL;
+        const bridge_sensor_t *pm25 = NULL;
+        if (data->sensors_valid) {
+            for (int i = 0; i < data->sensor_count; i++) {
+                const bridge_sensor_t *sensor = &data->sensors[i];
+                if (!co2 && strstr(sensor->unit, "ppm")) co2 = sensor;
+                if (!pm25 && (strstr(sensor->name, "PM2.5") || strstr(sensor->name, "PM25") ||
+                              strstr(sensor->name, "pm2.5") || strstr(sensor->name, "pm25"))) {
+                    pm25 = sensor;
+                }
+            }
+        }
+
+        if (co2) {
+            char text[48];
+            snprintf(text, sizeof(text), "CO₂: %s %s", co2->value, co2->unit);
+            int value = atoi(co2->value);
+            lv_label_set_text(lbl_air_primary, text);
+            lv_obj_set_style_text_color(lbl_air_primary,
+                value < 800 ? COLOR_GOOD : value < 1000 ? COLOR_WARN : COLOR_BAD, 0);
         } else {
-            char summary[48];
-            snprintf(summary, sizeof(summary), "Датчиков: %d", data->sensor_count);
-            lv_label_set_text(lbl_air_summary, summary);
-            lv_obj_set_style_text_color(lbl_air_summary, COLOR_TEXT, 0);
+            lv_label_set_text(lbl_air_primary, "Нет данных о CO₂");
+            lv_obj_set_style_text_color(lbl_air_primary, COLOR_TEXT_DIM, 0);
+        }
+
+        if (pm25) {
+            char text[48];
+            snprintf(text, sizeof(text), "PM2.5: %s %s", pm25->value, pm25->unit);
+            float value = strtof(pm25->value, NULL);
+            lv_label_set_text(lbl_air_detail, text);
+            lv_obj_set_style_text_color(lbl_air_detail,
+                value <= 12.0f ? COLOR_GOOD : value <= 35.4f ? COLOR_WARN : COLOR_BAD, 0);
+        } else {
+            lv_label_set_text(lbl_air_detail, "Нет данных о PM2.5");
+            lv_obj_set_style_text_color(lbl_air_detail, COLOR_TEXT_DIM, 0);
         }
     }
 
