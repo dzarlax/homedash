@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>План: аккуратная сводка здоровья</title>
+  <style>
+    body { margin: 0; font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #24352e; background: #f4f1ea; }
+    main { max-width: 900px; margin: 0 auto; padding: 32px 20px 48px; }
+    section { background: #fff; border: 1px solid #d7e4da; border-radius: 12px; padding: 20px; margin: 16px 0; }
+    h1, h2 { line-height: 1.2; } h1 { margin-top: 0; } h2 { font-size: 20px; }
+    code { background: #edf2ed; border-radius: 4px; padding: 2px 5px; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #d7e4da; font-size: 13px; font-weight: 650; }
+    .approval { border-left: 4px solid #c58b35; }
+    .risk { border-left: 4px solid #c96a5a; }
+    .layout { display: grid; grid-template-columns: 160px 1fr; gap: 12px; align-items: stretch; }
+    .box { border: 1px solid #d7e4da; border-radius: 8px; padding: 12px; background: #f7faf7; }
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .metric { border-bottom: 1px solid #d7e4da; padding: 8px; font-size: 14px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Аккуратная сводка здоровья</h1>
+  <p class="badge">Утверждён и реализован локально</p>
+
+  <section>
+    <h2>Задача</h2>
+    <p>Перестроить верхний блок «Здоровье» на вкладке «Сводка», чтобы он стал спокойной иерархичной сводкой, а не набором одинаковых мини-карточек. Задачи и Evening News сохраняют увеличенную высоту из v1.0.14.</p>
+  </section>
+
+  <section>
+    <h2>Текущее состояние</h2>
+    <p><code>create_page2</code> уже уменьшил health-блок до 180 px. Внутри остаются арка готовности, четыре карточки в первой строке и три во второй. Все метрики оформлены одинаковыми контейнерами, поэтому взгляд не понимает, что главное, а тонкие карточки и подписи выглядят тесно.</p>
+  </section>
+
+  <section>
+    <h2>Предлагаемая композиция</h2>
+    <div class="layout">
+      <div class="box"><strong>Готовность</strong><br>крупное значение и короткая оценка</div>
+      <div class="box">
+        <strong>Сегодня</strong>
+        <div class="metric-grid">
+          <div class="metric">Сон</div><div class="metric">Шаги</div><div class="metric">Пульс</div>
+          <div class="metric">ЧСС покоя</div><div class="metric">ВСР</div><div class="metric">SpO2</div>
+        </div>
+      </div>
+    </div>
+    <p>Убираем визуальные «карточки в карточке» для шести вторичных метрик: оставляем единый плоский блок с тонкими разделителями. Калории исключаем из первого экрана как наименее полезный для вечернего взгляда; данные и контракт Bridge не меняются.</p>
+  </section>
+
+  <section>
+    <h2>Поведение и данные</h2>
+    <ul>
+      <li>Готовность остаётся главным индикатором с цветовым статусом.</li>
+      <li>Сон, шаги и пульс — первая строка; ЧСС покоя, ВСР и SpO2 — вторая.</li>
+      <li>Калории не удаляются из Bridge, но не рисуются на сводке.</li>
+      <li>Ни Bridge, ни API, ни OTA-механизм не меняются.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Файлы и шаги</h2>
+    <ol>
+      <li><code>src/ui_dashboard.cpp</code>: заменить создание семи вложенных карточек на главный блок готовности и плоскую сетку из шести метрик.</li>
+      <li>Сохранить существующие обновления health-данных, переназначив виджеты и убрав вывод калорий.</li>
+      <li>Пересобрать simulator и <code>esp32-s3-touch-lcd-7b</code>; вручную проверить на устройстве читаемость, вкладку «Сводка» и переходы.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Проверки</h2>
+    <ul>
+      <li><code>make -C sim clean all</code></li>
+      <li><code>pio run</code></li>
+      <li><code>git diff --check</code></li>
+      <li>На устройстве: данные здоровья обновляются, задачи и новости не перекрываются, переход «День → Сводка → Дом» работает.</li>
+    </ul>
+  </section>
+
+  <section class="risk">
+    <h2>Риски и откат</h2>
+    <p>Главный риск — слишком мелкие значения на физическом экране. Откат: вернуть текущую композицию <code>create_page2</code> отдельным firmware-релизом. Эта задача не меняет данные Bridge и не может повлиять на OTA-протокол.</p>
+  </section>
+
+  <section>
+    <h2>Открытый вопрос: тёмная тема</h2>
+    <p>Её не включаем в этот релиз. Для фиксированного вечернего расписания Bridge не нужен: HomeDash уже имеет локальное время. Для переключения по астрономическому закату позже добавим <code>sunset</code>/<code>sunrise</code> в weather-контракт Bridge.</p>
+  </section>
+
+  <section class="approval">
+    <h2>Утверждение</h2>
+    <p>После явного «да» реализую именно эту плоскую иерархию, обновлю этот план фактическими проверками и только после отдельного подтверждения выпущу OTA.</p>
+  </section>
+
+  <section>
+    <h2>Фактический результат</h2>
+    <ul>
+      <li>В <code>src/ui_dashboard.cpp</code> одинаковые вложенные карточки заменены плоской сеткой 3×2: сон, шаги, пульс, ЧСС покоя, ВСР и SpO2.</li>
+      <li>Готовность осталась единственным крупным визуальным акцентом. Калории сохранены в данных Bridge, но не выводятся на сводке.</li>
+      <li>Пройдены <code>make -C sim clean all</code>, <code>pio run</code> и <code>git diff --check</code>. Размер прошивки: 23.7% RAM, 19.0% flash.</li>
+      <li>OTA не выпускалась: для неё потребуется отдельное подтверждение готовности физического дисплея.</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

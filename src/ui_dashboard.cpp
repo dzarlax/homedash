@@ -75,8 +75,8 @@ static lv_obj_t *arc_readiness = NULL;
 static lv_obj_t *lbl_readiness_val = NULL;
 static lv_obj_t *lbl_readiness_label = NULL;
 
-// Metric cards: value + label + trend
-#define NUM_METRIC_CARDS 7
+// Health summary cells: value + label + trend, without nested cards.
+#define NUM_METRIC_CARDS 6
 struct metric_card_t {
     lv_obj_t *container;
     lv_obj_t *lbl_value;
@@ -1441,81 +1441,39 @@ static void create_page2(lv_obj_t *tile)
     lv_label_set_text(lbl_readiness_label, "Готовность");
     lv_obj_set_pos(lbl_readiness_label, 33, 154);
 
-    // Two compact rows preserve all seven metrics and leave room for reading.
-    static const char *row1_names[] = {"Шаги", "Сон", "Калории"};
-    int r1_x = 150, r1_w = 210, r1_h = 61, r1_gap = 8;
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t *mc = make_card(health_banner, r1_x + i * (r1_w + r1_gap), 35, r1_w, r1_h);
-        metric_cards[i].lbl_name = lv_label_create(mc);
+    // A flat 3x2 grid keeps readiness dominant and removes "cards in cards".
+    static const char *metric_names[] = {"Сон", "Шаги", "Пульс", "ЧСС покоя", "ВСР", "SpO2"};
+    const int grid_x = 170, cell_w = 275;
+    for (int i = 0; i < NUM_METRIC_CARDS; i++) {
+        int row = i / 3;
+        int col = i % 3;
+        int x = grid_x + col * cell_w;
+        int y = 42 + row * 66;
+        metric_cards[i].lbl_name = lv_label_create(health_banner);
         lv_obj_set_style_text_color(metric_cards[i].lbl_name, COLOR_TEXT_DIM, 0);
         lv_obj_set_style_text_font(metric_cards[i].lbl_name, &font_montserrat_16_cyr, 0);
-        lv_obj_set_width(metric_cards[i].lbl_name, r1_w - 16);
-        lv_obj_set_style_text_align(metric_cards[i].lbl_name, LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_text(metric_cards[i].lbl_name, row1_names[i]);
-        lv_obj_set_pos(metric_cards[i].lbl_name, 8, 6);
+        lv_label_set_text(metric_cards[i].lbl_name, metric_names[i]);
+        lv_obj_set_pos(metric_cards[i].lbl_name, x + 10, y);
 
-        metric_cards[i].lbl_value = lv_label_create(mc);
+        metric_cards[i].lbl_value = lv_label_create(health_banner);
         lv_obj_set_style_text_color(metric_cards[i].lbl_value, COLOR_TEXT, 0);
         lv_obj_set_style_text_font(metric_cards[i].lbl_value, &font_montserrat_24_cyr, 0);
-        lv_obj_set_width(metric_cards[i].lbl_value, r1_w - 16);
-        lv_obj_set_style_text_align(metric_cards[i].lbl_value, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(metric_cards[i].lbl_value, "---");
-        lv_obj_set_pos(metric_cards[i].lbl_value, 8, 22);
+        lv_obj_set_pos(metric_cards[i].lbl_value, x + 10, y + 18);
 
-        metric_cards[i].lbl_trend = lv_label_create(mc);
+        metric_cards[i].lbl_trend = lv_label_create(health_banner);
         lv_obj_set_style_text_color(metric_cards[i].lbl_trend, COLOR_TEXT_DIM, 0);
         lv_obj_set_style_text_font(metric_cards[i].lbl_trend, &font_montserrat_16_cyr, 0);
-        lv_obj_set_width(metric_cards[i].lbl_trend, r1_w - 16);
-        lv_obj_set_style_text_align(metric_cards[i].lbl_trend, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(metric_cards[i].lbl_trend, "");
-        lv_obj_set_pos(metric_cards[i].lbl_trend, 8, 44);
-        metric_cards[i].container = mc;
+        lv_obj_set_pos(metric_cards[i].lbl_trend, x + 120, y + 24);
     }
-
-    // Remaining space right of row 1: extra wide card
-    lv_obj_t *mc_extra = make_card(health_banner, r1_x + 3 * (r1_w + r1_gap), 35, r1_w, r1_h);
-    // Card 3 = HR (live)
-    metric_cards[3].lbl_name = lv_label_create(mc_extra);
-    lv_obj_set_style_text_color(metric_cards[3].lbl_name, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(metric_cards[3].lbl_name, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(metric_cards[3].lbl_name, "Пульс");
-    lv_obj_set_pos(metric_cards[3].lbl_name, 8, 6);
-    metric_cards[3].lbl_value = lv_label_create(mc_extra);
-    lv_obj_set_style_text_color(metric_cards[3].lbl_value, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(metric_cards[3].lbl_value, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(metric_cards[3].lbl_value, "---");
-    lv_obj_set_pos(metric_cards[3].lbl_value, 8, 22);
-    metric_cards[3].lbl_trend = lv_label_create(mc_extra);
-    lv_obj_set_style_text_font(metric_cards[3].lbl_trend, &font_montserrat_16_cyr, 0);
-    lv_obj_set_style_text_color(metric_cards[3].lbl_trend, COLOR_TEXT_DIM, 0);
-    lv_label_set_text(metric_cards[3].lbl_trend, "");
-    lv_obj_set_pos(metric_cards[3].lbl_trend, 8, 44);
-    metric_cards[3].container = mc_extra;
-
-    // Row 2: remaining health metrics.
-    static const char *row2_names[] = {"ЧСС покоя", "ВСР", "SpO2"};
-    int r2_x = 150, r2_w = 280, r2_h = 61, r2_gap = 12;
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t *mc2 = make_card(health_banner, r2_x + i * (r2_w + r2_gap), 105, r2_w, r2_h);
-        int idx = 4 + i;
-        metric_cards[idx].lbl_name = lv_label_create(mc2);
-        lv_obj_set_style_text_color(metric_cards[idx].lbl_name, COLOR_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(metric_cards[idx].lbl_name, &font_montserrat_16_cyr, 0);
-        lv_label_set_text(metric_cards[idx].lbl_name, row2_names[i]);
-        lv_obj_set_pos(metric_cards[idx].lbl_name, 8, 6);
-
-        metric_cards[idx].lbl_value = lv_label_create(mc2);
-        lv_obj_set_style_text_color(metric_cards[idx].lbl_value, COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(metric_cards[idx].lbl_value, &font_montserrat_24_cyr, 0);
-        lv_label_set_text(metric_cards[idx].lbl_value, "---");
-        lv_obj_set_pos(metric_cards[idx].lbl_value, 8, 22);
-
-        metric_cards[idx].lbl_trend = lv_label_create(mc2);
-        lv_obj_set_style_text_font(metric_cards[idx].lbl_trend, &font_montserrat_16_cyr, 0);
-        lv_obj_set_style_text_color(metric_cards[idx].lbl_trend, COLOR_TEXT_DIM, 0);
-        lv_label_set_text(metric_cards[idx].lbl_trend, "");
-        lv_obj_set_pos(metric_cards[idx].lbl_trend, 8, 44);
-        metric_cards[idx].container = mc2;
+    for (int i = 1; i < 3; i++) {
+        lv_obj_t *rule = lv_obj_create(health_banner);
+        lv_obj_remove_style_all(rule);
+        lv_obj_set_size(rule, 1, 118);
+        lv_obj_set_pos(rule, grid_x + i * cell_w - 4, 42);
+        lv_obj_set_style_bg_color(rule, COLOR_ACCENT, 0);
+        lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
     }
 
     // ===== BOTTOM LEFT: Tasks =====
@@ -1660,40 +1618,35 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
                 r >= 80 ? "Отлично" : r >= 50 ? "Норма" : "Низко");
         }
 
-        // Metric cards: 0=Steps, 1=Sleep, 2=Calories, 3=HR, 4=RHR, 5=HRV, 6=SpO2
+        // Flat summary: 0=Sleep, 1=Steps, 2=HR, 3=RHR, 4=HRV, 5=SpO2.
         char val[16], trend[24];
-
-        // Steps
-        snprintf(val, sizeof(val), "%d", data->health.steps);
-        format_trend(trend, sizeof(trend), data->health.steps, data->health.steps_prev);
-        set_metric_card(0, val, trend, data->health.steps >= data->health.steps_prev ? COLOR_GOOD : COLOR_BAD);
 
         // Sleep
         snprintf(val, sizeof(val), "%.1fh", data->health.sleep);
         int s10 = (int)(data->health.sleep * 10), sp10 = (int)(data->health.sleep_prev * 10);
         format_trend(trend, sizeof(trend), s10, sp10);
-        set_metric_card(1, val, trend, data->health.sleep >= 7.0 ? COLOR_GOOD : (data->health.sleep >= 6.0 ? COLOR_WARN : COLOR_BAD));
+        set_metric_card(0, val, trend, data->health.sleep >= 7.0 ? COLOR_GOOD : (data->health.sleep >= 6.0 ? COLOR_WARN : COLOR_BAD));
 
-        // Calories
-        snprintf(val, sizeof(val), "%d", data->health.cal);
-        format_trend(trend, sizeof(trend), data->health.cal, data->health.cal_prev);
-        set_metric_card(2, val, trend, data->health.cal >= data->health.cal_prev ? COLOR_GOOD : COLOR_TEXT_DIM);
+        // Steps
+        snprintf(val, sizeof(val), "%d", data->health.steps);
+        format_trend(trend, sizeof(trend), data->health.steps, data->health.steps_prev);
+        set_metric_card(1, val, trend, data->health.steps >= data->health.steps_prev ? COLOR_GOOD : COLOR_BAD);
 
         // Heart Rate (live)
         snprintf(val, sizeof(val), "%d bpm", data->health.hr);
-        set_metric_card(3, val, "", data->health.hr <= 100 ? COLOR_GOOD : COLOR_WARN);
+        set_metric_card(2, val, "", data->health.hr <= 100 ? COLOR_GOOD : COLOR_WARN);
 
         // RHR
         snprintf(val, sizeof(val), "%d bpm", data->health.rhr);
-        set_metric_card(4, val, "", data->health.rhr <= 60 ? COLOR_GOOD : (data->health.rhr <= 75 ? COLOR_WARN : COLOR_BAD));
+        set_metric_card(3, val, "", data->health.rhr <= 60 ? COLOR_GOOD : (data->health.rhr <= 75 ? COLOR_WARN : COLOR_BAD));
 
         // HRV
         snprintf(val, sizeof(val), "%d ms", data->health.hrv);
-        set_metric_card(5, val, "", data->health.hrv >= 40 ? COLOR_GOOD : (data->health.hrv >= 25 ? COLOR_WARN : COLOR_BAD));
+        set_metric_card(4, val, "", data->health.hrv >= 40 ? COLOR_GOOD : (data->health.hrv >= 25 ? COLOR_WARN : COLOR_BAD));
 
         // SpO2
         snprintf(val, sizeof(val), "%d%%", data->health.spo2);
-        set_metric_card(6, val, "", data->health.spo2 >= 95 ? COLOR_GOOD : COLOR_WARN);
+        set_metric_card(5, val, "", data->health.spo2 >= 95 ? COLOR_GOOD : COLOR_WARN);
     }
 
     // Tasks — with priority bars
