@@ -303,29 +303,21 @@ static void update_day_context(int y, int m, int d, int event_count)
 {
     if (!lbl_day_context || !lbl_day_summary || m < 1 || m > 12) return;
 
-    struct tm date_tm = {};
-    date_tm.tm_year = y - 1900;
-    date_tm.tm_mon = m - 1;
-    date_tm.tm_mday = d;
-    mktime(&date_tm);
-
-    char date_text[40];
-    snprintf(date_text, sizeof(date_text), "%s, %d %s", DOW_NAMES[date_tm.tm_wday], d, MONTH_NAMES[m - 1]);
-    lv_label_set_text(lbl_day_context, date_text);
-
     if (event_count < 0) {
+        lv_label_set_text(lbl_day_context, "Расписание");
         lv_label_set_text(lbl_day_summary, event_count == -2 ? "Нет данных календаря" : "Загружаю расписание");
         return;
     }
 
-    char summary[40];
     if (event_count == 0) {
-        snprintf(summary, sizeof(summary), "%s: свободный день", is_today(y, m, d) ? "Сегодня" : "В плане");
+        lv_label_set_text(lbl_day_context, "Свободный день");
     } else {
+        char summary[40];
         snprintf(summary, sizeof(summary), "%d %s", event_count,
                  event_count == 1 ? "событие" : (event_count < 5 ? "события" : "событий"));
+        lv_label_set_text(lbl_day_context, summary);
     }
-    lv_label_set_text(lbl_day_summary, summary);
+    lv_label_set_text(lbl_day_summary, is_today(y, m, d) ? "Сегодня" : "Выбранный день");
 }
 
 static void calendar_click_cb(lv_event_t *e)
@@ -628,7 +620,7 @@ static void create_day_planner(lv_obj_t *page)
     day_label(surface, 28, 54, 240, "НЕДЕЛЯ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
     lv_obj_t *day_context = make_card(surface, 670, 18, 326, 118);
-    day_label(day_context, 18, 14, 290, "ВЫБРАННЫЙ ДЕНЬ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    day_label(day_context, 18, 14, 290, "РАСПИСАНИЕ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
     lbl_day_context = day_label(day_context, 18, 42, 290, "", &font_montserrat_24_cyr, COLOR_TEXT);
     lbl_day_summary = day_label(day_context, 18, 78, 290, "Загружаю расписание", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
@@ -1399,8 +1391,8 @@ static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h)
 
 static void create_page2(lv_obj_t *tile)
 {
-    // ===== TOP: Health banner (full width, 275px) =====
-    lv_obj_t *health_banner = make_card(tile, 5, 5, 1014, 275);
+    // ===== TOP: compact health summary =====
+    lv_obj_t *health_banner = make_card(tile, 5, 5, 1014, 180);
 
     // Title
     lv_obj_t *lbl_htitle = lv_label_create(health_banner);
@@ -1411,8 +1403,8 @@ static void create_page2(lv_obj_t *tile)
 
     // Readiness arc (left side)
     arc_readiness = lv_arc_create(health_banner);
-    lv_obj_set_size(arc_readiness, 140, 140);
-    lv_obj_set_pos(arc_readiness, 20, 50);
+    lv_obj_set_size(arc_readiness, 112, 112);
+    lv_obj_set_pos(arc_readiness, 20, 42);
     lv_arc_set_rotation(arc_readiness, 135);
     lv_arc_set_bg_angles(arc_readiness, 0, 270);
     lv_arc_set_range(arc_readiness, 0, 100);
@@ -1427,22 +1419,22 @@ static void create_page2(lv_obj_t *tile)
     // Readiness value (inside arc)
     lbl_readiness_val = lv_label_create(health_banner);
     lv_obj_set_style_text_color(lbl_readiness_val, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(lbl_readiness_val, &lv_font_montserrat_48, 0);
     lv_label_set_text(lbl_readiness_val, "--");
-    lv_obj_set_pos(lbl_readiness_val, 58, 85);
+    lv_obj_set_style_text_font(lbl_readiness_val, &lv_font_montserrat_32, 0);
+    lv_obj_set_pos(lbl_readiness_val, 54, 78);
 
     // Readiness label (below arc)
     lbl_readiness_label = lv_label_create(health_banner);
     lv_obj_set_style_text_color(lbl_readiness_label, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_readiness_label, &font_montserrat_16_cyr, 0);
     lv_label_set_text(lbl_readiness_label, "Готовность");
-    lv_obj_set_pos(lbl_readiness_label, 45, 200);
+    lv_obj_set_pos(lbl_readiness_label, 33, 154);
 
-    // Row 1: 3 main metric cards (Steps, Sleep, Calories) — bigger
+    // Two compact rows preserve all seven metrics and leave room for reading.
     static const char *row1_names[] = {"Шаги", "Сон", "Калории"};
-    int r1_x = 185, r1_w = 190, r1_h = 110, r1_gap = 10;
+    int r1_x = 150, r1_w = 210, r1_h = 61, r1_gap = 8;
     for (int i = 0; i < 3; i++) {
-        lv_obj_t *mc = make_card(health_banner, r1_x + i * (r1_w + r1_gap), 38, r1_w, r1_h);
+        lv_obj_t *mc = make_card(health_banner, r1_x + i * (r1_w + r1_gap), 35, r1_w, r1_h);
         metric_cards[i].lbl_name = lv_label_create(mc);
         lv_obj_set_style_text_color(metric_cards[i].lbl_name, COLOR_TEXT_DIM, 0);
         lv_obj_set_style_text_font(metric_cards[i].lbl_name, &font_montserrat_16_cyr, 0);
@@ -1453,11 +1445,11 @@ static void create_page2(lv_obj_t *tile)
 
         metric_cards[i].lbl_value = lv_label_create(mc);
         lv_obj_set_style_text_color(metric_cards[i].lbl_value, COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(metric_cards[i].lbl_value, &lv_font_montserrat_32, 0);
+        lv_obj_set_style_text_font(metric_cards[i].lbl_value, &font_montserrat_24_cyr, 0);
         lv_obj_set_width(metric_cards[i].lbl_value, r1_w - 16);
         lv_obj_set_style_text_align(metric_cards[i].lbl_value, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(metric_cards[i].lbl_value, "---");
-        lv_obj_set_pos(metric_cards[i].lbl_value, 8, 28);
+        lv_obj_set_pos(metric_cards[i].lbl_value, 8, 22);
 
         metric_cards[i].lbl_trend = lv_label_create(mc);
         lv_obj_set_style_text_color(metric_cards[i].lbl_trend, COLOR_TEXT_DIM, 0);
@@ -1465,12 +1457,12 @@ static void create_page2(lv_obj_t *tile)
         lv_obj_set_width(metric_cards[i].lbl_trend, r1_w - 16);
         lv_obj_set_style_text_align(metric_cards[i].lbl_trend, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(metric_cards[i].lbl_trend, "");
-        lv_obj_set_pos(metric_cards[i].lbl_trend, 8, 72);
+        lv_obj_set_pos(metric_cards[i].lbl_trend, 8, 44);
         metric_cards[i].container = mc;
     }
 
     // Remaining space right of row 1: extra wide card
-    lv_obj_t *mc_extra = make_card(health_banner, r1_x + 3 * (r1_w + r1_gap), 38, 210, r1_h);
+    lv_obj_t *mc_extra = make_card(health_banner, r1_x + 3 * (r1_w + r1_gap), 35, r1_w, r1_h);
     // Card 3 = HR (live)
     metric_cards[3].lbl_name = lv_label_create(mc_extra);
     lv_obj_set_style_text_color(metric_cards[3].lbl_name, COLOR_TEXT_DIM, 0);
@@ -1479,21 +1471,21 @@ static void create_page2(lv_obj_t *tile)
     lv_obj_set_pos(metric_cards[3].lbl_name, 8, 6);
     metric_cards[3].lbl_value = lv_label_create(mc_extra);
     lv_obj_set_style_text_color(metric_cards[3].lbl_value, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(metric_cards[3].lbl_value, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_font(metric_cards[3].lbl_value, &font_montserrat_24_cyr, 0);
     lv_label_set_text(metric_cards[3].lbl_value, "---");
-    lv_obj_set_pos(metric_cards[3].lbl_value, 8, 28);
+    lv_obj_set_pos(metric_cards[3].lbl_value, 8, 22);
     metric_cards[3].lbl_trend = lv_label_create(mc_extra);
     lv_obj_set_style_text_font(metric_cards[3].lbl_trend, &font_montserrat_16_cyr, 0);
     lv_obj_set_style_text_color(metric_cards[3].lbl_trend, COLOR_TEXT_DIM, 0);
     lv_label_set_text(metric_cards[3].lbl_trend, "");
-    lv_obj_set_pos(metric_cards[3].lbl_trend, 8, 72);
+    lv_obj_set_pos(metric_cards[3].lbl_trend, 8, 44);
     metric_cards[3].container = mc_extra;
 
-    // Row 2: 4 smaller cards (RHR, HRV, SpO2, Resp Rate) — below
+    // Row 2: remaining health metrics.
     static const char *row2_names[] = {"ЧСС покоя", "ВСР", "SpO2"};
-    int r2_x = 185, r2_w = 270, r2_h = 100, r2_gap = 10;
+    int r2_x = 150, r2_w = 280, r2_h = 61, r2_gap = 12;
     for (int i = 0; i < 3; i++) {
-        lv_obj_t *mc2 = make_card(health_banner, r2_x + i * (r2_w + r2_gap), 158, r2_w, r2_h);
+        lv_obj_t *mc2 = make_card(health_banner, r2_x + i * (r2_w + r2_gap), 105, r2_w, r2_h);
         int idx = 4 + i;
         metric_cards[idx].lbl_name = lv_label_create(mc2);
         lv_obj_set_style_text_color(metric_cards[idx].lbl_name, COLOR_TEXT_DIM, 0);
@@ -1503,20 +1495,20 @@ static void create_page2(lv_obj_t *tile)
 
         metric_cards[idx].lbl_value = lv_label_create(mc2);
         lv_obj_set_style_text_color(metric_cards[idx].lbl_value, COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(metric_cards[idx].lbl_value, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_font(metric_cards[idx].lbl_value, &font_montserrat_24_cyr, 0);
         lv_label_set_text(metric_cards[idx].lbl_value, "---");
-        lv_obj_set_pos(metric_cards[idx].lbl_value, 8, 28);
+        lv_obj_set_pos(metric_cards[idx].lbl_value, 8, 22);
 
         metric_cards[idx].lbl_trend = lv_label_create(mc2);
         lv_obj_set_style_text_font(metric_cards[idx].lbl_trend, &font_montserrat_16_cyr, 0);
         lv_obj_set_style_text_color(metric_cards[idx].lbl_trend, COLOR_TEXT_DIM, 0);
         lv_label_set_text(metric_cards[idx].lbl_trend, "");
-        lv_obj_set_pos(metric_cards[idx].lbl_trend, 8, 65);
+        lv_obj_set_pos(metric_cards[idx].lbl_trend, 8, 44);
         metric_cards[idx].container = mc2;
     }
 
-    // ===== BOTTOM LEFT: Tasks (500x305) =====
-    lv_obj_t *tasks_panel = make_card(tile, 5, 285, 505, 245);
+    // ===== BOTTOM LEFT: Tasks =====
+    lv_obj_t *tasks_panel = make_card(tile, 5, 190, 505, 340);
 
     lv_obj_t *lbl_ttitle = lv_label_create(tasks_panel);
     lv_obj_set_style_text_color(lbl_ttitle, COLOR_HIGHLIGHT, 0);
@@ -1557,8 +1549,8 @@ static void create_page2(lv_obj_t *tile)
     lv_label_set_text(lbl_no_tasks, "Нет задач");
     lv_obj_set_pos(lbl_no_tasks, 15, 38);
 
-    // ===== BOTTOM RIGHT: News (505x305) =====
-    lv_obj_t *news_panel = make_card(tile, 514, 285, 505, 245);
+    // ===== BOTTOM RIGHT: News =====
+    lv_obj_t *news_panel = make_card(tile, 514, 190, 505, 340);
 
     lv_obj_t *lbl_ntitle = lv_label_create(news_panel);
     lv_obj_set_style_text_color(lbl_ntitle, COLOR_HIGHLIGHT, 0);
