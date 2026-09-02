@@ -21,8 +21,8 @@
 static const char *TAG = "main";
 
 // Network task handle for cross-core notification
-enum request_kind_t { REQUEST_CALENDAR, REQUEST_TOGGLE, REQUEST_OTA };
-struct network_request_t { request_kind_t kind; int year, month, day; char entity[48]; };
+enum request_kind_t { REQUEST_CALENDAR, REQUEST_TOGGLE, REQUEST_CLIMATE, REQUEST_OTA };
+struct network_request_t { request_kind_t kind; int year, month, day; char entity[48]; char action[20]; char mode[16]; float temperature; };
 static QueueHandle_t s_request_queue = NULL;
 
 void request_calendar_date(int year, int month, int day)
@@ -36,6 +36,15 @@ void request_light_toggle(const char *entity_id)
 {
     network_request_t req = { REQUEST_TOGGLE, 0, 0, 0, {} };
     if (entity_id) strncpy(req.entity, entity_id, sizeof(req.entity) - 1);
+    if (s_request_queue) xQueueSend(s_request_queue, &req, 0);
+}
+
+void request_climate_action(const char *entity_id, const char *action, float temperature, const char *mode)
+{
+    network_request_t req = { REQUEST_CLIMATE, 0, 0, 0, {}, {}, {}, temperature };
+    if (entity_id) strncpy(req.entity, entity_id, sizeof(req.entity) - 1);
+    if (action) strncpy(req.action, action, sizeof(req.action) - 1);
+    if (mode) strncpy(req.mode, mode, sizeof(req.mode) - 1);
     if (s_request_queue) xQueueSend(s_request_queue, &req, 0);
 }
 
@@ -79,6 +88,7 @@ static void network_task(void *param)
         while (xQueueReceive(s_request_queue, &req, 0) == pdTRUE) {
             if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
+            else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
             else ota_check_and_update();
         }
 
@@ -117,6 +127,7 @@ static void network_task(void *param)
         if (xQueueReceive(s_request_queue, &req, pdMS_TO_TICKS(TICK_MS)) == pdTRUE) {
             if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
+            else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
             else ota_check_and_update();
         }
         uint32_t elapsed = (xTaskGetTickCount() - started) * portTICK_PERIOD_MS;

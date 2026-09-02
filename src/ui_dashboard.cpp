@@ -15,6 +15,7 @@
 // Declared in main.cpp
 extern void request_calendar_date(int year, int month, int day);
 extern void request_light_toggle(const char *entity_id);
+extern void request_climate_action(const char *entity_id, const char *action, float temperature, const char *mode);
 extern void request_ota_check(void);
 
 // Custom font with Cyrillic support (for HA calendar events)
@@ -141,6 +142,16 @@ static lv_obj_t *room_light_labels[MAX_ROOMS][MAX_ROOM_LIGHTS] = {};
 static lv_obj_t *room_sensor_cards[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 static lv_obj_t *room_sensor_val_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 static lv_obj_t *room_sensor_name_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
+static lv_obj_t *home_air_values[4] = {};
+static lv_obj_t *home_air_names[4] = {};
+static lv_obj_t *home_climate_name = NULL;
+static lv_obj_t *home_climate_current = NULL;
+static lv_obj_t *home_climate_target = NULL;
+static lv_obj_t *home_climate_power = NULL;
+static lv_obj_t *home_climate_mode_btns[4] = {};
+static float home_climate_target_value = 22.0f;
+static bool home_climate_on = false;
+static char home_climate_entity[48] = {};
 
 #define COLOR_NOW lv_color_hex(0xC96A5A)
 
@@ -1792,6 +1803,30 @@ static void ota_btn_cb(lv_event_t *e)
     request_ota_check();
 }
 
+static void climate_power_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!home_climate_entity[0]) return;
+    request_climate_action(home_climate_entity, home_climate_on ? "turn_off" : "turn_on", 0, NULL);
+}
+
+static void climate_temperature_btn_cb(lv_event_t *e)
+{
+    int delta = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!home_climate_entity[0]) return;
+    home_climate_target_value += delta;
+    if (home_climate_target_value < 16) home_climate_target_value = 16;
+    if (home_climate_target_value > 30) home_climate_target_value = 30;
+    request_climate_action(home_climate_entity, "set_temperature", home_climate_target_value, NULL);
+}
+
+static void climate_mode_btn_cb(lv_event_t *e)
+{
+    const char *mode = (const char *)lv_event_get_user_data(e);
+    if (!home_climate_entity[0] || !mode) return;
+    request_climate_action(home_climate_entity, "set_hvac_mode", 0, mode);
+}
+
 static void create_page3(lv_obj_t *tile)
 {
     // Title
@@ -1816,10 +1851,87 @@ static void create_page3(lv_obj_t *tile)
     lv_label_set_text(ota_lbl, "Обновить");
     lv_obj_center(ota_lbl);
 
-    // 2x2 grid of room cards
-    int pw = 500, ph = 235;
+    // Air overview: the two CO2 sensors remain explicitly named, rather than
+    // collapsing household air into an ambiguous sensor count.
+    lv_obj_t *air = make_card(tile, 5, 42, 400, 130);
+    lv_obj_t *air_title = lv_label_create(air);
+    lv_obj_set_style_text_color(air_title, COLOR_HIGHLIGHT, 0);
+    lv_obj_set_style_text_font(air_title, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(air_title, "Воздух дома");
+    lv_obj_set_pos(air_title, 14, 10);
+    const char *air_names[] = {"Гостиная CO2", "Кабинет CO2", "PM2.5", "Влажность"};
+    for (int i = 0; i < 4; i++) {
+        int col = i % 2, row = i / 2;
+        home_air_values[i] = lv_label_create(air);
+        lv_obj_set_style_text_color(home_air_values[i], COLOR_TEXT, 0);
+        lv_obj_set_style_text_font(home_air_values[i], &font_montserrat_16_cyr, 0);
+        lv_label_set_text(home_air_values[i], "---");
+        lv_obj_set_pos(home_air_values[i], 14 + col * 190, 40 + row * 42);
+        home_air_names[i] = lv_label_create(air);
+        lv_obj_set_style_text_color(home_air_names[i], COLOR_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(home_air_names[i], &font_montserrat_16_cyr, 0);
+        lv_label_set_text(home_air_names[i], air_names[i]);
+        lv_obj_set_pos(home_air_names[i], 14 + col * 190, 62 + row * 42);
+    }
+
+    lv_obj_t *climate = make_card(tile, 412, 42, 607, 130);
+    home_climate_name = lv_label_create(climate);
+    lv_obj_set_style_text_color(home_climate_name, COLOR_HIGHLIGHT, 0);
+    lv_obj_set_style_text_font(home_climate_name, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(home_climate_name, "Кондиционер");
+    lv_obj_set_pos(home_climate_name, 14, 10);
+    home_climate_current = lv_label_create(climate);
+    lv_obj_set_style_text_color(home_climate_current, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(home_climate_current, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(home_climate_current, "Сейчас ---");
+    lv_obj_set_pos(home_climate_current, 14, 40);
+    home_climate_target = lv_label_create(climate);
+    lv_obj_set_style_text_color(home_climate_target, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(home_climate_target, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(home_climate_target, "Цель ---");
+    lv_obj_set_pos(home_climate_target, 14, 72);
+    home_climate_power = lv_btn_create(climate);
+    lv_obj_set_size(home_climate_power, 115, 36);
+    lv_obj_set_pos(home_climate_power, 174, 42);
+    lv_obj_set_style_radius(home_climate_power, 18, 0);
+    lv_obj_set_style_shadow_width(home_climate_power, 0, 0);
+    lv_obj_add_event_cb(home_climate_power, climate_power_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *power_label = lv_label_create(home_climate_power);
+    lv_obj_set_style_text_font(power_label, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(power_label, "Вкл / выкл");
+    lv_obj_center(power_label);
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *btn = lv_btn_create(climate);
+        lv_obj_set_size(btn, 42, 36);
+        lv_obj_set_pos(btn, 300 + i * 48, 42);
+        lv_obj_set_style_radius(btn, 18, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_add_event_cb(btn, climate_temperature_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(i ? 1 : -1));
+        lv_obj_t *label = lv_label_create(btn);
+        lv_obj_set_style_text_font(label, &font_montserrat_24_cyr, 0);
+        lv_label_set_text(label, i ? "+" : "-");
+        lv_obj_center(label);
+    }
+    static const char *modes[] = {"cool", "heat", "dry", "fan_only"};
+    static const char *mode_labels[] = {"Охл.", "Тепло", "Сушка", "Вент."};
+    for (int i = 0; i < 4; i++) {
+        home_climate_mode_btns[i] = lv_btn_create(climate);
+        lv_obj_set_size(home_climate_mode_btns[i], 57, 30);
+        lv_obj_set_pos(home_climate_mode_btns[i], 372 + i * 57, 82);
+        lv_obj_set_style_radius(home_climate_mode_btns[i], 15, 0);
+        lv_obj_set_style_shadow_width(home_climate_mode_btns[i], 0, 0);
+        lv_obj_add_event_cb(home_climate_mode_btns[i], climate_mode_btn_cb, LV_EVENT_CLICKED, (void *)modes[i]);
+        lv_obj_t *label = lv_label_create(home_climate_mode_btns[i]);
+        lv_obj_set_style_text_font(label, &font_montserrat_16_cyr, 0);
+        lv_label_set_text(label, mode_labels[i]);
+        lv_obj_center(label);
+    }
+
+    // Compact 2x2 light grid. Air detail now lives in the persistent overview
+    // above, leaving each room one clear action area.
+    int pw = 500, ph = 166;
     int positions[MAX_ROOMS][2] = {
-        {5, 40}, {512, 40}, {5, 280}, {512, 280}
+        {5, 180}, {512, 180}, {5, 354}, {512, 354}
     };
 
     for (int r = 0; r < MAX_ROOMS; r++) {
@@ -1837,7 +1949,7 @@ static void create_page3(lv_obj_t *tile)
         for (int l = 0; l < MAX_ROOM_LIGHTS; l++) {
             lv_obj_t *btn = lv_btn_create(panel);
             lv_obj_set_size(btn, 148, 44);
-            lv_obj_set_pos(btn, 15 + l * 156, 40);
+            lv_obj_set_pos(btn, 15 + l * 156, 68);
             lv_obj_set_style_bg_color(btn, COLOR_LIGHT_OFF, 0);
             lv_obj_set_style_radius(btn, 22, 0);  // pill shape
             lv_obj_set_style_pad_all(btn, 4, 0);
@@ -1862,44 +1974,6 @@ static void create_page3(lv_obj_t *tile)
             }
         }
 
-        // Sensor cards (below lights, like Health metric cards)
-        int sc_w = 140, sc_h = 68, sc_gap = 6;
-        int sc_per_row = (pw - 20) / (sc_w + sc_gap);
-        for (int s = 0; s < MAX_ROOM_SENSORS; s++) {
-            int col = s % sc_per_row;
-            int row = s / sc_per_row;
-            int sx = 12 + col * (sc_w + sc_gap);
-            int sy = 90 + row * (sc_h + sc_gap);
-
-            lv_obj_t *sc = make_card(panel, sx, sy, sc_w, sc_h);
-
-            // Value
-            lv_obj_t *vlbl = lv_label_create(sc);
-            lv_obj_set_style_text_color(vlbl, COLOR_TEXT, 0);
-            lv_obj_set_style_text_font(vlbl, &font_montserrat_24_cyr, 0);
-            lv_obj_set_width(vlbl, sc_w - 12);
-            lv_obj_set_style_text_align(vlbl, LV_TEXT_ALIGN_CENTER, 0);
-            lv_label_set_text(vlbl, "---");
-            lv_obj_set_pos(vlbl, 6, 4);
-
-            // Name
-            lv_obj_t *nlbl = lv_label_create(sc);
-            lv_obj_set_style_text_color(nlbl, COLOR_TEXT_DIM, 0);
-            lv_obj_set_style_text_font(nlbl, &font_montserrat_16_cyr, 0);
-            lv_obj_set_width(nlbl, sc_w - 12);
-            lv_obj_set_style_text_align(nlbl, LV_TEXT_ALIGN_CENTER, 0);
-            lv_label_set_long_mode(nlbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
-            lv_label_set_text(nlbl, "");
-            lv_obj_set_pos(nlbl, 6, 38);
-
-            room_sensor_cards[r][s] = sc;
-            room_sensor_val_lbl[r][s] = vlbl;
-            room_sensor_name_lbl[r][s] = nlbl;
-
-            if (s >= room->sensor_count) {
-                lv_obj_add_flag(sc, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
     }
 }
 
@@ -1977,7 +2051,64 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         }
     }
 
-    // Update sensor tables per room
+    if (data->sensors_valid) {
+        // HA_SENSORS is configured in this stable order by Bridge. It keeps the
+        // named overview compact while avoiding sensor-count-only reporting.
+        static const int overview_indices[] = {0, 1, 2, 3};
+        for (int i = 0; i < 4; i++) {
+            if (!home_air_values[i]) continue;
+            int index = overview_indices[i];
+            if (index >= data->sensor_count || !data->sensors[index].value[0]) {
+                lv_label_set_text(home_air_values[i], "---");
+                lv_obj_set_style_text_color(home_air_values[i], COLOR_TEXT_DIM, 0);
+                continue;
+            }
+            const bridge_sensor_t *sensor = &data->sensors[index];
+            char text[28];
+            snprintf(text, sizeof(text), "%s %s", sensor->value, sensor->unit);
+            lv_label_set_text(home_air_values[i], text);
+            lv_color_t color = COLOR_TEXT;
+            if (strstr(sensor->unit, "ppm")) {
+                int co2 = atoi(sensor->value);
+                color = co2 < 800 ? COLOR_GOOD : co2 < 1000 ? COLOR_WARN : COLOR_BAD;
+            }
+            lv_obj_set_style_text_color(home_air_values[i], color, 0);
+        }
+    }
+
+    if (data->climate_valid && data->climate_count > 0) {
+        const bridge_climate_t *climate = &data->climates[0];
+        strncpy(home_climate_entity, climate->entity_id, sizeof(home_climate_entity) - 1);
+        home_climate_entity[sizeof(home_climate_entity) - 1] = '\0';
+        home_climate_on = strcmp(climate->mode, "off") != 0;
+        if (climate->has_target_temp) home_climate_target_value = climate->target_temp;
+
+        if (home_climate_name) lv_label_set_text(home_climate_name, climate->name[0] ? climate->name : "Кондиционер");
+        if (home_climate_current) {
+            char text[48];
+            if (climate->has_current_temp) snprintf(text, sizeof(text), "Сейчас %.1f C", climate->current_temp);
+            else snprintf(text, sizeof(text), "Сейчас нет данных");
+            lv_label_set_text(home_climate_current, text);
+        }
+        if (home_climate_target) {
+            char text[48];
+            if (climate->has_target_temp) snprintf(text, sizeof(text), "Цель %.0f C", climate->target_temp);
+            else snprintf(text, sizeof(text), "Цель нет данных");
+            lv_label_set_text(home_climate_target, text);
+        }
+        if (home_climate_power) {
+            lv_obj_set_style_bg_color(home_climate_power, home_climate_on ? COLOR_LIGHT_ON : COLOR_LIGHT_OFF, 0);
+        }
+        static const char *modes[] = {"cool", "heat", "dry", "fan_only"};
+        for (int i = 0; i < 4; i++) {
+            if (!home_climate_mode_btns[i]) continue;
+            lv_obj_set_style_bg_color(home_climate_mode_btns[i],
+                strcmp(climate->mode, modes[i]) == 0 ? COLOR_ACCENT : COLOR_LIGHT_OFF, 0);
+        }
+    }
+
+    // Old room sensor controls remain intentionally uncreated: the named air
+    // overview above is the single source for household air detail.
     if (data->sensors_valid) {
         static const char *sensor_entity_order[] = {
             "sensor.gostinaia_airq_co2",

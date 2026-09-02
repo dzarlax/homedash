@@ -270,6 +270,42 @@ static void parse_lights(cJSON *arr)
     s_data.lights_valid = true;
 }
 
+static void parse_climate(cJSON *arr)
+{
+    s_data.climate_count = 0;
+    s_data.climate_valid = false;
+    if (!arr || !cJSON_IsArray(arr)) return;
+
+    int n = cJSON_GetArraySize(arr);
+    if (n > BRIDGE_MAX_CLIMATES) n = BRIDGE_MAX_CLIMATES;
+    for (int i = 0; i < n; i++) {
+        cJSON *item = cJSON_GetArrayItem(arr, i);
+        if (!item) continue;
+        bridge_climate_t *climate = &s_data.climates[s_data.climate_count];
+        memset(climate, 0, sizeof(*climate));
+
+        cJSON *id = cJSON_GetObjectItem(item, "id");
+        if (!id || !cJSON_IsString(id)) continue;
+        strncpy(climate->entity_id, id->valuestring, sizeof(climate->entity_id) - 1);
+        cJSON *name = cJSON_GetObjectItem(item, "n");
+        if (name && cJSON_IsString(name)) utf8_strncpy(climate->name, name->valuestring, sizeof(climate->name));
+        cJSON *mode = cJSON_GetObjectItem(item, "mode");
+        if (mode && cJSON_IsString(mode)) strncpy(climate->mode, mode->valuestring, sizeof(climate->mode) - 1);
+        cJSON *current = cJSON_GetObjectItem(item, "cur");
+        if (current && cJSON_IsNumber(current)) {
+            climate->current_temp = (float)current->valuedouble;
+            climate->has_current_temp = true;
+        }
+        cJSON *target = cJSON_GetObjectItem(item, "target");
+        if (target && cJSON_IsNumber(target)) {
+            climate->target_temp = (float)target->valuedouble;
+            climate->has_target_temp = true;
+        }
+        s_data.climate_count++;
+    }
+    s_data.climate_valid = true;
+}
+
 static void parse_weather(cJSON *obj)
 {
     s_data.weather.valid = false;
@@ -371,6 +407,7 @@ void bridge_fetch_and_update(void)
     parse_news(cJSON_GetObjectItem(root, "news"));
     parse_sensors(cJSON_GetObjectItem(root, "sensors"));
     parse_lights(cJSON_GetObjectItem(root, "lights"));
+    parse_climate(cJSON_GetObjectItem(root, "climate"));
     parse_weather(cJSON_GetObjectItem(root, "weather"));
     parse_transport(cJSON_GetObjectItem(root, "transport"));
     xSemaphoreGive(s_data_mutex);
@@ -455,6 +492,59 @@ void bridge_toggle_light(const char *entity_id)
         }
     } else {
         ESP_LOGE(TAG, "Toggle %s failed: HTTP %d", entity_id, status);
+    }
+    free(resp.data);
+}
+
+void bridge_climate_action(const char *entity_id, const char *action, float temperature, const char *hvac_mode)
+{
+    if (!wifi_is_connected() || !entity_id || !action) return;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/ha/action", s_bridge_url);
+    char body[192];
+    if (strcmp(action, "set_temperature") == 0) {
+        snprintf(body, sizeof(body), "{\"entity_id\":\"%s\",\"action\":\"set_temperature\",\"temperature\":%.1f}", entity_id, temperature);
+    } else if (strcmp(action, "set_hvac_mode") == 0 && hvac_mode) {
+        snprintf(body, sizeof(body), "{\"entity_id\":\"%s\",\"action\":\"set_hvac_mode\",\"hvac_mode\":\"%s\"}", entity_id, hvac_mode);
+    } else {
+        snprintf(body, sizeof(body), "{\"entity_id\":\"%s\",\"action\":\"%s\"}", entity_id, action);
+    }
+
+    http_buf_t resp = {};
+    resp.cap = 2048;
+    resp.data = (char *)malloc(resp.cap);
+    if (!resp.data) return;
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.method = HTTP_METHOD_POST;
+    config.event_handler = http_event_handler;
+    config.user_data = &resp;
+    config.timeout_ms = 10000;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "X-API-Key", s_bridge_key);
+    esp_http_client_set_post_field(client, body, strlen(body));
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    if (err == ESP_OK && status == 200 && resp.data) {
+        cJSON *root = cJSON_Parse(resp.data);
+        if (root) {
+            cJSON *climate = cJSON_GetObjectItem(root, "climate");
+            if (climate) {
+                xSemaphoreTake(s_data_mutex, portMAX_DELAY);
+                parse_climate(climate);
+                xSemaphoreGive(s_data_mutex);
+            }
+            cJSON_Delete(root);
+        }
+        ESP_LOGI(TAG, "Climate %s %s OK", entity_id, action);
+    } else {
+        ESP_LOGE(TAG, "Climate %s %s failed: HTTP %d", entity_id, action, status);
     }
     free(resp.data);
 }

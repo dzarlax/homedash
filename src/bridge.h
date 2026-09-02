@@ -8,6 +8,7 @@
 #define BRIDGE_MAX_NEWS    5
 #define BRIDGE_MAX_SENSORS 10
 #define BRIDGE_MAX_LIGHTS  8
+#define BRIDGE_MAX_CLIMATES 1
 
 #define BRIDGE_FORECAST_DAYS      5
 #define BRIDGE_TRANSPORT_STOPS    2
@@ -53,6 +54,16 @@ struct bridge_light_t {
     char name[40];
     bool on;
     int  brightness;   // 0-255
+};
+
+struct bridge_climate_t {
+    char  entity_id[48];
+    char  name[40];
+    char  mode[16];
+    float current_temp;
+    float target_temp;
+    bool  has_current_temp;
+    bool  has_target_temp;
 };
 
 // Weather
@@ -128,6 +139,10 @@ struct bridge_data_t {
     int light_count;
     bool lights_valid;
 
+    bridge_climate_t climates[BRIDGE_MAX_CLIMATES];
+    int climate_count;
+    bool climate_valid;
+
     bridge_weather_t   weather;
     bridge_transport_t transport;
 };
@@ -135,6 +150,7 @@ struct bridge_data_t {
 void bridge_init(const char *url, const char *api_key);
 void bridge_fetch_and_update(void);
 void bridge_toggle_light(const char *entity_id);
+void bridge_climate_action(const char *entity_id, const char *action, float temperature, const char *hvac_mode);
 void bridge_fetch_calendar(int year, int month, int day);
 bool bridge_copy_data(bridge_data_t *out);
 bool bridge_copy_calendar_data(bridge_cal_data_t *out);

@@ -138,6 +138,10 @@ extern "C" void sim_init_fixtures(void)
     s_data.sensors[7] = {"Температура", "22.8", "C"};
     s_data.sensors[8] = {"Влажность", "45", "%"};
 
+    s_data.climate_valid = true;
+    s_data.climate_count = 1;
+    s_data.climates[0] = {"climate.gostinaia", "Кондиционер", "dry", 28.1f, 18.0f, true, true};
+
     time_t now;
     time(&now);
     struct tm t = {};
@@ -164,6 +168,19 @@ void request_light_toggle(const char *entity_id)
     }
 }
 
+void request_climate_action(const char *entity_id, const char *action, float temperature, const char *mode)
+{
+    (void)entity_id;
+    if (strcmp(action, "turn_on") == 0) strcpy(s_data.climates[0].mode, "cool");
+    else if (strcmp(action, "turn_off") == 0) strcpy(s_data.climates[0].mode, "off");
+    else if (strcmp(action, "set_temperature") == 0) {
+        s_data.climates[0].target_temp = temperature;
+        s_data.climates[0].has_target_temp = true;
+    } else if (strcmp(action, "set_hvac_mode") == 0 && mode) {
+        strncpy(s_data.climates[0].mode, mode, sizeof(s_data.climates[0].mode) - 1);
+    }
+}
+
 void request_ota_check(void)
 {
     printf("[SIM] OTA check requested (stub only; no firmware update)\n");
@@ -173,6 +190,7 @@ void bridge_init(const char *, const char *) {}
 void bridge_fetch_and_update(void) {}
 void bridge_fetch_calendar(int year, int month, int day) { set_calendar_for_date(year, month, day); }
 void bridge_toggle_light(const char *entity_id) { request_light_toggle(entity_id); }
+void bridge_climate_action(const char *entity_id, const char *action, float temperature, const char *mode) { request_climate_action(entity_id, action, temperature, mode); }
 
 const bridge_data_t *bridge_get_data(void) { return &s_data; }
 const bridge_cal_data_t *bridge_get_calendar_data(void) { return &s_calendar; }
