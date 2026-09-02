@@ -37,6 +37,7 @@ struct bridge_task_t {
 
 struct bridge_news_t {
     char title[256];
+    char summary[1536];
     char category[24];
     int  hours_ago;
 };

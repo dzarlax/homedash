@@ -186,6 +186,10 @@ static void parse_news(cJSON *arr)
         if (title && cJSON_IsString(title)) {
             utf8_strncpy(nw->title, title->valuestring, sizeof(nw->title));
         }
+        cJSON *summary = cJSON_GetObjectItem(item, "s");
+        if (summary && cJSON_IsString(summary)) {
+            utf8_strncpy(nw->summary, summary->valuestring, sizeof(nw->summary));
+        }
         cJSON *cat = cJSON_GetObjectItem(item, "c");
         if (cat && cJSON_IsString(cat)) {
             strncpy(nw->category, cat->valuestring, sizeof(nw->category) - 1);

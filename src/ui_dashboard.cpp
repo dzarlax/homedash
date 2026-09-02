@@ -57,6 +57,7 @@ static lv_obj_t *lbl_air_detail = NULL;
 static lv_obj_t *tileview = NULL;
 static lv_obj_t *nav_tiles[3] = {};
 static lv_obj_t *week_day_buttons[7] = {};
+static lv_obj_t *week_day_labels[7] = {};
 static lv_calendar_date_t week_dates[7] = {};
 static lv_obj_t *reader_overlay = NULL;
 
@@ -91,6 +92,7 @@ static lv_obj_t *lbl_news_lines[MAX_NEWS_LINES] = {};
 static lv_obj_t *lbl_news_age[MAX_NEWS_LINES] = {};
 static lv_obj_t *lbl_no_news = NULL;
 static char news_titles[MAX_NEWS_LINES][256] = {};
+static char news_summaries[MAX_NEWS_LINES][1536] = {};
 static char news_categories[MAX_NEWS_LINES][24] = {};
 
 // Shared light, warm palette.  Status colours are reserved for real status.
@@ -188,6 +190,7 @@ static bool is_today(int y, int m, int d);
 static void update_schedule_title(int y, int m, int d);
 static void sync_calendar_selection(void);
 static void update_week_selection(void);
+static void refresh_week_strip(void);
 
 static void get_today_date(int *y, int *m, int *d)
 {
@@ -348,6 +351,33 @@ static void update_week_selection(void)
     }
 }
 
+static void refresh_week_strip(void)
+{
+    int y, m, d;
+    get_today_date(&y, &m, &d);
+    struct tm week_tm = {};
+    week_tm.tm_year = y - 1900;
+    week_tm.tm_mon = m - 1;
+    week_tm.tm_mday = d;
+    if (mktime(&week_tm) == (time_t)-1) return;
+
+    for (int i = 0; i < 7; i++) {
+        struct tm date_tm = week_tm;
+        date_tm.tm_mday += i;
+        if (mktime(&date_tm) == (time_t)-1) continue;
+
+        week_dates[i].year = date_tm.tm_year + 1900;
+        week_dates[i].month = date_tm.tm_mon + 1;
+        week_dates[i].day = date_tm.tm_mday;
+        if (week_day_labels[i]) {
+            char buf[24];
+            snprintf(buf, sizeof(buf), "%s\n%d", DOW_NAMES[date_tm.tm_wday], week_dates[i].day);
+            lv_label_set_text(week_day_labels[i], buf);
+        }
+    }
+    update_week_selection();
+}
+
 static int calendar_button_id_for_date(int y, int m, int d)
 {
     if (d < 1 || d > 31) return -1;
@@ -441,7 +471,7 @@ static void reader_close_cb(lv_event_t *e)
     }
 }
 
-static void open_reader(const char *section, const char *title, const char *meta)
+static void open_reader(const char *section, const char *title, const char *text, const char *meta)
 {
     if (!title || !title[0]) return;
     if (reader_overlay) lv_obj_delete(reader_overlay);
@@ -492,6 +522,19 @@ static void open_reader(const char *section, const char *title, const char *meta
     lv_obj_set_pos(title_label, 0, 0);
     lv_obj_update_layout(title_label);
 
+    int y = lv_obj_get_height(title_label) + 18;
+    if (text && text[0]) {
+        lv_obj_t *text_label = lv_label_create(body);
+        lv_obj_set_width(text_label, 925);
+        lv_obj_set_style_text_color(text_label, COLOR_TEXT, 0);
+        lv_obj_set_style_text_font(text_label, &font_montserrat_16_cyr, 0);
+        lv_label_set_long_mode(text_label, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(text_label, text);
+        lv_obj_set_pos(text_label, 0, y);
+        lv_obj_update_layout(text_label);
+        y += lv_obj_get_height(text_label) + 18;
+    }
+
     if (meta && meta[0]) {
         lv_obj_t *meta_label = lv_label_create(body);
         lv_obj_set_width(meta_label, 925);
@@ -499,7 +542,7 @@ static void open_reader(const char *section, const char *title, const char *meta
         lv_obj_set_style_text_font(meta_label, &font_montserrat_16_cyr, 0);
         lv_label_set_long_mode(meta_label, LV_LABEL_LONG_WRAP);
         lv_label_set_text(meta_label, meta);
-        lv_obj_set_pos(meta_label, 0, lv_obj_get_height(title_label) + 18);
+        lv_obj_set_pos(meta_label, 0, y);
     }
 }
 
@@ -508,11 +551,14 @@ static void content_click_cb(lv_event_t *e)
     int id = (int)(intptr_t)lv_event_get_user_data(e);
     if (id >= 100) {
         int index = id - 100;
-        if (index < MAX_NEWS_LINES) open_reader("Новости", news_titles[index], news_categories[index]);
+        if (index < MAX_NEWS_LINES) {
+            const char *summary = news_summaries[index][0] ? news_summaries[index] : "Суммаризация недоступна.";
+            open_reader("Новости", news_titles[index], summary, news_categories[index]);
+        }
     } else if (id >= 0 && id < MAX_TASK_LINES) {
         char meta[40] = {};
         if (task_due[id][0]) snprintf(meta, sizeof(meta), "Срок: %s", task_due[id]);
-        open_reader("Задачи", task_titles[id], meta);
+        open_reader("Задачи", task_titles[id], NULL, meta);
     }
 }
 
@@ -576,6 +622,8 @@ static void create_day_planner(lv_obj_t *page)
         lv_obj_t *label = day_label(day, 0, 7, 78, buf, &font_montserrat_16_cyr,
                                     i == 0 ? COLOR_HIGHLIGHT : COLOR_TEXT_DIM);
         lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+        week_day_buttons[i] = day;
+        week_day_labels[i] = label;
         if (i == 0) {
             lv_obj_t *dot = lv_obj_create(day);
             lv_obj_remove_style_all(dot);
@@ -1262,10 +1310,15 @@ void ui_dashboard_update_time(void)
             calendar_highlighted_dates[0].day = d;
             lv_calendar_set_highlighted_dates(calendar, calendar_highlighted_dates, 1);
             lv_calendar_set_showed_date(calendar, y, m);
-            sync_calendar_selection();
             last_cal_year = y;
             last_cal_mon = m;
             last_cal_day = d;
+            refresh_week_strip();
+            if (selected_non_today_at_us == 0) {
+                return_calendar_to_today();
+            } else {
+                sync_calendar_selection();
+            }
         }
     }
 
@@ -1660,6 +1713,8 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
                 }
                 strncpy(news_titles[i], data->news[i].title, sizeof(news_titles[i]) - 1);
                 news_titles[i][sizeof(news_titles[i]) - 1] = '\0';
+                strncpy(news_summaries[i], data->news[i].summary, sizeof(news_summaries[i]) - 1);
+                news_summaries[i][sizeof(news_summaries[i]) - 1] = '\0';
                 strncpy(news_categories[i], data->news[i].category, sizeof(news_categories[i]) - 1);
                 news_categories[i][sizeof(news_categories[i]) - 1] = '\0';
             } else {
@@ -1667,6 +1722,7 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
                 if (lbl_news_lines[i]) lv_obj_add_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
                 if (lbl_news_age[i]) lv_obj_add_flag(lbl_news_age[i], LV_OBJ_FLAG_HIDDEN);
                 news_titles[i][0] = '\0';
+                news_summaries[i][0] = '\0';
                 news_categories[i][0] = '\0';
             }
         }

@@ -112,10 +112,10 @@ extern "C" void sim_init_fixtures(void)
 
     s_data.news_count = 4;
     s_data.news_valid = true;
-    s_data.news[0] = {"ESP-IDF 5.3 release notes reviewed", "tech", 2};
-    s_data.news[1] = {"Belgrade transit delays are moderate", "city", 3};
-    s_data.news[2] = {"Weather stays warm through tomorrow", "weather", 4};
-    s_data.news[3] = {"Home automations ran normally overnight", "home", 6};
+    s_data.news[0] = {"ESP-IDF 5.3 release notes reviewed", "The release notes focus on build tooling, Wi-Fi stability, and migration guidance for existing ESP32 applications.", "tech", 2};
+    s_data.news[1] = {"Belgrade transit delays are moderate", "Several routes are running behind schedule because of peak traffic. Check live arrivals before leaving.", "city", 3};
+    s_data.news[2] = {"Weather stays warm through tomorrow", "Temperatures remain above seasonal norms through tomorrow, with a small chance of rain in the evening.", "weather", 4};
+    s_data.news[3] = {"Home automations ran normally overnight", "All monitored automations completed successfully overnight and no device errors were reported.", "home", 6};
 
     s_data.light_count = 6;
     s_data.lights_valid = true;
