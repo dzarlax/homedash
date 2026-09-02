@@ -39,6 +39,8 @@ static lv_obj_t *hero_event_card = NULL;
 static lv_obj_t *lbl_hero_status = NULL;
 static lv_obj_t *lbl_hero_title  = NULL;
 static lv_obj_t *lbl_hero_time   = NULL;
+static lv_obj_t *lbl_day_context = NULL;
+static lv_obj_t *lbl_day_summary = NULL;
 #define MAX_EVENT_LINES 16
 static lv_obj_t *lbl_events[MAX_EVENT_LINES] = {};
 static lv_obj_t *events_scroll = NULL;  // scrollable container for events
@@ -193,6 +195,7 @@ static lv_color_t cal_color(uint8_t idx) {
 
 static bool is_today(int y, int m, int d);
 static void update_schedule_title(int y, int m, int d);
+static void update_day_context(int y, int m, int d, int event_count);
 static void sync_calendar_selection(void);
 static void update_week_selection(void);
 static void refresh_week_strip(void);
@@ -294,6 +297,35 @@ static void update_schedule_title(int y, int m, int d)
         lv_label_set_text(lbl_sched_title, buf);
         if (btn_today) lv_obj_clear_flag(btn_today, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+static void update_day_context(int y, int m, int d, int event_count)
+{
+    if (!lbl_day_context || !lbl_day_summary || m < 1 || m > 12) return;
+
+    struct tm date_tm = {};
+    date_tm.tm_year = y - 1900;
+    date_tm.tm_mon = m - 1;
+    date_tm.tm_mday = d;
+    mktime(&date_tm);
+
+    char date_text[40];
+    snprintf(date_text, sizeof(date_text), "%s, %d %s", DOW_NAMES[date_tm.tm_wday], d, MONTH_NAMES[m - 1]);
+    lv_label_set_text(lbl_day_context, date_text);
+
+    if (event_count < 0) {
+        lv_label_set_text(lbl_day_summary, event_count == -2 ? "Нет данных календаря" : "Загружаю расписание");
+        return;
+    }
+
+    char summary[40];
+    if (event_count == 0) {
+        snprintf(summary, sizeof(summary), "%s: свободный день", is_today(y, m, d) ? "Сегодня" : "В плане");
+    } else {
+        snprintf(summary, sizeof(summary), "%d %s", event_count,
+                 event_count == 1 ? "событие" : (event_count < 5 ? "события" : "событий"));
+    }
+    lv_label_set_text(lbl_day_summary, summary);
 }
 
 static void calendar_click_cb(lv_event_t *e)
@@ -430,7 +462,7 @@ static void nav_click_cb(lv_event_t *e)
 
 static void create_bottom_nav(lv_obj_t *page, int active_index)
 {
-    static const char *names[] = {"День", "Самочувствие", "Дом"};
+    static const char *names[] = {"День", "Сводка", "Дом"};
     lv_obj_t *nav = lv_obj_create(page);
     lv_obj_remove_style_all(nav);
     lv_obj_set_size(nav, 1024, 60);
@@ -595,6 +627,11 @@ static void create_day_planner(lv_obj_t *page)
     lbl_datetime = day_label(surface, 28, 18, 600, "План на день", &font_montserrat_24_cyr, COLOR_TEXT);
     day_label(surface, 28, 54, 240, "НЕДЕЛЯ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
+    lv_obj_t *day_context = make_card(surface, 670, 18, 326, 118);
+    day_label(day_context, 18, 14, 290, "ВЫБРАННЫЙ ДЕНЬ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_day_context = day_label(day_context, 18, 42, 290, "", &font_montserrat_24_cyr, COLOR_TEXT);
+    lbl_day_summary = day_label(day_context, 18, 78, 290, "Загружаю расписание", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+
     int y, m, d;
     get_today_date(&y, &m, &d);
     if (sel_year == 0) {
@@ -602,6 +639,7 @@ static void create_day_planner(lv_obj_t *page)
         sel_month = m;
         sel_day = d;
     }
+    update_day_context(sel_year, sel_month, sel_day, -1);
     struct tm week_tm = {};
     week_tm.tm_year = y - 1900;
     week_tm.tm_mon = m - 1;
@@ -674,8 +712,8 @@ static void create_day_planner(lv_obj_t *page)
     lv_obj_set_width(lbl_transport_in, 290);
     lv_obj_set_style_text_font(lbl_transport_in, &font_montserrat_16_cyr, 0);
     day_label(right, 18, 226, 290, "ВОЗДУХ ДОМА", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_air_primary = day_label(right, 18, 254, 290, "Нет данных о CO₂", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_air_detail = day_label(right, 18, 284, 290, "Нет данных о PM2.5", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_air_primary = day_label(right, 18, 254, 290, "Гостиная: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_air_detail = day_label(right, 18, 284, 290, "Кабинет: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
     update_week_selection();
 }
 
@@ -1023,6 +1061,7 @@ void ui_dashboard_update_weather(const bridge_weather_t *data)
 void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
 {
     if (!data || !data->valid) {
+        update_day_context(sel_year, sel_month, sel_day, -2);
         if (lbl_hero_status) lv_label_set_text(lbl_hero_status, "Календарь");
         if (lbl_hero_title) lv_label_set_text(lbl_hero_title, "Нет данных");
         char error[64] = {};
@@ -1043,6 +1082,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         update_schedule_title(sel_year, sel_month, sel_day);
         update_week_selection();
     }
+    update_day_context(sel_year, sel_month, sel_day, data->count);
 
     // The day view deliberately stays glanceable: hero plus three following rows.
     int display_count = data->count < 4 ? data->count : 4;
@@ -1885,40 +1925,44 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
     if (!data) return;
 
     if (lbl_air_primary && lbl_air_detail) {
-        const bridge_sensor_t *co2 = NULL;
-        const bridge_sensor_t *pm25 = NULL;
+        const bridge_sensor_t *living_room_co2 = NULL;
+        const bridge_sensor_t *office_co2 = NULL;
         if (data->sensors_valid) {
             for (int i = 0; i < data->sensor_count; i++) {
                 const bridge_sensor_t *sensor = &data->sensors[i];
-                if (!co2 && strstr(sensor->unit, "ppm")) co2 = sensor;
-                if (!pm25 && (strstr(sensor->name, "PM2.5") || strstr(sensor->name, "PM25") ||
-                              strstr(sensor->name, "pm2.5") || strstr(sensor->name, "pm25"))) {
-                    pm25 = sensor;
+                if (!strstr(sensor->unit, "ppm")) continue;
+
+                // Bridge preserves HA_SENSORS order: living-room AirQ CO2 first,
+                // then the office CO2 sensor. Keep their locations explicit here.
+                if (!living_room_co2) {
+                    living_room_co2 = sensor;
+                } else if (!office_co2) {
+                    office_co2 = sensor;
                 }
             }
         }
 
-        if (co2) {
+        if (living_room_co2) {
             char text[48];
-            snprintf(text, sizeof(text), "CO₂: %s %s", co2->value, co2->unit);
-            int value = atoi(co2->value);
+            snprintf(text, sizeof(text), "Гостиная: CO2 %s %s", living_room_co2->value, living_room_co2->unit);
+            int value = atoi(living_room_co2->value);
             lv_label_set_text(lbl_air_primary, text);
             lv_obj_set_style_text_color(lbl_air_primary,
                 value < 800 ? COLOR_GOOD : value < 1000 ? COLOR_WARN : COLOR_BAD, 0);
         } else {
-            lv_label_set_text(lbl_air_primary, "Нет данных о CO₂");
+            lv_label_set_text(lbl_air_primary, "Гостиная: нет данных CO2");
             lv_obj_set_style_text_color(lbl_air_primary, COLOR_TEXT_DIM, 0);
         }
 
-        if (pm25) {
+        if (office_co2) {
             char text[48];
-            snprintf(text, sizeof(text), "PM2.5: %s %s", pm25->value, pm25->unit);
-            float value = strtof(pm25->value, NULL);
+            snprintf(text, sizeof(text), "Кабинет: CO2 %s %s", office_co2->value, office_co2->unit);
+            int value = atoi(office_co2->value);
             lv_label_set_text(lbl_air_detail, text);
             lv_obj_set_style_text_color(lbl_air_detail,
-                value <= 12.0f ? COLOR_GOOD : value <= 35.4f ? COLOR_WARN : COLOR_BAD, 0);
+                value < 800 ? COLOR_GOOD : value < 1000 ? COLOR_WARN : COLOR_BAD, 0);
         } else {
-            lv_label_set_text(lbl_air_detail, "Нет данных о PM2.5");
+            lv_label_set_text(lbl_air_detail, "Кабинет: нет данных CO2");
             lv_obj_set_style_text_color(lbl_air_detail, COLOR_TEXT_DIM, 0);
         }
     }
