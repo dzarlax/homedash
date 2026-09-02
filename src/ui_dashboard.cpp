@@ -61,6 +61,11 @@ static lv_obj_t *week_day_labels[7] = {};
 static lv_calendar_date_t week_dates[7] = {};
 static lv_obj_t *reader_overlay = NULL;
 
+// bridge_data_t includes bounded Evening News summaries and is larger than the
+// LVGL task stack. All LVGL timers run serially, so one static snapshot keeps
+// the copy out of that stack without concurrent access.
+static bridge_data_t ui_bridge_snapshot = {};
+
 // Page 2: Health + Tasks + News (redesigned)
 // Readiness arc
 static lv_obj_t *arc_readiness = NULL;
@@ -244,8 +249,7 @@ static void timer_time_cb(lv_timer_t *timer)
 static void timer_weather_cb(lv_timer_t *timer)
 {
     (void)timer;
-    bridge_data_t d = {};
-    if (bridge_copy_data(&d)) ui_dashboard_update_weather(&d.weather);
+    if (bridge_copy_data(&ui_bridge_snapshot)) ui_dashboard_update_weather(&ui_bridge_snapshot.weather);
 }
 
 static void timer_ha_cal_cb(lv_timer_t *timer)
@@ -258,15 +262,16 @@ static void timer_ha_cal_cb(lv_timer_t *timer)
 static void timer_transport_cb(lv_timer_t *timer)
 {
     (void)timer;
-    bridge_data_t d = {};
-    if (bridge_copy_data(&d)) ui_dashboard_update_transport(&d.transport);
+    if (bridge_copy_data(&ui_bridge_snapshot)) ui_dashboard_update_transport(&ui_bridge_snapshot.transport);
 }
 
 static void timer_bridge_cb(lv_timer_t *timer)
 {
     (void)timer;
-    bridge_data_t d = {};
-    if (bridge_copy_data(&d)) { ui_dashboard_update_bridge(&d); ui_dashboard_update_ha(&d); }
+    if (bridge_copy_data(&ui_bridge_snapshot)) {
+        ui_dashboard_update_bridge(&ui_bridge_snapshot);
+        ui_dashboard_update_ha(&ui_bridge_snapshot);
+    }
 }
 
 static bool is_today(int y, int m, int d)
