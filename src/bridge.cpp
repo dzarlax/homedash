@@ -577,7 +577,8 @@ void bridge_fetch_calendar(int year, int month, int day)
     s_cal_data.day = day;
 
     int n = cJSON_GetArraySize(root);
-    if (n > BRIDGE_CAL_MAX_EVENTS) n = BRIDGE_CAL_MAX_EVENTS;
+    s_cal_data.events.clear();
+    s_cal_data.events.resize(n);
 
     for (int i = 0; i < n; i++) {
         cJSON *item = cJSON_GetArrayItem(root, i);

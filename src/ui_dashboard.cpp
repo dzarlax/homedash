@@ -42,8 +42,8 @@ static lv_obj_t *lbl_hero_title  = NULL;
 static lv_obj_t *lbl_hero_time   = NULL;
 static lv_obj_t *lbl_day_context = NULL;
 static lv_obj_t *lbl_day_summary = NULL;
-#define MAX_EVENT_LINES 16
-static lv_obj_t *lbl_events[MAX_EVENT_LINES] = {};
+#define INITIAL_EVENT_LINES 16
+static std::vector<lv_obj_t *> lbl_events(INITIAL_EVENT_LINES, nullptr);
 static lv_obj_t *events_scroll = NULL;  // scrollable container for events
 static lv_obj_t *lbl_no_events = NULL;
 static lv_obj_t *btn_today     = NULL;
@@ -695,8 +695,13 @@ static void create_day_planner(lv_obj_t *page)
     lv_obj_set_pos(events_scroll, 16, 177);
     lv_obj_set_flex_flow(events_scroll, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(events_scroll, 10, 0);
-    lv_obj_set_scrollbar_mode(events_scroll, LV_SCROLLBAR_MODE_OFF);
-    for (int i = 0; i < MAX_EVENT_LINES; i++) {
+    lv_obj_set_scroll_dir(events_scroll, LV_DIR_VER);
+    lv_obj_remove_flag(events_scroll, LV_OBJ_FLAG_SCROLL_CHAIN_HOR);
+    lv_obj_set_scrollbar_mode(events_scroll, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_bg_color(events_scroll, COLOR_TEXT_DIM, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(events_scroll, LV_OPA_COVER, LV_PART_SCROLLBAR);
+    lv_obj_set_style_width(events_scroll, 4, LV_PART_SCROLLBAR);
+    for (int i = 0; i < INITIAL_EVENT_LINES; i++) {
         lbl_events[i] = day_label(events_scroll, 0, 0, 580, "", &font_montserrat_16_cyr, COLOR_TEXT);
         if (i >= 3) lv_obj_add_flag(lbl_events[i], LV_OBJ_FLAG_HIDDEN);
     }
@@ -927,7 +932,7 @@ void ui_dashboard_create(void)
     lv_obj_set_style_bg_color(events_scroll, COLOR_TEXT_DIM, LV_PART_SCROLLBAR);
     lv_obj_set_style_width(events_scroll, 4, LV_PART_SCROLLBAR);
 
-    for (int i = 0; i < MAX_EVENT_LINES; i++) {
+    for (int i = 0; i < INITIAL_EVENT_LINES; i++) {
         lbl_events[i] = lv_label_create(events_scroll);
         lv_obj_set_style_text_color(lbl_events[i], COLOR_TEXT, 0);
         lv_obj_set_style_text_font(lbl_events[i], &font_montserrat_16_cyr, 0);
@@ -1070,8 +1075,8 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         char error[64] = {};
         if (lbl_hero_time && bridge_copy_last_error(error, sizeof(error))) lv_label_set_text(lbl_hero_time, error);
         if (lbl_no_events) lv_obj_add_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
-        for (int i = 0; i < MAX_EVENT_LINES; i++) {
-            if (lbl_events[i]) lv_obj_add_flag(lbl_events[i], LV_OBJ_FLAG_HIDDEN);
+        for (lv_obj_t *label : lbl_events) {
+            if (label) lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
         }
         if (now_line) lv_obj_add_flag(now_line, LV_OBJ_FLAG_HIDDEN);
         return;
@@ -1087,8 +1092,12 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     }
     update_day_context(sel_year, sel_month, sel_day, data->count);
 
-    // The day view deliberately stays glanceable: hero plus three following rows.
-    int display_count = data->count < 4 ? data->count : 4;
+    const int display_count = data->count;
+    while (lbl_events.size() < static_cast<size_t>(display_count)) {
+        lv_obj_t *label = day_label(events_scroll, 0, 0, 580, "", &font_montserrat_16_cyr, COLOR_TEXT);
+        lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+        lbl_events.push_back(label);
+    }
     bool selected_today = is_today(sel_year, sel_month, sel_day);
 
     if (lbl_no_events) lv_obj_add_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
@@ -1219,7 +1228,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     }
 
     int list_idx = 0;
-    for (int i = 0; i < display_count && list_idx < MAX_EVENT_LINES; i++) {
+    for (int i = 0; i < display_count; i++) {
         if (i == hero_idx) continue;
         if (!lbl_events[list_idx]) continue;
 
@@ -1239,7 +1248,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         list_idx++;
     }
 
-    for (int i = list_idx; i < MAX_EVENT_LINES; i++) {
+    for (size_t i = list_idx; i < lbl_events.size(); i++) {
         if (lbl_events[i]) {
             lv_label_set_text(lbl_events[i], "");
             lv_obj_add_flag(lbl_events[i], LV_OBJ_FLAG_HIDDEN);
@@ -1247,8 +1256,8 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     }
 
     if (list_idx == 0 && lbl_no_events) {
-        lv_label_set_text(lbl_no_events, hero_idx >= 0 ? "Больше событий нет" : "");
-        if (hero_idx >= 0) lv_obj_clear_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(lbl_no_events, hero_idx >= 0 ? "Больше событий нет" : "Нет событий");
+        lv_obj_clear_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
     }
 }
 

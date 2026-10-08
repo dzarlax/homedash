@@ -82,4 +82,14 @@ clean:
 run: $(TARGET)
 	./$(TARGET)
 
-.PHONY: all clean run
+$(BUILD)/calendar_scroll_test.o: calendar_scroll_test.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/bridge.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/calendar_scroll_test: $(BUILD)/calendar_scroll_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-calendar: $(BUILD)/calendar_scroll_test
+	./$(BUILD)/calendar_scroll_test
+
+.PHONY: all clean run test-calendar

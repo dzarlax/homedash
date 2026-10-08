@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <vector>
 
 #define BRIDGE_MAX_TASKS   8
 #define BRIDGE_MAX_NEWS    5
@@ -13,7 +14,6 @@
 #define BRIDGE_FORECAST_DAYS      5
 #define BRIDGE_TRANSPORT_STOPS    2
 #define BRIDGE_TRANSPORT_VEHICLES 5
-#define BRIDGE_CAL_MAX_EVENTS     20
 
 struct bridge_health_t {
     int  steps;
@@ -112,7 +112,7 @@ struct bridge_cal_event_t {
 };
 
 struct bridge_cal_data_t {
-    bridge_cal_event_t events[BRIDGE_CAL_MAX_EVENTS];
+    std::vector<bridge_cal_event_t> events;
     int   count;
     bool  valid;
     int   year, month, day;

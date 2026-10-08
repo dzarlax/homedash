@@ -22,7 +22,8 @@ static char s_last_error[32] = "fixture";
 
 static void set_calendar_for_date(int year, int month, int day)
 {
-    memset(&s_calendar, 0, sizeof(s_calendar));
+    s_calendar = {};
+    s_calendar.events.resize(6);
     s_calendar.valid = true;
     s_calendar.year = year;
     s_calendar.month = month;
