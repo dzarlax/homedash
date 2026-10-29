@@ -16,6 +16,11 @@
 
 #include "bridge.h"
 
+// Physical LCD backlight is controlled through the Waveshare IO extension.
+// Keep the desktop simulator window visible while night mode is exercised.
+void wavesahre_rgb_lcd_bl_on() {}
+void wavesahre_rgb_lcd_bl_off() {}
+
 static bridge_data_t s_data = {};
 static bridge_cal_data_t s_calendar = {};
 static char s_last_error[32] = "fixture";
@@ -186,6 +191,8 @@ void request_ota_check(void)
 {
     printf("[SIM] OTA check requested (stub only; no firmware update)\n");
 }
+
+void request_recovery_ap(void) {}
 
 void bridge_init(const char *, const char *) {}
 void bridge_fetch_and_update(void) {}

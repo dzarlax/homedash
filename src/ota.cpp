@@ -2,6 +2,7 @@
 #include "config.h"
 #include "wifi_manager.h"
 #include "photo_frame.h"
+#include "web_identity.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -17,10 +18,14 @@ static const char *TAG = "ota";
 
 static char s_url[128] = {};
 static char s_key[64] = {};
+static bool s_update_available = false;
+static char s_available_version[32] = {};
 
 static esp_err_t ota_http_client_init(esp_http_client_handle_t client)
 {
-    return esp_http_client_set_header(client, "X-API-Key", s_key);
+    esp_err_t result = esp_http_client_set_header(client, "X-API-Key", s_key);
+    if (result != ESP_OK) return result;
+    return web_identity_set_http_header(client);
 }
 
 void ota_init(const char *bridge_url, const char *api_key)
@@ -64,6 +69,11 @@ static char *http_get_body(const char *url, int *out_status)
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     esp_http_client_set_header(client, "X-API-Key", s_key);
+    if (web_identity_set_http_header(client) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        free(buf.data);
+        return NULL;
+    }
     esp_err_t err = esp_http_client_perform(client);
     *out_status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
@@ -75,9 +85,12 @@ static char *http_get_body(const char *url, int *out_status)
     return buf.data;
 }
 
-void ota_check_and_update(void)
+bool ota_check_available(bool *available)
 {
-    if (!wifi_is_connected() || s_url[0] == '\0') return;
+    if (available) *available = false;
+    s_update_available = false;
+    s_available_version[0] = 0;
+    if (!wifi_is_connected() || s_url[0] == '\0') return false;
 
     // 1. Check for update
     char check_url[256];
@@ -87,12 +100,12 @@ void ota_check_and_update(void)
     char *body = http_get_body(check_url, &status);
     if (!body) {
         ESP_LOGW(TAG, "OTA check failed (HTTP %d)", status);
-        return;
+        return false;
     }
 
     cJSON *root = cJSON_Parse(body);
     free(body);
-    if (!root) return;
+    if (!root) return false;
 
     cJSON *update = cJSON_GetObjectItem(root, "update");
     bool has_update = update && cJSON_IsTrue(update);
@@ -103,18 +116,22 @@ void ota_check_and_update(void)
         strncpy(new_version, ver->valuestring, sizeof(new_version) - 1);
     }
     cJSON_Delete(root);
+    s_update_available = has_update;
+    strncpy(s_available_version, new_version, sizeof(s_available_version) - 1);
+    if (available) *available = has_update;
+    if (!has_update) ESP_LOGI(TAG, "No update available (current: %s)", FW_VERSION);
+    else ESP_LOGI(TAG, "Update available: %s → %s", FW_VERSION, new_version);
+    return true;
+}
 
-    if (!has_update) {
-        ESP_LOGI(TAG, "No update available (current: %s)", FW_VERSION);
-        return;
-    }
-
-    ESP_LOGI(TAG, "Update available: %s → %s. Starting OTA...", FW_VERSION, new_version);
-
+bool ota_install_available(void)
+{
+    if (!s_update_available || !wifi_is_connected() || s_url[0] == '\0') return false;
+    ESP_LOGI(TAG, "Starting managed OTA install: %s", s_available_version);
     // Pause the photo worker only when a real firmware download will start.
     if (!photo_frame_pause_for_ota()) {
         ESP_LOGW(TAG, "Photo worker is busy; postponing OTA");
-        return;
+        return false;
     }
 
     // 2. Download and flash firmware
@@ -133,10 +150,24 @@ void ota_check_and_update(void)
 
     esp_err_t err = esp_https_ota(&ota_cfg);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "OTA success! Rebooting...");
-        esp_restart();
+        ESP_LOGI(TAG, "OTA image installed; caller will reboot");
+        s_update_available = false;
+        photo_frame_resume_after_ota();
+        return true;
     } else {
         ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(err));
     }
     photo_frame_resume_after_ota();
+    return false;
+}
+
+const char *ota_available_version(void) {
+    return s_update_available ? s_available_version : "";
+}
+
+void ota_check_and_update(void)
+{
+    bool available = false;
+    if (!ota_check_available(&available) || !available) return;
+    if (ota_install_available()) esp_restart();
 }

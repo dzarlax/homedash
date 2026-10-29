@@ -1,6 +1,8 @@
 #pragma once
 
 #include "bridge.h"
+#include "web_settings.h"
+#include "lvgl.h"
 
 void ui_dashboard_create(void);
 void ui_dashboard_update_weather(const bridge_weather_t *data);
@@ -12,3 +14,7 @@ void ui_dashboard_update_time(void);
 
 bool ui_dashboard_reader_open(void);
 void ui_dashboard_update_photo_status(const char *status);
+void ui_dashboard_apply_preferences(const web_preferences_t *prefs);
+void ui_dashboard_reset_preferences(void);
+void ui_dashboard_update_recovery(const char *ssid, const char *password, const char *url);
+bool ui_dashboard_filter_wake_touch(bool pressed, lv_indev_data_t *data);

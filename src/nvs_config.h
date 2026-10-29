@@ -17,3 +17,5 @@ const device_config_t *nvs_config_get(void);
 
 // Update Bridge URL in NVS (for migration). Returns true on success.
 bool nvs_config_set_bridge_url(const char *url);
+bool nvs_config_set_credentials(const device_config_t *cfg);
+bool nvs_config_reset_device(void);
