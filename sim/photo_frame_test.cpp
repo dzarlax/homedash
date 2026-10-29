@@ -276,6 +276,22 @@ int main() {
   assert(!photo_frame_start_now());
   assert(strstr(lv_label_get_text(home_photo_status), "обновления"));
   paused = false;
+  // Keep the current image visible throughout manifest refresh, frame loading
+  // and a failed next-frame transfer; replace its source only on success.
+  assert(photo_frame_start_now());
+  complete_manifest(); tick(nullptr); complete_frame(); tick(nullptr);
+  lv_obj_t *visible_overlay = overlay;
+  assert(visible_overlay && shown_id[0] == 'a');
+  fake_seconds += 60; tick(nullptr);
+  assert(busy.load() && job.kind == MANIFEST && overlay == visible_overlay);
+  complete_manifest(); tick(nullptr);
+  assert(busy.load() && job.kind == FRAME && overlay == visible_overlay);
+  complete_frame(PHOTO_FAILED); tick(nullptr);
+  assert(overlay == visible_overlay && shown_id[0] == 'a');
+  fake_seconds += 30; tick(nullptr);
+  assert(busy.load() && job.kind == FRAME && overlay == visible_overlay);
+  complete_frame(); tick(nullptr);
+  assert(overlay == visible_overlay && shown_id[0] == 'b');
   std::puts("PASS: idle, gestures, stale completion, reader, failure recovery, "
             "slide scheduling, disabled state, OTA acknowledgement and manual button");
 }

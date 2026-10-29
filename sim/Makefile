@@ -122,3 +122,9 @@ test-photo-client:
 	./photo_client_test/run.sh
 
 .PHONY: test-photo-client
+
+# Exercise the real OTA check/flash boundary with isolated HTTP and flash stubs.
+test-ota:
+	./ota_test/run.sh
+
+.PHONY: test-ota
