@@ -4,6 +4,8 @@
 #include <stdint.h>
 void photo_frame_ui_init(void);
 void photo_frame_network_init(const char *url, const char *key);
+// Call from the LVGL thread to bypass the idle delay for this session.
+bool photo_frame_start_now(void);
 bool photo_frame_touch(bool pressed);
 void photo_frame_filter_touch(bool pressed, uint16_t x, uint16_t y,
                               lv_indev_data_t *data);

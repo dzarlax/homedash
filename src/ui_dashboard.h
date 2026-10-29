@@ -11,3 +11,4 @@ void ui_dashboard_update_ha(const bridge_data_t *data);
 void ui_dashboard_update_time(void);
 
 bool ui_dashboard_reader_open(void);
+void ui_dashboard_update_photo_status(const char *status);

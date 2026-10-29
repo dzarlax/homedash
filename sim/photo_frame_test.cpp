@@ -217,6 +217,62 @@ int main() {
   assert(!buffers[0] && !buffers[1]);
   assert(!manifest_ready && !overlay);
   photo_frame_resume_after_ota();
+  // The actual Home button starts without waiting for the idle threshold.
+  fake_seconds = 5000;
+  last_touch = fake_seconds;
+  last_poll = fake_seconds;
+  retry_after = fake_seconds + 300;
+  lv_tileview_set_tile(tileview, nav_tiles[2], LV_ANIM_OFF);
+  lv_obj_update_layout(lv_screen_active());
+  pointer(indev, true, 740, 20);
+  pointer(indev, false, 740, 20);
+  assert(busy.load() && job.kind == MANIFEST);
+  assert(manual_requested);
+  assert(strstr(lv_label_get_text(home_photo_status), "Получаем"));
+  complete_manifest();
+  tick(nullptr);
+  assert(busy.load() && job.kind == FRAME);
+  complete_frame();
+  tick(nullptr);
+  assert(overlay);
+  assert(lv_tileview_get_tile_active(tileview) == nav_tiles[2]);
+  // Dismiss over the launch button: the same gesture cannot relaunch it.
+  pointer(indev, true, 740, 20);
+  pointer(indev, false, 740, 20);
+  assert(!overlay && !manual_requested && !busy.load());
+  // A failed manual attempt keeps its diagnostic visible on the Home page.
+  pointer(indev, true, 740, 20);
+  pointer(indev, false, 740, 20);
+  assert(busy.load() && job.kind == MANIFEST);
+  job.result = PHOTO_FAILED;
+  job.complete = true;
+  busy = false;
+  tick(nullptr);
+  assert(!overlay);
+  assert(strstr(lv_label_get_text(home_photo_status), "список"));
+  photo_frame_touch(true);
+  photo_frame_touch(false);
+  // A touch while a manual frame is loading cancels the force override too.
+  assert(photo_frame_start_now());
+  complete_manifest();
+  tick(nullptr);
+  assert(busy.load() && job.kind == FRAME);
+  photo_frame_touch(true);
+  photo_frame_touch(false);
+  complete_frame();
+  tick(nullptr);
+  assert(!overlay && !manual_requested);
+  assert(photo_frame_start_now());
+  complete_manifest();
+  strcpy(job.manifest.state, "disabled");
+  job.manifest.count = 0;
+  tick(nullptr);
+  assert(!overlay && !manual_requested);
+  assert(strstr(lv_label_get_text(home_photo_status), "выключена"));
+  paused = true;
+  assert(!photo_frame_start_now());
+  assert(strstr(lv_label_get_text(home_photo_status), "обновления"));
+  paused = false;
   std::puts("PASS: idle, gestures, stale completion, reader, failure recovery, "
-            "slide scheduling, disabled state and OTA acknowledgement");
+            "slide scheduling, disabled state, OTA acknowledgement and manual button");
 }

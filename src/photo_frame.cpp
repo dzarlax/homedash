@@ -45,6 +45,8 @@ static int retry_step = 0, idle_seconds = 300, interval_seconds = 60,
 static char shown_id[65] = {};
 static photo_manifest current_manifest = {};
 static bool manifest_ready = false;
+// UI-owned override; cleared by the next physical touch or OTA handoff.
+static bool manual_requested = false;
 #ifdef SIMULATOR
 static bool sim_accelerated = false;
 #endif
@@ -88,6 +90,7 @@ static bool allocate_buffers() {
   if (!buffers[0] || !buffers[1]) {
     free_buffers();
     retry_after = now() + 300;
+    ui_dashboard_update_photo_status("Недостаточно памяти для фото");
     return false;
   }
   return true;
@@ -119,6 +122,7 @@ static void publish(int index, const char *id) {
   strncpy(shown_id, id, 64);
   shown_id[64] = 0;
   last_slide = now();
+  ui_dashboard_update_photo_status("Фото открыто. Касание: выход");
 }
 static void worker_task(void *) {
   for (;;) {
@@ -162,6 +166,8 @@ static bool submit(job_kind kind, int index, const photo_frame_entry *entry) {
   busy.store(true);
   xSemaphoreGive(mutex);
   xTaskNotifyGive(target);
+  ui_dashboard_update_photo_status(kind == MANIFEST ? "Получаем список фото..."
+                                                   : "Загружаем фото...");
   return true;
 }
 static void retry() {
@@ -184,7 +190,7 @@ static void tick(lv_timer_t *) {
   xSemaphoreGive(mutex);
   int64_t t = now();
   bool eligible = !physical_down && !ui_dashboard_reader_open() &&
-                  t - last_touch >= idle_seconds;
+                  (manual_requested || t - last_touch >= idle_seconds);
   if (completed && result.generation == epoch.load()) {
     if (result.kind == MANIFEST && result.result == PHOTO_OK) {
       photo_manifest &m = result.manifest;
@@ -192,13 +198,17 @@ static void tick(lv_timer_t *) {
       interval_seconds = m.interval;
       stale_seconds = m.stale;
       eligible = !physical_down && !ui_dashboard_reader_open() &&
-                 t - last_touch >= idle_seconds;
+                 (manual_requested || t - last_touch >= idle_seconds);
       if (!strcmp(m.state, "disabled") || !strcmp(m.state, "empty")) {
         detach();
         free_buffers();
         last_ready = 0;
         retry_step = 0;
         manifest_ready = false;
+        manual_requested = false;
+        ui_dashboard_update_photo_status(!strcmp(m.state, "disabled")
+                                             ? "Фоторамка выключена на мосту"
+                                             : "В подборке нет фотографий");
       } else if (!strcmp(m.state, "ready")) {
         last_ready = t;
         retry_step = 0;
@@ -207,6 +217,9 @@ static void tick(lv_timer_t *) {
         manifest_ready = true;
       } else {
         manifest_ready = false;
+        ui_dashboard_update_photo_status(!strcmp(m.state, "warming")
+                                             ? "Мост готовит фотографии..."
+                                             : "Фотографии пока недоступны");
         retry();
       }
     } else if (result.kind == FRAME && result.result == PHOTO_OK && eligible) {
@@ -217,6 +230,9 @@ static void tick(lv_timer_t *) {
       last_poll = 0;
       retry_after = 0;
     } else if (result.result != PHOTO_CANCELLED) {
+      ui_dashboard_update_photo_status(result.kind == MANIFEST
+                                           ? "Не удалось получить список фото"
+                                           : "Не удалось загрузить фото");
       retry();
     }
   }
@@ -226,6 +242,8 @@ static void tick(lv_timer_t *) {
     epoch.fetch_add(1);
     manifest_ready = false;
     last_ready = 0;
+    manual_requested = false;
+    ui_dashboard_update_photo_status("Нет связи с источником фото");
     if (was_visible) {
       last_touch = t;
       return;
@@ -271,11 +289,37 @@ void photo_frame_network_init(const char *url, const char *key) {
                               &handle, 0) == pdPASS)
     worker.store(handle, std::memory_order_release);
 }
+bool photo_frame_start_now() {
+  if (!mutex || !worker.load(std::memory_order_acquire)) {
+    ui_dashboard_update_photo_status("Фоторамка ещё не готова");
+    return false;
+  }
+  if (paused.load()) {
+    ui_dashboard_update_photo_status("Сначала дождитесь обновления");
+    return false;
+  }
+  epoch.fetch_add(1);
+  detach();
+  manual_requested = true;
+  manifest_ready = false;
+  last_ready = 0;
+  last_poll = 0;
+  last_touch = now();
+  retry_after = 0;
+  retry_step = 0;
+  ui_dashboard_update_photo_status("Запускаем фоторамку...");
+  tick(nullptr);
+  return true;
+}
 bool photo_frame_touch(bool pressed) {
   int64_t t = now();
   if (pressed) {
-    if (!physical_down)
+    if (!physical_down) {
       epoch.fetch_add(1);
+      if (manual_requested || overlay)
+        ui_dashboard_update_photo_status("Авто: после простоя без касаний");
+      manual_requested = false;
+    }
     physical_down = true;
     last_touch = t;
     if (overlay) {
@@ -303,6 +347,7 @@ void photo_frame_filter_touch(bool pressed, uint16_t x, uint16_t y,
     data->state = LV_INDEV_STATE_RELEASED;
 }
 void photo_frame_reader_closed() {
+  manual_requested = false;
   last_touch = now();
   epoch.fetch_add(1);
 }
@@ -324,6 +369,7 @@ bool photo_frame_pause_for_ota() {
     xSemaphoreGive(mutex);
     free_buffers();
     manifest_ready = false;
+    manual_requested = false;
     last_ready = 0;
     last_poll = 0;
     last_touch = now();
