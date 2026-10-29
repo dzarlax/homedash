@@ -45,4 +45,3 @@ bool web_preferences_revision_allowed(const web_preferences_t *current,
 // A command is new only when it differs from the durable last-seen ID.
 bool web_command_id_valid(const char *id);
 bool web_command_is_new(const char *last_id, const char *candidate_id);
-
