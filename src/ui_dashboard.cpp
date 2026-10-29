@@ -1,4 +1,5 @@
 #include "ui_dashboard.h"
+#include "photo_frame.h"
 #include "config.h"
 #include "wifi_manager.h"
 #include "bridge.h"
@@ -508,6 +509,7 @@ static void reader_close_cb(lv_event_t *e)
     if (reader_overlay) {
         lv_obj_delete(reader_overlay);
         reader_overlay = NULL;
+        photo_frame_reader_closed();
     }
 }
 
@@ -2150,3 +2152,5 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         }
     }
 }
+
+bool ui_dashboard_reader_open(void) { return reader_overlay != NULL; }

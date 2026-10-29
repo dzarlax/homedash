@@ -165,3 +165,17 @@ lv_font_conv --font Montserrat-Medium.ttf \
 ## License
 
 MIT
+
+The desktop simulator can exercise the photo frame using generated color bars and
+no network credentials: set `HOMEDASH_SIM_PHOTO_FRAME=1` before launching the
+simulator. Fixture time runs 30 times faster (the default idle period takes ten
+seconds); touch or click dismisses the frame. This does not test ESP32 PSRAM,
+TLS, display timing, or OTA.
+
+On a fresh boot the display waits for the default five-minute idle period before
+its first manifest request. A shorter Bridge idle setting applies after that
+first successful manifest and on subsequent idle periods.
+
+Run `make -C sim test-photo-frame test-photo-client` for fake-clock UI and
+HTTP-client protocol checks. The client test needs a C++ compiler and OpenSSL
+development headers; it uses temporary files and a mocked transport.

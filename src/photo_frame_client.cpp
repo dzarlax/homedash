@@ -1,0 +1,242 @@
+#include "photo_frame_client.h"
+#include "cJSON.h"
+#include "esp_crt_bundle.h"
+#include "esp_http_client.h"
+#include "esp_timer.h"
+#include "mbedtls/sha256.h"
+#include <stdio.h>
+#include <string.h>
+
+namespace {
+struct response_headers {
+  bool encoded = false;
+  bool ranged = false;
+};
+esp_err_t on_event(esp_http_client_event_t *e) {
+  response_headers *h = static_cast<response_headers *>(e->user_data);
+  if (e->event_id == HTTP_EVENT_ON_HEADER && e->header_key && e->header_value) {
+    if (!strcasecmp(e->header_key, "Content-Encoding") &&
+        strcasecmp(e->header_value, "identity"))
+      h->encoded = true;
+    if (!strcasecmp(e->header_key, "Content-Range"))
+      h->ranged = true;
+  }
+  return ESP_OK;
+}
+struct request {
+  esp_http_client_handle_t client = nullptr;
+  response_headers headers;
+  int64_t deadline = 0;
+  ~request() {
+    if (client) {
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+    }
+  }
+  photo_result open(const char *url, const char *key, photo_cancel_fn cancel,
+                    void *arg) {
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.timeout_ms = 2000;
+    config.disable_auto_redirect = true;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.event_handler = on_event;
+    config.user_data = &headers;
+    client = esp_http_client_init(&config);
+    if (!client)
+      return PHOTO_FAILED;
+    esp_http_client_set_header(client, "X-API-Key", key);
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    deadline = esp_timer_get_time() + 15000000;
+    photo_result result = check(cancel, arg);
+    if (result != PHOTO_OK)
+      return result;
+    if (esp_http_client_open(client, 0) != ESP_OK)
+      return check(cancel, arg) == PHOTO_CANCELLED ? PHOTO_CANCELLED
+                                                   : PHOTO_FAILED;
+    result = check(cancel, arg);
+    if (result != PHOTO_OK)
+      return result;
+    if (esp_http_client_fetch_headers(client) < 0)
+      return check(cancel, arg) == PHOTO_CANCELLED ? PHOTO_CANCELLED
+                                                   : PHOTO_FAILED;
+    result = check(cancel, arg);
+    if (result != PHOTO_OK)
+      return result;
+    return headers.encoded || headers.ranged ? PHOTO_FAILED : PHOTO_OK;
+  }
+  photo_result check(photo_cancel_fn cancel, void *arg) const {
+    if (cancel && cancel(arg))
+      return PHOTO_CANCELLED;
+    return esp_timer_get_time() >= deadline ? PHOTO_FAILED : PHOTO_OK;
+  }
+};
+bool hex64(const char *s) {
+  if (!s || strlen(s) != 64)
+    return false;
+  for (int i = 0; i < 64; i++)
+    if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f')))
+      return false;
+  return true;
+}
+bool number(cJSON *root, const char *name, int min, int max, int *out) {
+  cJSON *v = cJSON_GetObjectItemCaseSensitive(root, name);
+  if (!cJSON_IsNumber(v) || v->valuedouble != v->valueint ||
+      v->valueint < min || v->valueint > max)
+    return false;
+  *out = v->valueint;
+  return true;
+}
+bool text(cJSON *root, const char *name, char *out, size_t cap) {
+  cJSON *v = cJSON_GetObjectItemCaseSensitive(root, name);
+  if (!cJSON_IsString(v) || !v->valuestring || strlen(v->valuestring) >= cap)
+    return false;
+  strcpy(out, v->valuestring);
+  return true;
+}
+} // namespace
+photo_result photo_fetch_manifest(const char *base, const char *key,
+                                  photo_manifest *out, photo_cancel_fn cancel,
+                                  void *arg) {
+  char url[256];
+  if (snprintf(url, sizeof(url), "%s/api/photo-frame/v1/manifest", base) >=
+      (int)sizeof(url))
+    return PHOTO_FAILED;
+  request r;
+  photo_result opened = r.open(url, key, cancel, arg);
+  if (opened != PHOTO_OK)
+    return opened;
+  int status = esp_http_client_get_status_code(r.client);
+  if (status == 404)
+    return PHOTO_NOT_FOUND;
+  if (status != 200 || esp_http_client_is_chunked_response(r.client))
+    return PHOTO_FAILED;
+  int64_t length = esp_http_client_get_content_length(r.client);
+  if (length < 1 || length > 8192)
+    return PHOTO_FAILED;
+  static char body[8193];
+  size_t used = 0;
+  while (used < (size_t)length) {
+    photo_result check = r.check(cancel, arg);
+    if (check != PHOTO_OK)
+      return check;
+    int remaining_ms = (int)((r.deadline - esp_timer_get_time()) / 1000);
+    if (remaining_ms < 1)
+      remaining_ms = 1;
+    esp_http_client_set_timeout_ms(r.client,
+                                   remaining_ms < 2000 ? remaining_ms : 2000);
+    int n = esp_http_client_read(r.client, body + used, (int)(length - used));
+    if (n <= 0)
+      return PHOTO_FAILED;
+    used += n;
+  }
+  body[used] = '\0';
+  if (r.check(cancel, arg) != PHOTO_OK)
+    return r.check(cancel, arg);
+  if (!esp_http_client_is_complete_data_received(r.client))
+    return PHOTO_FAILED;
+  cJSON *root = cJSON_ParseWithLength(body, used);
+  if (!root)
+    return PHOTO_FAILED;
+  photo_manifest m = {};
+  int v, w, h, bytes;
+  char format[16];
+  bool ok = number(root, "version", 1, 1, &v) &&
+            number(root, "width", 1024, 1024, &w) &&
+            number(root, "height", 600, 600, &h) &&
+            number(root, "frame_bytes", PHOTO_FRAME_BYTES, PHOTO_FRAME_BYTES,
+                   &bytes) &&
+            number(root, "idle_after_s", 30, 3600, &m.idle) &&
+            number(root, "slide_interval_s", 15, 3600, &m.interval) &&
+            number(root, "max_stale_s", 60, 3600, &m.stale) &&
+            text(root, "pixel_format", format, sizeof(format)) &&
+            !strcmp(format, "rgb565le") &&
+            text(root, "state", m.state, sizeof(m.state)) &&
+            text(root, "generation", m.generation, sizeof(m.generation));
+  cJSON *frames = cJSON_GetObjectItemCaseSensitive(root, "frames");
+  if (!cJSON_IsArray(frames))
+    ok = false;
+  else {
+    m.count = cJSON_GetArraySize(frames);
+    if (m.count > 8)
+      ok = false;
+    for (int i = 0; ok && i < m.count; i++) {
+      cJSON *f = cJSON_GetArrayItem(frames, i);
+      ok = text(f, "id", m.frames[i].id, sizeof(m.frames[i].id)) &&
+           hex64(m.frames[i].id) &&
+           text(f, "sha256", m.frames[i].sha256, sizeof(m.frames[i].sha256)) &&
+           hex64(m.frames[i].sha256);
+    }
+  }
+  bool ready = !strcmp(m.state, "ready");
+  if ((!ready && strcmp(m.state, "disabled") && strcmp(m.state, "empty") &&
+       strcmp(m.state, "warming") && strcmp(m.state, "unavailable")) ||
+      (ready ? m.count == 0 : m.count != 0))
+    ok = false;
+  cJSON_Delete(root);
+  if (!ok)
+    return PHOTO_FAILED;
+  *out = m;
+  return PHOTO_OK;
+}
+photo_result photo_fetch_pixels(const char *base, const char *key,
+                                const photo_frame_entry *entry, uint8_t *buffer,
+                                photo_cancel_fn cancel, void *arg) {
+  if (!hex64(entry->id) || !hex64(entry->sha256))
+    return PHOTO_FAILED;
+  char url[256];
+  if (snprintf(url, sizeof(url), "%s/api/photo-frame/v1/frames/%s", base,
+               entry->id) >= (int)sizeof(url))
+    return PHOTO_FAILED;
+  request r;
+  photo_result opened = r.open(url, key, cancel, arg);
+  if (opened != PHOTO_OK)
+    return opened;
+  int status = esp_http_client_get_status_code(r.client);
+  if (status == 404)
+    return PHOTO_NOT_FOUND;
+  if (status != 200 || esp_http_client_is_chunked_response(r.client) ||
+      esp_http_client_get_content_length(r.client) != PHOTO_FRAME_BYTES)
+    return PHOTO_FAILED;
+  mbedtls_sha256_context hash;
+  mbedtls_sha256_init(&hash);
+  mbedtls_sha256_starts(&hash, 0);
+  size_t used = 0;
+  photo_result result = PHOTO_FAILED;
+  while (used < PHOTO_FRAME_BYTES) {
+    result = r.check(cancel, arg);
+    if (result != PHOTO_OK)
+      goto done;
+    result = PHOTO_FAILED;
+    int remain = PHOTO_FRAME_BYTES - used;
+    int remaining_ms = (int)((r.deadline - esp_timer_get_time()) / 1000);
+    if (remaining_ms < 1)
+      remaining_ms = 1;
+    esp_http_client_set_timeout_ms(r.client,
+                                   remaining_ms < 2000 ? remaining_ms : 2000);
+    int n = esp_http_client_read(r.client, (char *)buffer + used,
+                                 remain > 8192 ? 8192 : remain);
+    if (n <= 0)
+      goto done;
+    mbedtls_sha256_update(&hash, buffer + used, n);
+    used += n;
+  }
+  result = r.check(cancel, arg);
+  if (result != PHOTO_OK)
+    goto done;
+  result = PHOTO_FAILED;
+  if (!esp_http_client_is_complete_data_received(r.client))
+    goto done;
+  {
+    unsigned char digest[32];
+    char hex[65];
+    mbedtls_sha256_finish(&hash, digest);
+    for (int i = 0; i < 32; i++)
+      snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    if (!strcmp(hex, entry->sha256))
+      result = r.check(cancel, arg);
+  }
+done:
+  mbedtls_sha256_free(&hash);
+  return result;
+}
