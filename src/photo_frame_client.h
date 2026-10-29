@@ -18,6 +18,7 @@ struct photo_diagnostic {
   const char *stage = "request";
   int http_status = 0;
   int transport_error = 0;
+  size_t received = 0;
 };
 typedef bool (*photo_cancel_fn)(void *);
 photo_result photo_fetch_manifest(const char *url, const char *key,

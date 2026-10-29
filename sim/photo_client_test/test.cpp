@@ -11,8 +11,9 @@ struct mock_http { esp_http_client_config_t config; };
 struct scenario {
   std::string body, encoding, range, url, api_key, accept_encoding;
   int open_error = 0, header_error = 0;
+  int stall_after = 1, stalls = 0;
   int status = 200, chunked = 0, read_calls = 0, timeout = 0, cancel_after_reads = 0;
-  int64_t length = -1, now = 0;
+  int64_t length = -1, now = 0, read_elapsed = 0;
   size_t pos = 0, max_read = 8192;
   bool cancel = false, cancel_on_open = false, cancel_on_headers = false, cancel_on_final = false;
   bool deadline_on_open = false, deadline_on_headers = false, deadline_on_final = false;
@@ -25,11 +26,11 @@ int64_t esp_timer_get_time() { return s.now; }
 esp_err_t esp_crt_bundle_attach(void *) { return ESP_OK; }
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c) { client.config = *c; s.url = c->url; s.redirected = !c->disable_auto_redirect; return &client; }
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t, const char *k, const char *v) { if (!strcmp(k,"X-API-Key")) s.api_key=v; if (!strcmp(k,"Accept-Encoding")) s.accept_encoding=v; return ESP_OK; }
-esp_err_t esp_http_client_open(esp_http_client_handle_t, int) { if(s.cancel_on_open) s.cancel=true; if(s.deadline_on_open) s.now=15000000; return s.open_error; }
+esp_err_t esp_http_client_open(esp_http_client_handle_t, int) { if(s.cancel_on_open) s.cancel=true; if(s.deadline_on_open) s.now=60000000; return s.open_error; }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h) {
   auto send=[&](const char *k,const std::string &v) { if (!v.empty()) { esp_http_client_event_t e={HTTP_EVENT_ON_HEADER,h->config.user_data,k,v.c_str()}; h->config.event_handler(&e); } };
   send("Content-Encoding",s.encoding); send("Content-Range",s.range);
-  if(s.cancel_on_headers) s.cancel=true; if(s.deadline_on_headers) s.now=15000000;
+  if(s.cancel_on_headers) s.cancel=true; if(s.deadline_on_headers) s.now=60000000;
   return s.header_error ? s.header_error : s.length;
 }
 int esp_http_client_get_status_code(esp_http_client_handle_t) { return s.status; }
@@ -38,10 +39,16 @@ int64_t esp_http_client_get_content_length(esp_http_client_handle_t) { return s.
 esp_err_t esp_http_client_set_timeout_ms(esp_http_client_handle_t,int ms) { s.timeout=ms; return ESP_OK; }
 int esp_http_client_read(esp_http_client_handle_t,char *out,int n) {
   ++s.read_calls;
+  s.now += s.read_elapsed;
+  if (s.read_calls >= s.stall_after && s.stalls > 0) {
+    --s.stalls; s.now += 2000000;
+    if(s.cancel_after_reads && s.read_calls >= s.cancel_after_reads) s.cancel=true;
+    return -ESP_ERR_HTTP_EAGAIN;
+  }
   size_t count=std::min({(size_t)n,s.max_read,s.body.size()-s.pos});
   memcpy(out,s.body.data()+s.pos,count); s.pos+=count;
   if(s.cancel_after_reads && s.read_calls >= s.cancel_after_reads) s.cancel=true;
-  if(s.pos >= (size_t)s.length) { if(s.cancel_on_final) s.cancel=true; if(s.deadline_on_final) s.now=15000000; }
+  if(s.pos >= (size_t)s.length) { if(s.cancel_on_final) s.cancel=true; if(s.deadline_on_final) s.now=60000000; }
   return (int)count;
 }
 bool esp_http_client_is_complete_data_received(esp_http_client_handle_t) { return s.pos==s.body.size() && s.pos==(size_t)s.length; }
@@ -84,6 +91,12 @@ int main() {
   reset(manifest()); s.deadline_on_open=true; expect("deadline on open manifest",get_manifest(&m),PHOTO_FAILED);
   reset(manifest()); s.deadline_on_headers=true; expect("deadline on headers manifest",get_manifest(&m),PHOTO_FAILED);
   reset(manifest()); s.deadline_on_final=true; expect("deadline on final manifest read",get_manifest(&m),PHOTO_FAILED);
+  reset(manifest()); s.stalls=1;
+  expect("manifest recovers from EAGAIN", get_manifest(&m), PHOTO_OK);
+  reset(manifest()); s.stalls=100;
+  expect("manifest stalls respect deadline", get_manifest(&m), PHOTO_FAILED);
+  reset(manifest()); s.stalls=1; s.cancel_after_reads=1;
+  expect("manifest stall cancellation", get_manifest(&m), PHOTO_CANCELLED);
   photo_diagnostic diagnostic;
   auto diagnose = [&]() { return photo_fetch_manifest("https://bridge", "secret", &m, cancelled, nullptr, &diagnostic); };
   reset(manifest()); s.open_error = -123;
@@ -103,6 +116,14 @@ int main() {
   photo_frame_entry entry{}; std::strcpy(entry.id,id.c_str()); std::strcpy(entry.sha256,hex((const unsigned char*)pixels.data(),pixels.size()).c_str());
   std::vector<uint8_t> buf(PHOTO_FRAME_BYTES+2,0x5a);
   auto get_pixels=[&]() { return photo_fetch_pixels("https://bridge","secret",&entry,buf.data()+1,cancelled,nullptr); };
+  reset(pixels); s.read_elapsed=200000;
+  expect("slow frame completes after original 15s deadline",get_pixels(),PHOTO_OK);
+  reset(pixels); s.stall_after=2; s.stalls=1;
+  expect("pixels recover from EAGAIN after progress",get_pixels(),PHOTO_OK);
+  reset(pixels); s.stalls=100;
+  expect("pixel stalls respect deadline",get_pixels(),PHOTO_FAILED);
+  reset(pixels); s.stalls=1; s.cancel_after_reads=1;
+  expect("pixel stall cancellation",get_pixels(),PHOTO_CANCELLED);
   reset(pixels); expect("valid pixels",get_pixels(),PHOTO_OK);
   assert_true("bytes and guards",buf.front()==0x5a && buf.back()==0x5a && !memcmp(buf.data()+1,pixels.data(),pixels.size()));
   assert_true("frame URL",s.url=="https://bridge/api/photo-frame/v1/frames/"+id);
@@ -122,6 +143,20 @@ int main() {
   reset(pixels); s.deadline_on_open=true; expect("deadline on open pixels",get_pixels(),PHOTO_FAILED);
   reset(pixels); s.deadline_on_headers=true; expect("deadline on headers pixels",get_pixels(),PHOTO_FAILED);
   reset(pixels); s.deadline_on_final=true; expect("deadline on final pixel read",get_pixels(),PHOTO_FAILED);
+  auto diagnose_pixels=[&]() { return photo_fetch_pixels("https://bridge","secret",&entry,buf.data()+1,cancelled,nullptr,&diagnostic); };
+  reset(pixels); s.stall_after=2; s.stalls=100;
+  expect("diagnose pixel deadline",diagnose_pixels(),PHOTO_FAILED);
+  assert_true("pixel deadline progress", !strcmp(diagnostic.stage,"deadline") && diagnostic.received==8192);
+  reset(pixels.substr(0,100)); s.length=PHOTO_FRAME_BYTES;
+  expect("diagnose pixel EOF",diagnose_pixels(),PHOTO_FAILED);
+  assert_true("pixel EOF progress", !strcmp(diagnostic.stage,"EOF") && diagnostic.received==100);
+  reset(pixels); entry.sha256[0]=entry.sha256[0]=='a'?'b':'a';
+  expect("diagnose pixel hash",diagnose_pixels(),PHOTO_FAILED);
+  assert_true("pixel hash diagnostic", !strcmp(diagnostic.stage,"sha256") && diagnostic.received==PHOTO_FRAME_BYTES);
+  std::strcpy(entry.sha256,hex((const unsigned char*)pixels.data(),pixels.size()).c_str());
+  reset(pixels); s.stalls=1;
+  expect("diagnose pixel recovery",diagnose_pixels(),PHOTO_OK);
+  assert_true("pixel recovery diagnostic", !strcmp(diagnostic.stage,"ok") && diagnostic.received==PHOTO_FRAME_BYTES && diagnostic.transport_error==0);
   assert_true("pixel guards after failures",buf.front()==0x5a && buf.back()==0x5a);
   std::printf("%d cases, %d failures\n",cases,failures); return failures?1:0;
 }

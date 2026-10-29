@@ -233,10 +233,15 @@ static void tick(lv_timer_t *) {
       retry_after = 0;
     } else if (result.result != PHOTO_CANCELLED) {
       char message[144];
-      snprintf(message, sizeof(message), "%s: %s / HTTP %d / err %d",
-               result.kind == MANIFEST ? "Список фото" : "Фото",
-               result.diagnostic.stage, result.diagnostic.http_status,
-               result.diagnostic.transport_error);
+      if (result.kind == FRAME)
+        snprintf(message, sizeof(message), "Фото: %s %u/%u H%d E%d",
+                 result.diagnostic.stage, (unsigned)result.diagnostic.received,
+                 PHOTO_FRAME_BYTES, result.diagnostic.http_status,
+                 result.diagnostic.transport_error);
+      else
+        snprintf(message, sizeof(message), "Список фото: %s / HTTP %d / err %d",
+                 result.diagnostic.stage, result.diagnostic.http_status,
+                 result.diagnostic.transport_error);
       ui_dashboard_update_photo_status(message);
       retry();
     }
