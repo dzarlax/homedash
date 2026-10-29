@@ -14,6 +14,7 @@ void lvgl_port_unlock(void);
 #include "freertos/task.h"
 #include "lvgl.h"
 #include <atomic>
+#include <stdio.h>
 #include <string.h>
 
 namespace {
@@ -25,6 +26,7 @@ struct job_data {
   photo_frame_entry frame;
   photo_manifest manifest;
   photo_result result;
+  photo_diagnostic diagnostic;
   bool complete;
 };
 static job_data job = {};
@@ -134,11 +136,11 @@ static void worker_task(void *) {
     if (!cancelled(&local.generation)) {
       if (local.kind == MANIFEST)
         result = photo_fetch_manifest(bridge_url, bridge_key, &local.manifest,
-                                      cancelled, &local.generation);
+                                      cancelled, &local.generation, &local.diagnostic);
       else if (local.kind == FRAME)
         result = photo_fetch_pixels(bridge_url, bridge_key, &local.frame,
                                     buffers[local.buffer], cancelled,
-                                    &local.generation);
+                                    &local.generation, &local.diagnostic);
     }
     xSemaphoreTake(mutex, portMAX_DELAY);
     local.result = result;
@@ -230,9 +232,12 @@ static void tick(lv_timer_t *) {
       last_poll = 0;
       retry_after = 0;
     } else if (result.result != PHOTO_CANCELLED) {
-      ui_dashboard_update_photo_status(result.kind == MANIFEST
-                                           ? "Не удалось получить список фото"
-                                           : "Не удалось загрузить фото");
+      char message[144];
+      snprintf(message, sizeof(message), "%s: %s / HTTP %d / err %d",
+               result.kind == MANIFEST ? "Список фото" : "Фото",
+               result.diagnostic.stage, result.diagnostic.http_status,
+               result.diagnostic.transport_error);
+      ui_dashboard_update_photo_status(message);
       retry();
     }
   }

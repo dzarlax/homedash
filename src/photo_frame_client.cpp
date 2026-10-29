@@ -27,7 +27,11 @@ struct request {
   esp_http_client_handle_t client = nullptr;
   response_headers headers;
   int64_t deadline = 0;
+  photo_diagnostic diagnostic;
+  photo_diagnostic *output;
+  explicit request(photo_diagnostic *out) : output(out) {}
   ~request() {
+    if (output) *output = diagnostic;
     if (client) {
       esp_http_client_close(client);
       esp_http_client_cleanup(client);
@@ -42,6 +46,7 @@ struct request {
     config.crt_bundle_attach = esp_crt_bundle_attach;
     config.event_handler = on_event;
     config.user_data = &headers;
+    diagnostic.stage = "init";
     client = esp_http_client_init(&config);
     if (!client)
       return PHOTO_FAILED;
@@ -51,18 +56,26 @@ struct request {
     photo_result result = check(cancel, arg);
     if (result != PHOTO_OK)
       return result;
-    if (esp_http_client_open(client, 0) != ESP_OK)
+    diagnostic.stage = "connect";
+    diagnostic.transport_error = esp_http_client_open(client, 0);
+    if (diagnostic.transport_error != ESP_OK)
       return check(cancel, arg) == PHOTO_CANCELLED ? PHOTO_CANCELLED
                                                    : PHOTO_FAILED;
     result = check(cancel, arg);
     if (result != PHOTO_OK)
       return result;
-    if (esp_http_client_fetch_headers(client) < 0)
+    diagnostic.stage = "headers";
+    int64_t header_result = esp_http_client_fetch_headers(client);
+    if (header_result < 0)
+      diagnostic.transport_error = (int)header_result;
+    diagnostic.http_status = esp_http_client_get_status_code(client);
+    if (header_result < 0)
       return check(cancel, arg) == PHOTO_CANCELLED ? PHOTO_CANCELLED
                                                    : PHOTO_FAILED;
     result = check(cancel, arg);
     if (result != PHOTO_OK)
       return result;
+    diagnostic.stage = "encoding";
     return headers.encoded || headers.ranged ? PHOTO_FAILED : PHOTO_OK;
   }
   photo_result check(photo_cancel_fn cancel, void *arg) const {
@@ -97,24 +110,31 @@ bool text(cJSON *root, const char *name, char *out, size_t cap) {
 } // namespace
 photo_result photo_fetch_manifest(const char *base, const char *key,
                                   photo_manifest *out, photo_cancel_fn cancel,
-                                  void *arg) {
+                                  void *arg, photo_diagnostic *diagnostic) {
+  if (diagnostic) *diagnostic = {};
   char url[256];
   if (snprintf(url, sizeof(url), "%s/api/photo-frame/v1/manifest", base) >=
       (int)sizeof(url))
     return PHOTO_FAILED;
-  request r;
+  request r(diagnostic);
   photo_result opened = r.open(url, key, cancel, arg);
   if (opened != PHOTO_OK)
     return opened;
+  r.diagnostic.stage = "HTTP";
   int status = esp_http_client_get_status_code(r.client);
   if (status == 404)
     return PHOTO_NOT_FOUND;
-  if (status != 200 || esp_http_client_is_chunked_response(r.client))
+  if (status != 200)
     return PHOTO_FAILED;
+  r.diagnostic.stage = "chunked";
+  if (esp_http_client_is_chunked_response(r.client))
+    return PHOTO_FAILED;
+  r.diagnostic.stage = "length";
   int64_t length = esp_http_client_get_content_length(r.client);
   if (length < 1 || length > 8192)
     return PHOTO_FAILED;
   static char body[8193];
+  r.diagnostic.stage = "read";
   size_t used = 0;
   while (used < (size_t)length) {
     photo_result check = r.check(cancel, arg);
@@ -126,8 +146,10 @@ photo_result photo_fetch_manifest(const char *base, const char *key,
     esp_http_client_set_timeout_ms(r.client,
                                    remaining_ms < 2000 ? remaining_ms : 2000);
     int n = esp_http_client_read(r.client, body + used, (int)(length - used));
-    if (n <= 0)
+    if (n <= 0) {
+      r.diagnostic.transport_error = n;
       return PHOTO_FAILED;
+    }
     used += n;
   }
   body[used] = '\0';
@@ -135,9 +157,11 @@ photo_result photo_fetch_manifest(const char *base, const char *key,
     return r.check(cancel, arg);
   if (!esp_http_client_is_complete_data_received(r.client))
     return PHOTO_FAILED;
+  r.diagnostic.stage = "JSON";
   cJSON *root = cJSON_ParseWithLength(body, used);
   if (!root)
     return PHOTO_FAILED;
+  r.diagnostic.stage = "schema";
   photo_manifest m = {};
   int v, w, h, bytes;
   char format[16];
@@ -176,22 +200,25 @@ photo_result photo_fetch_manifest(const char *base, const char *key,
   cJSON_Delete(root);
   if (!ok)
     return PHOTO_FAILED;
+  r.diagnostic.stage = "ok";
   *out = m;
   return PHOTO_OK;
 }
 photo_result photo_fetch_pixels(const char *base, const char *key,
                                 const photo_frame_entry *entry, uint8_t *buffer,
-                                photo_cancel_fn cancel, void *arg) {
+                                photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic) {
+  if (diagnostic) *diagnostic = {};
   if (!hex64(entry->id) || !hex64(entry->sha256))
     return PHOTO_FAILED;
   char url[256];
   if (snprintf(url, sizeof(url), "%s/api/photo-frame/v1/frames/%s", base,
                entry->id) >= (int)sizeof(url))
     return PHOTO_FAILED;
-  request r;
+  request r(diagnostic);
   photo_result opened = r.open(url, key, cancel, arg);
   if (opened != PHOTO_OK)
     return opened;
+  r.diagnostic.stage = "HTTP";
   int status = esp_http_client_get_status_code(r.client);
   if (status == 404)
     return PHOTO_NOT_FOUND;
@@ -201,6 +228,7 @@ photo_result photo_fetch_pixels(const char *base, const char *key,
   mbedtls_sha256_context hash;
   mbedtls_sha256_init(&hash);
   mbedtls_sha256_starts(&hash, 0);
+  r.diagnostic.stage = "read";
   size_t used = 0;
   photo_result result = PHOTO_FAILED;
   while (used < PHOTO_FRAME_BYTES) {
