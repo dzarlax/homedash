@@ -6,6 +6,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "lvgl_port.h"
+#include "photo_frame.h"
 
 static const char *TAG = "lv_port";
 static SemaphoreHandle_t lvgl_mux;
@@ -114,19 +115,14 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
     esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)lv_indev_get_user_data(indev);
     assert(tp);
 
-    uint16_t touchpad_x;
-    uint16_t touchpad_y;
+    uint16_t touchpad_x = 0;
+    uint16_t touchpad_y = 0;
     uint8_t touchpad_cnt = 0;
 
     esp_lcd_touch_read_data(tp);
     bool touchpad_pressed = esp_lcd_touch_get_coordinates(tp, &touchpad_x, &touchpad_y, NULL, &touchpad_cnt, 1);
-    if (touchpad_pressed && touchpad_cnt > 0) {
-        data->point.x = touchpad_x;
-        data->point.y = touchpad_y;
-        data->state = LV_INDEV_STATE_PRESSED;
-    } else {
-        data->state = LV_INDEV_STATE_RELEASED;
-    }
+    bool pressed = touchpad_pressed && touchpad_cnt > 0;
+    photo_frame_filter_touch(pressed, touchpad_x, touchpad_y, data);
 }
 
 static lv_indev_t *indev_init(esp_lcd_touch_handle_t tp)

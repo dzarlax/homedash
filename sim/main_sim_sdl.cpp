@@ -8,6 +8,8 @@
 
 #include "lvgl.h"
 #include "bridge.h"
+#include "photo_frame.h"
+#include <cstdlib>
 
 static constexpr int DISP_W = 1024;
 static constexpr int DISP_H = 600;
@@ -26,6 +28,7 @@ static SDL_Texture *s_texture = nullptr;
 static int s_pointer_x = 0;
 static int s_pointer_y = 0;
 static bool s_pointer_down = false;
+static bool s_photo_fixture = false;
 
 static void flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *pixels)
 {
@@ -41,9 +44,8 @@ static void flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *pixe
 
 static void pointer_read_cb(lv_indev_t *, lv_indev_data_t *data)
 {
-    data->point.x = s_pointer_x;
-    data->point.y = s_pointer_y;
-    data->state = s_pointer_down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    if (s_photo_fixture) photo_frame_filter_touch(s_pointer_down, s_pointer_x, s_pointer_y, data);
+    else { data->point.x=s_pointer_x; data->point.y=s_pointer_y; data->state=s_pointer_down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED; }
 }
 
 static void refresh_all_data(void)
@@ -108,6 +110,8 @@ int main()
 
     sim_init_fixtures();
     ui_dashboard_create();
+    s_photo_fixture = std::getenv("HOMEDASH_SIM_PHOTO_FRAME") != nullptr;
+    if (s_photo_fixture) { photo_frame_sim_accelerate(); photo_frame_ui_init(); photo_frame_network_init("fixture", "fixture"); }
     refresh_all_data();
 
     bool running = true;

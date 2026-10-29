@@ -8,6 +8,7 @@ uint32_t esp_get_free_heap_size(void);
 uint32_t esp_get_free_internal_heap_size(void);
 void *heap_caps_malloc(size_t size, uint32_t caps);
 #define MALLOC_CAP_SPIRAM 0
+#define MALLOC_CAP_8BIT 0
 #ifdef __cplusplus
 }
 #endif

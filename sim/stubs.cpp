@@ -226,6 +226,7 @@ extern "C" {
 uint32_t esp_get_free_heap_size(void) { return 128u * 1024u; }
 uint32_t esp_get_free_internal_heap_size(void) { return 78u * 1024u; }
 void *heap_caps_malloc(size_t size, uint32_t) { return malloc(size); }
+#ifndef PHOTO_FRAME_TEST
 int64_t esp_timer_get_time(void)
 {
 #if defined(_WIN32)
@@ -237,4 +238,7 @@ int64_t esp_timer_get_time(void)
         std::chrono::steady_clock::now() - start).count();
 #endif
 }
+#endif
 }
+
+// The desktop dashboard has no photo worker; the dedicated test supplies it.

@@ -10,6 +10,8 @@
 
 #include "lvgl.h"
 #include "bridge.h"
+#include "photo_frame.h"
+#include <cstdlib>
 
 void ui_dashboard_create(void);
 void ui_dashboard_update_time(void);
@@ -30,6 +32,7 @@ static uint32_t s_bgra[DISP_W * DISP_H];
 static int s_mouse_x = 0;
 static int s_mouse_y = 0;
 static bool s_mouse_down = false;
+static bool s_photo_fixture = false;
 
 static uint32_t rgb565_to_bgra(uint16_t px)
 {
@@ -64,9 +67,8 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 static void pointer_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
-    data->point.x = s_mouse_x;
-    data->point.y = s_mouse_y;
-    data->state = s_mouse_down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    if (s_photo_fixture) photo_frame_filter_touch(s_mouse_down, s_mouse_x, s_mouse_y, data);
+    else { data->point.x=s_mouse_x; data->point.y=s_mouse_y; data->state=s_mouse_down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED; }
 }
 
 static void paint_window(HWND hwnd)
@@ -201,6 +203,8 @@ int main(void)
 
     sim_init_fixtures();
     ui_dashboard_create();
+    s_photo_fixture = std::getenv("HOMEDASH_SIM_PHOTO_FRAME") != nullptr;
+    if (s_photo_fixture) { photo_frame_sim_accelerate(); photo_frame_ui_init(); photo_frame_network_init("fixture", "fixture"); }
     refresh_all_data();
 
     MSG msg;

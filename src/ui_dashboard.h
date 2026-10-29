@@ -9,3 +9,5 @@ void ui_dashboard_update_transport(const bridge_transport_t *data);
 void ui_dashboard_update_bridge(const bridge_data_t *data);
 void ui_dashboard_update_ha(const bridge_data_t *data);
 void ui_dashboard_update_time(void);
+
+bool ui_dashboard_reader_open(void);

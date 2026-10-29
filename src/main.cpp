@@ -17,6 +17,7 @@
 #include "bridge.h"
 #include "ota.h"
 #include "ui_dashboard.h"
+#include "photo_frame.h"
 
 static const char *TAG = "main";
 
@@ -71,6 +72,7 @@ static void network_task(void *param)
     // Initialize bridge with runtime URL
     bridge_init(cfg.bridge_url, cfg.bridge_key);
     ota_init(cfg.bridge_url, cfg.bridge_key);
+    photo_frame_network_init(cfg.bridge_url, cfg.bridge_key);
 
     // WiFi init
     wifi_init(cfg.wifi_ssid, cfg.wifi_pass, POSIX_TZ, NTP_SERVER);
@@ -89,7 +91,7 @@ static void network_task(void *param)
             if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
             else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
-            else ota_check_and_update();
+            else if (photo_frame_pause_for_ota()) { ota_check_and_update(); photo_frame_resume_after_ota(); }
         }
 
         // Bridge polling
@@ -119,7 +121,7 @@ static void network_task(void *param)
 
         // Periodic OTA check
         if (ota_elapsed >= OTA_CHECK_INTERVAL_MS) {
-            ota_check_and_update();
+            if (photo_frame_pause_for_ota()) { ota_check_and_update(); photo_frame_resume_after_ota(); }
             ota_elapsed = 0;
         }
 
@@ -128,7 +130,7 @@ static void network_task(void *param)
             if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
             else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
-            else ota_check_and_update();
+            else if (photo_frame_pause_for_ota()) { ota_check_and_update(); photo_frame_resume_after_ota(); }
         }
         uint32_t elapsed = (xTaskGetTickCount() - started) * portTICK_PERIOD_MS;
         bridge_elapsed += elapsed;
@@ -160,6 +162,7 @@ extern "C" void app_main(void)
     // 2. Create dashboard UI
     if (lvgl_port_lock(-1)) {
         ui_dashboard_create();
+        photo_frame_ui_init();
         lvgl_port_unlock();
     }
 
