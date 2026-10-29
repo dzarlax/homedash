@@ -38,7 +38,7 @@ struct request {
     }
   }
   photo_result open(const char *url, const char *key, photo_cancel_fn cancel,
-                    void *arg) {
+                    void *arg, int64_t budget_us = 15000000) {
     esp_http_client_config_t config = {};
     config.url = url;
     config.timeout_ms = 2000;
@@ -52,7 +52,7 @@ struct request {
       return PHOTO_FAILED;
     esp_http_client_set_header(client, "X-API-Key", key);
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
-    deadline = esp_timer_get_time() + 15000000;
+    deadline = esp_timer_get_time() + budget_us;
     photo_result result = check(cancel, arg);
     if (result != PHOTO_OK)
       return result;
@@ -78,10 +78,14 @@ struct request {
     diagnostic.stage = "encoding";
     return headers.encoded || headers.ranged ? PHOTO_FAILED : PHOTO_OK;
   }
-  photo_result check(photo_cancel_fn cancel, void *arg) const {
+  photo_result check(photo_cancel_fn cancel, void *arg) {
     if (cancel && cancel(arg))
       return PHOTO_CANCELLED;
-    return esp_timer_get_time() >= deadline ? PHOTO_FAILED : PHOTO_OK;
+    if (esp_timer_get_time() >= deadline) {
+      diagnostic.stage = "deadline";
+      return PHOTO_FAILED;
+    }
+    return PHOTO_OK;
   }
 };
 bool hex64(const char *s) {
@@ -146,15 +150,20 @@ photo_result photo_fetch_manifest(const char *base, const char *key,
     esp_http_client_set_timeout_ms(r.client,
                                    remaining_ms < 2000 ? remaining_ms : 2000);
     int n = esp_http_client_read(r.client, body + used, (int)(length - used));
+    if (n == -ESP_ERR_HTTP_EAGAIN)
+      continue;
     if (n <= 0) {
+      r.diagnostic.stage = n == 0 ? "EOF" : "read";
       r.diagnostic.transport_error = n;
       return PHOTO_FAILED;
     }
     used += n;
+    r.diagnostic.received = used;
   }
   body[used] = '\0';
   if (r.check(cancel, arg) != PHOTO_OK)
     return r.check(cancel, arg);
+  r.diagnostic.stage = "complete";
   if (!esp_http_client_is_complete_data_received(r.client))
     return PHOTO_FAILED;
   r.diagnostic.stage = "JSON";
@@ -215,7 +224,7 @@ photo_result photo_fetch_pixels(const char *base, const char *key,
                entry->id) >= (int)sizeof(url))
     return PHOTO_FAILED;
   request r(diagnostic);
-  photo_result opened = r.open(url, key, cancel, arg);
+  photo_result opened = r.open(url, key, cancel, arg, 60000000);
   if (opened != PHOTO_OK)
     return opened;
   r.diagnostic.stage = "HTTP";
@@ -244,18 +253,26 @@ photo_result photo_fetch_pixels(const char *base, const char *key,
                                    remaining_ms < 2000 ? remaining_ms : 2000);
     int n = esp_http_client_read(r.client, (char *)buffer + used,
                                  remain > 8192 ? 8192 : remain);
-    if (n <= 0)
+    if (n == -ESP_ERR_HTTP_EAGAIN)
+      continue;
+    if (n <= 0) {
+      r.diagnostic.stage = n == 0 ? "EOF" : "read";
+      r.diagnostic.transport_error = n;
       goto done;
+    }
     mbedtls_sha256_update(&hash, buffer + used, n);
     used += n;
+    r.diagnostic.received = used;
   }
   result = r.check(cancel, arg);
   if (result != PHOTO_OK)
     goto done;
   result = PHOTO_FAILED;
+  r.diagnostic.stage = "complete";
   if (!esp_http_client_is_complete_data_received(r.client))
     goto done;
   {
+    r.diagnostic.stage = "sha256";
     unsigned char digest[32];
     char hex[65];
     mbedtls_sha256_finish(&hash, digest);
@@ -265,6 +282,8 @@ photo_result photo_fetch_pixels(const char *base, const char *key,
       result = r.check(cancel, arg);
   }
 done:
+  if (result == PHOTO_OK)
+    r.diagnostic.stage = "ok";
   mbedtls_sha256_free(&hash);
   return result;
 }

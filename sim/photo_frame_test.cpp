@@ -131,7 +131,9 @@ int main() {
   complete_manifest();
   tick(nullptr);
   complete_frame(PHOTO_FAILED);
+  job.diagnostic = {"deadline", 200, 0, 8192};
   tick(nullptr);
+  assert(strstr(lv_label_get_text(home_photo_status), "Фото: deadline 8192/1228800 H200 E0"));
   assert(!overlay);
   assert(retry_after > fake_seconds);
   fake_seconds += 60;

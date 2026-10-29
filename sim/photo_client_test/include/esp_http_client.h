@@ -3,6 +3,7 @@
 #include <stdint.h>
 typedef int esp_err_t;
 #define ESP_OK 0
+#define ESP_ERR_HTTP_EAGAIN 0x7007
 typedef struct mock_http *esp_http_client_handle_t;
 typedef struct { int event_id; void *user_data; const char *header_key; const char *header_value; } esp_http_client_event_t;
 #define HTTP_EVENT_ON_HEADER 1
