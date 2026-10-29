@@ -7,6 +7,7 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
+#include "web_identity.h"
 #include "freertos/semphr.h"
 
 static const char *TAG = "bridge";
@@ -100,6 +101,12 @@ static bool http_get(const char *url, http_buf_t *buf, char *err_out, size_t err
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     esp_http_client_set_header(client, "X-API-Key", s_bridge_key);
+    if (web_identity_set_http_header(client) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        free(buf->data);
+        buf->data = NULL;
+        return false;
+    }
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
@@ -471,6 +478,11 @@ void bridge_toggle_light(const char *entity_id)
     esp_http_client_handle_t client = esp_http_client_init(&config);
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_header(client, "X-API-Key", s_bridge_key);
+    if (web_identity_set_http_header(client) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        free(resp.data);
+        return;
+    }
     esp_http_client_set_post_field(client, body, strlen(body));
 
     esp_err_t err = esp_http_client_perform(client);
@@ -526,6 +538,11 @@ void bridge_climate_action(const char *entity_id, const char *action, float temp
     esp_http_client_handle_t client = esp_http_client_init(&config);
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_header(client, "X-API-Key", s_bridge_key);
+    if (web_identity_set_http_header(client) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        free(resp.data);
+        return;
+    }
     esp_http_client_set_post_field(client, body, strlen(body));
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);

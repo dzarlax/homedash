@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "lvgl_port.h"
 #include "photo_frame.h"
+#include "ui_dashboard.h"
 
 static const char *TAG = "lv_port";
 static SemaphoreHandle_t lvgl_mux;
@@ -122,6 +123,7 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
     esp_lcd_touch_read_data(tp);
     bool touchpad_pressed = esp_lcd_touch_get_coordinates(tp, &touchpad_x, &touchpad_y, NULL, &touchpad_cnt, 1);
     bool pressed = touchpad_pressed && touchpad_cnt > 0;
+    if (ui_dashboard_filter_wake_touch(pressed, data)) return;
     photo_frame_filter_touch(pressed, touchpad_x, touchpad_y, data);
 }
 

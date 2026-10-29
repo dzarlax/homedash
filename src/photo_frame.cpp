@@ -35,6 +35,8 @@ static std::atomic<TaskHandle_t> worker{nullptr};
 static std::atomic<unsigned> epoch{1};
 static std::atomic<bool> paused{false}, busy{false};
 static char bridge_url[128], bridge_key[64];
+static char pending_bridge_url[128], pending_bridge_key[64];
+static bool network_update_pending = false;
 static uint8_t *buffers[2] = {};
 static lv_image_dsc_t descriptor[2] = {};
 static lv_obj_t *overlay = nullptr, *image = nullptr;
@@ -44,6 +46,8 @@ static int64_t last_touch = 0, last_poll = 0, last_ready = 0, last_slide = 0,
                retry_after = 0;
 static int retry_step = 0, idle_seconds = 300, interval_seconds = 60,
            stale_seconds = 900;
+static bool web_photos_enabled = true;
+static bool web_timing_enabled = false;
 static char shown_id[65] = {};
 static photo_manifest current_manifest = {};
 static bool manifest_ready = false;
@@ -181,6 +185,27 @@ static void retry() {
 static void tick(lv_timer_t *) {
   if (!mutex || paused.load())
     return;
+  if (!busy.load()) {
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    if (network_update_pending) {
+      strncpy(bridge_url, pending_bridge_url, sizeof(bridge_url) - 1);
+      strncpy(bridge_key, pending_bridge_key, sizeof(bridge_key) - 1);
+      bridge_url[sizeof(bridge_url) - 1] = 0;
+      bridge_key[sizeof(bridge_key) - 1] = 0;
+      network_update_pending = false;
+      manifest_ready = false;
+      last_ready = 0;
+      last_poll = 0;
+      retry_after = 0;
+    }
+    xSemaphoreGive(mutex);
+  }
+  if (!web_photos_enabled) {
+    manual_requested = false;
+    if (overlay || buffers[0] || buffers[1]) free_buffers();
+    manifest_ready = false;
+    return;
+  }
   job_data result = {};
   bool completed = false;
   xSemaphoreTake(mutex, portMAX_DELAY);
@@ -196,8 +221,10 @@ static void tick(lv_timer_t *) {
   if (completed && result.generation == epoch.load()) {
     if (result.kind == MANIFEST && result.result == PHOTO_OK) {
       photo_manifest &m = result.manifest;
-      idle_seconds = m.idle;
-      interval_seconds = m.interval;
+      if (!web_timing_enabled) {
+        idle_seconds = m.idle;
+        interval_seconds = m.interval;
+      }
       stale_seconds = m.stale;
       eligible = !physical_down && !ui_dashboard_reader_open() &&
                  (manual_requested || t - last_touch >= idle_seconds);
@@ -299,6 +326,31 @@ void photo_frame_network_init(const char *url, const char *key) {
                               &handle, 0) == pdPASS)
     worker.store(handle, std::memory_order_release);
 }
+void photo_frame_update_network(const char *url, const char *key) {
+  if (!mutex || !url || !key || strlen(url) >= sizeof(bridge_url) ||
+      strlen(key) >= sizeof(bridge_key)) return;
+  xSemaphoreTake(mutex, portMAX_DELAY);
+  epoch.fetch_add(1);
+  strncpy(pending_bridge_url, url, sizeof(pending_bridge_url) - 1);
+  pending_bridge_url[sizeof(pending_bridge_url) - 1] = 0;
+  strncpy(pending_bridge_key, key, sizeof(pending_bridge_key) - 1);
+  pending_bridge_key[sizeof(pending_bridge_key) - 1] = 0;
+  network_update_pending = true;
+  xSemaphoreGive(mutex);
+}
+void photo_frame_apply_web_preferences(bool enabled, int idle, int interval) {
+  if (idle < 30 || idle > 3600 || interval < 15 || interval > 3600) return;
+  if (!lvgl_port_lock(-1)) return;
+  web_photos_enabled = enabled;
+  web_timing_enabled = true;
+  idle_seconds = idle;
+  interval_seconds = interval;
+  if (!enabled) {
+    manual_requested = false;
+    epoch.fetch_add(1);
+  }
+  lvgl_port_unlock();
+}
 bool photo_frame_start_now() {
   if (!mutex || !worker.load(std::memory_order_acquire)) {
     ui_dashboard_update_photo_status("Фоторамка ещё не готова");
@@ -306,6 +358,10 @@ bool photo_frame_start_now() {
   }
   if (paused.load()) {
     ui_dashboard_update_photo_status("Сначала дождитесь обновления");
+    return false;
+  }
+  if (!web_photos_enabled) {
+    ui_dashboard_update_photo_status("Фоторамка выключена в настройках");
     return false;
   }
   epoch.fetch_add(1);

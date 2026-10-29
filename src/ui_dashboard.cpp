@@ -18,6 +18,9 @@ extern void request_calendar_date(int year, int month, int day);
 extern void request_light_toggle(const char *entity_id);
 extern void request_climate_action(const char *entity_id, const char *action, float temperature, const char *mode);
 extern void request_ota_check(void);
+extern void request_recovery_ap(void);
+extern void wavesahre_rgb_lcd_bl_on(void);
+extern void wavesahre_rgb_lcd_bl_off(void);
 
 // Custom font with Cyrillic support (for HA calendar events)
 LV_FONT_DECLARE(font_montserrat_16_cyr);
@@ -65,6 +68,19 @@ static lv_obj_t *week_day_labels[7] = {};
 static lv_calendar_date_t week_dates[7] = {};
 static lv_obj_t *reader_overlay = NULL;
 static lv_obj_t *home_photo_status = NULL;
+static lv_obj_t *home_settings_link = NULL;
+static lv_obj_t *page1_schedule_panel = NULL;
+static lv_obj_t *page1_overview_panel = NULL;
+static lv_obj_t *page2_health_panel = NULL;
+static lv_obj_t *page2_tasks_panel = NULL;
+static lv_obj_t *page2_news_panel = NULL;
+static lv_obj_t *page3_root = NULL;
+static web_preferences_t ui_preferences = {};
+static bool ui_has_preferences = false;
+static bool ui_screen_off = false;
+static int64_t wake_override_until = 0;
+static int64_t ui_last_touch = 0;
+static bool wake_swallow_until_release = false;
 
 // bridge_data_t includes bounded Evening News summaries and is larger than the
 // LVGL task stack. All LVGL timers run serially, so one static snapshot keeps
@@ -140,6 +156,7 @@ static const room_def_t ROOMS[MAX_ROOMS] = {
 
 static lv_obj_t *room_light_btns[MAX_ROOMS][MAX_ROOM_LIGHTS] = {};
 static lv_obj_t *room_light_labels[MAX_ROOMS][MAX_ROOM_LIGHTS] = {};
+static char room_light_entity_ids[MAX_ROOMS][MAX_ROOM_LIGHTS][48] = {};
 // Sensor cards per room (value + name labels)
 static lv_obj_t *room_sensor_cards[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 static lv_obj_t *room_sensor_val_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
@@ -222,6 +239,28 @@ static void get_today_date(int *y, int *m, int *d)
     if (y) *y = tinfo.tm_year + 1900;
     if (m) *m = tinfo.tm_mon + 1;
     if (d) *d = tinfo.tm_mday;
+}
+
+static bool clock_is_night(const struct tm &t) {
+    if (!ui_has_preferences || !ui_preferences.night_enabled) return false;
+    int now_min = t.tm_hour * 60 + t.tm_min;
+    int start = (ui_preferences.night_start[0] - '0') * 600 +
+                (ui_preferences.night_start[1] - '0') * 60 +
+                (ui_preferences.night_start[3] - '0') * 10 +
+                ui_preferences.night_start[4] - '0';
+    int end = (ui_preferences.night_end[0] - '0') * 600 +
+              (ui_preferences.night_end[1] - '0') * 60 +
+              (ui_preferences.night_end[3] - '0') * 10 +
+              ui_preferences.night_end[4] - '0';
+    return start == end || (start < end ? now_min >= start && now_min < end
+                                         : now_min >= start || now_min < end);
+}
+
+static void set_screen_off(bool off) {
+    if (ui_screen_off == off) return;
+    ui_screen_off = off;
+    if (off) wavesahre_rgb_lcd_bl_off();
+    else wavesahre_rgb_lcd_bl_on();
 }
 
 static void return_calendar_to_today(void)
@@ -686,6 +725,7 @@ static void create_day_planner(lv_obj_t *page)
     }
 
     lv_obj_t *plan = make_card(surface, 28, 154, 622, 360);
+    page1_schedule_panel = plan;
     lbl_sched_title = day_label(plan, 18, 15, 300, "Сегодня", &font_montserrat_24_cyr, COLOR_TEXT);
     hero_event_card = make_card(plan, 16, 56, 590, 105);
     lv_obj_set_style_bg_color(hero_event_card, COLOR_PANEL, 0);
@@ -711,6 +751,7 @@ static void create_day_planner(lv_obj_t *page)
     lbl_no_events = day_label(events_scroll, 0, 0, 580, "Нет событий", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
     lv_obj_t *right = make_card(surface, 670, 154, 326, 360);
+    page1_overview_panel = right;
     lbl_topbar_temp = day_label(right, 18, 15, 290, WEATHER_CITY, &font_montserrat_24_cyr, COLOR_TEXT);
     lbl_weather_detail = day_label(right, 18, 52, 290, "Нет данных о погоде", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
     day_label(right, 18, 104, 290, "ТРАНСПОРТ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
@@ -730,6 +771,7 @@ static void create_day_planner(lv_obj_t *page)
 
 void ui_dashboard_create(void)
 {
+    ui_last_touch = esp_timer_get_time() / 1000000;
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, COLOR_BG, 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
@@ -1050,11 +1092,14 @@ void ui_dashboard_update_weather(const bridge_weather_t *data)
     }
 
     if (lbl_topbar_temp) {
-        char buf[80];
-        snprintf(buf, sizeof(buf), "%s %s %.0fC",
-                 WEATHER_CITY,
-                 weather_code_to_text(data->weather_code),
-                 data->temp);
+        char buf[128];
+        const char *city = ui_has_preferences ? ui_preferences.city : WEATHER_CITY;
+        if (ui_has_preferences)
+            snprintf(buf, sizeof(buf), "%s · %s · %s %.0fC", ui_preferences.name, city,
+                     weather_code_to_text(data->weather_code), data->temp);
+        else
+            snprintf(buf, sizeof(buf), "%s %s %.0fC", city,
+                     weather_code_to_text(data->weather_code), data->temp);
         lv_label_set_text(lbl_topbar_temp, buf);
     }
 
@@ -1350,12 +1395,28 @@ void ui_dashboard_update_time(void)
     // Update top bar clock
     if (lbl_datetime) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "%s, %d %s %d  %02d:%02d:%02d",
-                 DOW_NAMES[tinfo.tm_wday],
-                 tinfo.tm_mday, MONTH_NAMES[tinfo.tm_mon],
-                 tinfo.tm_year + 1900,
-                 tinfo.tm_hour, tinfo.tm_min, tinfo.tm_sec);
+        if (ui_has_preferences && ui_preferences.clock_12h) {
+            int hour = tinfo.tm_hour % 12;
+            if (!hour) hour = 12;
+            snprintf(buf, sizeof(buf), "%s, %d %s %d  %d:%02d %s",
+                     DOW_NAMES[tinfo.tm_wday], tinfo.tm_mday, MONTH_NAMES[tinfo.tm_mon],
+                     tinfo.tm_year + 1900, hour, tinfo.tm_min,
+                     tinfo.tm_hour >= 12 ? "PM" : "AM");
+        } else {
+            snprintf(buf, sizeof(buf), "%s, %d %s %d  %02d:%02d",
+                     DOW_NAMES[tinfo.tm_wday], tinfo.tm_mday, MONTH_NAMES[tinfo.tm_mon],
+                     tinfo.tm_year + 1900, tinfo.tm_hour, tinfo.tm_min);
+        }
         lv_label_set_text(lbl_datetime, buf);
+    }
+
+    if (ui_has_preferences) {
+        int64_t now_seconds = esp_timer_get_time() / 1000000;
+        bool idle_off = !ui_preferences.idle_photos &&
+                        now_seconds - ui_last_touch >= ui_preferences.photo_idle_seconds;
+        bool sleep = (clock_is_night(tinfo) || idle_off) &&
+                     now_seconds >= wake_override_until;
+        set_screen_off(sleep);
     }
 
     // Update calendar ONLY when date changes (not every second!)
@@ -1416,6 +1477,7 @@ static void create_page2(lv_obj_t *tile)
 {
     // ===== TOP: compact health summary =====
     lv_obj_t *health_banner = make_card(tile, 5, 5, 1014, 180);
+    page2_health_panel = health_banner;
 
     // Title
     lv_obj_t *lbl_htitle = lv_label_create(health_banner);
@@ -1490,6 +1552,7 @@ static void create_page2(lv_obj_t *tile)
 
     // ===== BOTTOM LEFT: Tasks =====
     lv_obj_t *tasks_panel = make_card(tile, 5, 190, 505, 340);
+    page2_tasks_panel = tasks_panel;
 
     lv_obj_t *lbl_ttitle = lv_label_create(tasks_panel);
     lv_obj_set_style_text_color(lbl_ttitle, COLOR_HIGHLIGHT, 0);
@@ -1532,6 +1595,7 @@ static void create_page2(lv_obj_t *tile)
 
     // ===== BOTTOM RIGHT: News =====
     lv_obj_t *news_panel = make_card(tile, 514, 190, 505, 340);
+    page2_news_panel = news_panel;
 
     lv_obj_t *lbl_ntitle = lv_label_create(news_panel);
     lv_obj_set_style_text_color(lbl_ntitle, COLOR_HIGHLIGHT, 0);
@@ -1757,8 +1821,9 @@ static void light_btn_cb(lv_event_t *e)
     int id = (int)(intptr_t)lv_event_get_user_data(e);
     int room = LIGHT_CB_ROOM(id);
     int light = LIGHT_CB_LIGHT(id);
-    if (room < MAX_ROOMS && light < ROOMS[room].light_count) {
-        request_light_toggle(ROOMS[room].light_ids[light]);
+    if (room >= 0 && room < MAX_ROOMS && light >= 0 && light < MAX_ROOM_LIGHTS &&
+        room_light_entity_ids[room][light][0]) {
+        request_light_toggle(room_light_entity_ids[room][light]);
     }
 }
 
@@ -1772,6 +1837,11 @@ static void photo_frame_btn_cb(lv_event_t *e)
 {
     (void)e;
     photo_frame_start_now();
+}
+
+static void recovery_title_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) request_recovery_ap();
 }
 
 static void climate_power_btn_cb(lv_event_t *e)
@@ -1800,11 +1870,15 @@ static void climate_mode_btn_cb(lv_event_t *e)
 
 static void create_page3(lv_obj_t *tile)
 {
+    page3_root = tile;
     // Title
     lv_obj_t *pg_title = lv_label_create(tile);
     lv_obj_set_style_text_color(pg_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(pg_title, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(pg_title, "Дом");
+    lv_label_set_text(pg_title, "Дом · удерживайте для локальной настройки");
+    lv_obj_set_width(pg_title, 640);
+    lv_obj_add_flag(pg_title, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(pg_title, recovery_title_cb, LV_EVENT_LONG_PRESSED, NULL);
     lv_obj_set_pos(pg_title, 15, 8);
 
     home_photo_status = lv_label_create(tile);
@@ -1814,6 +1888,14 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_set_width(home_photo_status, 570);
     lv_label_set_long_mode(home_photo_status, LV_LABEL_LONG_DOT);
     lv_label_set_text(home_photo_status, "Авто: через 5 мин без касаний");
+
+    home_settings_link = lv_label_create(tile);
+    lv_obj_set_style_text_color(home_settings_link, COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(home_settings_link, &font_montserrat_16_cyr, 0);
+    lv_obj_set_pos(home_settings_link, 120, 42);
+    lv_obj_set_width(home_settings_link, 560);
+    lv_label_set_long_mode(home_settings_link, LV_LABEL_LONG_DOT);
+    lv_label_set_text(home_settings_link, "Настройки HomeDash: откройте Bridge");
 
     lv_obj_t *btn_photo = lv_btn_create(tile);
     lv_obj_set_size(btn_photo, 170, 30);
@@ -1961,9 +2043,7 @@ static void create_page3(lv_obj_t *tile)
             room_light_btns[r][l] = btn;
             room_light_labels[r][l] = lbl;
 
-            if (l >= room->light_count) {
-                lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
-            }
+            lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
         }
 
     }
@@ -1972,10 +2052,56 @@ static void create_page3(lv_obj_t *tile)
 // Find light/sensor in bridge data by entity_id
 static const bridge_light_t *find_light(const bridge_data_t *d, const char *eid)
 {
-    for (int i = 0; i < d->light_count; i++) {
+    int count = d->light_count;
+    if (count > BRIDGE_MAX_LIGHTS) count = BRIDGE_MAX_LIGHTS;
+    if (count < 0) count = 0;
+    for (int i = 0; i < count; i++) {
         if (strcmp(d->lights[i].entity_id, eid) == 0) return &d->lights[i];
     }
     return NULL;
+}
+
+static void bind_light_slot(int room, int slot, const bridge_light_t *light)
+{
+    if (!light || room < 0 || room >= MAX_ROOMS || slot < 0 || slot >= MAX_ROOM_LIGHTS) return;
+    snprintf(room_light_entity_ids[room][slot], sizeof(room_light_entity_ids[room][slot]), "%s", light->entity_id);
+    const char *label = light->name[0] ? light->name : light->entity_id;
+    lv_label_set_text(room_light_labels[room][slot], label);
+    lv_obj_set_style_bg_color(room_light_btns[room][slot], light->on ? COLOR_LIGHT_ON : COLOR_LIGHT_OFF, 0);
+    lv_obj_set_style_text_color(room_light_labels[room][slot], light->on ? lv_color_hex(0x1A1A2E) : COLOR_TEXT, 0);
+    lv_obj_clear_flag(room_light_btns[room][slot], LV_OBJ_FLAG_HIDDEN);
+}
+
+static bool sensor_is_living_co2(const bridge_sensor_t *sensor)
+{
+    return sensor && strstr(sensor->name, "CO2") &&
+           (strstr(sensor->name, "гостиная") || strstr(sensor->name, "Гостиная"));
+}
+
+static bool sensor_is_office_co2(const bridge_sensor_t *sensor)
+{
+    return sensor && strstr(sensor->name, "CO2") &&
+           (strstr(sensor->name, "кабинет") || strstr(sensor->name, "Кабинет"));
+}
+
+static const char *air_sensor_label(const bridge_sensor_t *sensor, int index)
+{
+    if (sensor_is_living_co2(sensor)) return "Гостиная CO2";
+    if (sensor_is_office_co2(sensor)) return "Кабинет CO2";
+    if (sensor && strcmp(sensor->name, "PM2.5") == 0) return "PM2.5";
+    if (sensor && strcmp(sensor->name, "Влажность") == 0) return "Влажность";
+    if (sensor && sensor->name[0]) return sensor->name;
+    static char fallback_labels[4][24];
+    char *fallback = fallback_labels[index % 4];
+    snprintf(fallback, sizeof(fallback_labels[0]), "Датчик %d", index + 1);
+    return fallback;
+}
+
+static const char *air_sensor_location(const bridge_sensor_t *sensor)
+{
+    if (sensor_is_living_co2(sensor)) return "Гостиная";
+    if (sensor_is_office_co2(sensor)) return "Кабинет";
+    return sensor && sensor->name[0] ? sensor->name : "Датчик";
 }
 
 void ui_dashboard_update_ha(const bridge_data_t *data)
@@ -1986,12 +2112,13 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         const bridge_sensor_t *living_room_co2 = NULL;
         const bridge_sensor_t *office_co2 = NULL;
         if (data->sensors_valid) {
-            for (int i = 0; i < data->sensor_count; i++) {
+            int count = data->sensor_count;
+            if (count > BRIDGE_MAX_SENSORS) count = BRIDGE_MAX_SENSORS;
+            if (count < 0) count = 0;
+            for (int i = 0; i < count; i++) {
                 const bridge_sensor_t *sensor = &data->sensors[i];
                 if (!strstr(sensor->unit, "ppm")) continue;
 
-                // Bridge preserves HA_SENSORS order: living-room AirQ CO2 first,
-                // then the office CO2 sensor. Keep their locations explicit here.
                 if (!living_room_co2) {
                     living_room_co2 = sensor;
                 } else if (!office_co2) {
@@ -2002,7 +2129,7 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
 
         if (living_room_co2) {
             char text[48];
-            snprintf(text, sizeof(text), "Гостиная: CO2 %s %s", living_room_co2->value, living_room_co2->unit);
+            snprintf(text, sizeof(text), "%s: CO2 %s %s", air_sensor_location(living_room_co2), living_room_co2->value, living_room_co2->unit);
             int value = atoi(living_room_co2->value);
             lv_label_set_text(lbl_air_primary, text);
             lv_obj_set_style_text_color(lbl_air_primary,
@@ -2014,7 +2141,7 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
 
         if (office_co2) {
             char text[48];
-            snprintf(text, sizeof(text), "Кабинет: CO2 %s %s", office_co2->value, office_co2->unit);
+            snprintf(text, sizeof(text), "%s: CO2 %s %s", air_sensor_location(office_co2), office_co2->value, office_co2->unit);
             int value = atoi(office_co2->value);
             lv_label_set_text(lbl_air_detail, text);
             lv_obj_set_style_text_color(lbl_air_detail,
@@ -2025,47 +2152,79 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         }
     }
 
-    // Update lights per room
+    // Keep established slots for known entities. Additional selected lights
+    // fill empty slots using the IDs and friendly names returned by Bridge.
+    bool used_lights[BRIDGE_MAX_LIGHTS] = {};
+    for (int r = 0; r < MAX_ROOMS; r++) {
+        for (int l = 0; l < MAX_ROOM_LIGHTS; l++) {
+            room_light_entity_ids[r][l][0] = '\0';
+            if (!room_light_btns[r][l]) continue;
+            lv_obj_add_flag(room_light_btns[r][l], LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(room_light_labels[r][l], "---");
+            lv_obj_set_style_bg_color(room_light_btns[r][l], COLOR_LIGHT_OFF, 0);
+            lv_obj_set_style_text_color(room_light_labels[r][l], COLOR_TEXT, 0);
+        }
+    }
+    int light_count = data->lights_valid ? data->light_count : 0;
+    if (light_count < 0) light_count = 0;
+    if (light_count > BRIDGE_MAX_LIGHTS) light_count = BRIDGE_MAX_LIGHTS;
     if (data->lights_valid) {
         for (int r = 0; r < MAX_ROOMS; r++) {
             const room_def_t *room = &ROOMS[r];
             for (int l = 0; l < room->light_count; l++) {
                 const bridge_light_t *light = find_light(data, room->light_ids[l]);
-                if (!light || !room_light_btns[r][l]) continue;
-
-                lv_label_set_text(room_light_labels[r][l], light->name);
-
-                lv_obj_set_style_bg_color(room_light_btns[r][l],
-                    light->on ? COLOR_LIGHT_ON : COLOR_LIGHT_OFF, 0);
-                lv_obj_set_style_text_color(room_light_labels[r][l],
-                    light->on ? lv_color_hex(0x1A1A2E) : COLOR_TEXT, 0);
+                if (!light) continue;
+                int index = (int)(light - data->lights);
+                if (index >= 0 && index < light_count) used_lights[index] = true;
+                bind_light_slot(r, l, light);
             }
         }
     }
-
-    if (data->sensors_valid) {
-        // HA_SENSORS is configured in this stable order by Bridge. It keeps the
-        // named overview compact while avoiding sensor-count-only reporting.
-        static const int overview_indices[] = {0, 1, 2, 3};
-        for (int i = 0; i < 4; i++) {
-            if (!home_air_values[i]) continue;
-            int index = overview_indices[i];
-            if (index >= data->sensor_count || !data->sensors[index].value[0]) {
-                lv_label_set_text(home_air_values[i], "---");
-                lv_obj_set_style_text_color(home_air_values[i], COLOR_TEXT_DIM, 0);
-                continue;
+    for (int i = 0; i < light_count; i++) {
+        if (used_lights[i] || !data->lights[i].entity_id[0]) continue;
+        int target_room = -1, target_slot = -1;
+        for (int r = 0; r < MAX_ROOMS && target_room < 0; r++) {
+            for (int l = 0; l < MAX_ROOM_LIGHTS; l++) {
+                if (!room_light_entity_ids[r][l][0]) {
+                    target_room = r;
+                    target_slot = l;
+                    break;
+                }
             }
-            const bridge_sensor_t *sensor = &data->sensors[index];
-            char text[28];
-            snprintf(text, sizeof(text), "%s %s", sensor->value, sensor->unit);
-            lv_label_set_text(home_air_values[i], text);
-            lv_color_t color = COLOR_TEXT;
-            if (strstr(sensor->unit, "ppm")) {
-                int co2 = atoi(sensor->value);
-                color = co2 < 800 ? COLOR_GOOD : co2 < 1000 ? COLOR_WARN : COLOR_BAD;
-            }
-            lv_obj_set_style_text_color(home_air_values[i], color, 0);
         }
+        if (target_room < 0) break;
+        bind_light_slot(target_room, target_slot, &data->lights[i]);
+    }
+
+    int sensor_count = data->sensors_valid ? data->sensor_count : 0;
+    if (sensor_count < 0) sensor_count = 0;
+    if (sensor_count > BRIDGE_MAX_SENSORS) sensor_count = BRIDGE_MAX_SENSORS;
+    static const char *default_air_names[] = {"Гостиная CO2", "Кабинет CO2", "PM2.5", "Влажность"};
+    for (int i = 0; i < 4; i++) {
+        if (!home_air_values[i] || !home_air_names[i]) continue;
+        if (i >= sensor_count) {
+            lv_label_set_text(home_air_names[i], default_air_names[i]);
+            lv_label_set_text(home_air_values[i], "---");
+            lv_obj_set_style_text_color(home_air_values[i], COLOR_TEXT_DIM, 0);
+            continue;
+        }
+        const bridge_sensor_t *sensor = &data->sensors[i];
+        lv_label_set_text(home_air_names[i], air_sensor_label(sensor, i));
+        if (!sensor->value[0]) {
+            lv_label_set_text(home_air_values[i], "---");
+            lv_obj_set_style_text_color(home_air_values[i], COLOR_TEXT_DIM, 0);
+            continue;
+        }
+        char text[28];
+        snprintf(text, sizeof(text), "%.*s %.*s", (int)sizeof(sensor->value), sensor->value,
+                 (int)sizeof(sensor->unit), sensor->unit);
+        lv_label_set_text(home_air_values[i], text);
+        lv_color_t color = COLOR_TEXT;
+        if (strstr(sensor->unit, "ppm")) {
+            int co2 = atoi(sensor->value);
+            color = co2 < 800 ? COLOR_GOOD : co2 < 1000 ? COLOR_WARN : COLOR_BAD;
+        }
+        lv_obj_set_style_text_color(home_air_values[i], color, 0);
     }
 
     if (data->climate_valid && data->climate_count > 0) {
@@ -2182,6 +2341,136 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
 }
 
 bool ui_dashboard_reader_open(void) { return reader_overlay != NULL; }
+
+void ui_dashboard_apply_preferences(const web_preferences_t *prefs)
+{
+    if (!prefs || !web_preferences_valid(prefs)) return;
+    ui_preferences = *prefs;
+    ui_has_preferences = true;
+    if (lbl_topbar_temp) {
+        char city[96];
+        snprintf(city, sizeof(city), "%s · %s", prefs->name, prefs->city);
+        lv_label_set_text(lbl_topbar_temp, city);
+    }
+    if (home_settings_link) {
+        char link[256];
+        snprintf(link, sizeof(link), "Настройки HomeDash: %s", prefs->settings_url);
+        lv_label_set_text(home_settings_link, link);
+    }
+    if (page1_schedule_panel) {
+        if (prefs->visible_calendar) lv_obj_clear_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (page1_overview_panel) {
+        bool show = prefs->visible_weather || prefs->visible_transport || prefs->visible_home;
+        if (show) lv_obj_clear_flag(page1_overview_panel, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(page1_overview_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (lbl_topbar_temp && lbl_weather_detail) {
+        if (weather_canvas) {
+            if (prefs->visible_weather) lv_obj_clear_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (prefs->visible_weather) {
+            lv_obj_clear_flag(lbl_topbar_temp, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(lbl_weather_detail, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(lbl_topbar_temp, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(lbl_weather_detail, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (lbl_transport_out) {
+        if (prefs->visible_transport) {
+            lv_obj_clear_flag(lbl_transport_out, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(lbl_transport_in, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(lbl_transport_out, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(lbl_transport_in, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (page2_health_panel) {
+        if (prefs->visible_health) lv_obj_clear_flag(page2_health_panel, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(page2_health_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (page2_tasks_panel) {
+        if (prefs->visible_tasks) lv_obj_clear_flag(page2_tasks_panel, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(page2_tasks_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (page2_news_panel) {
+        if (prefs->visible_news) lv_obj_clear_flag(page2_news_panel, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(page2_news_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (page3_root) {
+        if (prefs->visible_home) lv_obj_clear_flag(page3_root, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(page3_root, LV_OBJ_FLAG_HIDDEN);
+    }
+    ui_dashboard_update_time();
+}
+
+void ui_dashboard_reset_preferences(void)
+{
+    ui_has_preferences = false;
+    memset(&ui_preferences, 0, sizeof(ui_preferences));
+    ui_last_touch = esp_timer_get_time() / 1000000;
+    wake_override_until = 0;
+    if (lbl_topbar_temp) lv_label_set_text(lbl_topbar_temp, WEATHER_CITY);
+    if (weather_canvas) lv_obj_clear_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
+    if (home_settings_link) lv_label_set_text(home_settings_link, "Настройки HomeDash: откройте Bridge");
+    if (page1_schedule_panel) lv_obj_clear_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
+    if (page1_overview_panel) lv_obj_clear_flag(page1_overview_panel, LV_OBJ_FLAG_HIDDEN);
+    if (lbl_topbar_temp) lv_obj_clear_flag(lbl_topbar_temp, LV_OBJ_FLAG_HIDDEN);
+    if (lbl_weather_detail) lv_obj_clear_flag(lbl_weather_detail, LV_OBJ_FLAG_HIDDEN);
+    if (lbl_transport_out) {
+        lv_obj_clear_flag(lbl_transport_out, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(lbl_transport_in, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (page2_health_panel) lv_obj_clear_flag(page2_health_panel, LV_OBJ_FLAG_HIDDEN);
+    if (page2_tasks_panel) lv_obj_clear_flag(page2_tasks_panel, LV_OBJ_FLAG_HIDDEN);
+    if (page2_news_panel) lv_obj_clear_flag(page2_news_panel, LV_OBJ_FLAG_HIDDEN);
+    if (page3_root) lv_obj_clear_flag(page3_root, LV_OBJ_FLAG_HIDDEN);
+    set_screen_off(false);
+    ui_dashboard_update_time();
+}
+
+void ui_dashboard_update_recovery(const char *ssid, const char *password, const char *url)
+{
+    if (!home_settings_link) return;
+    if (!ssid || !ssid[0]) {
+        if (ui_has_preferences) {
+            char link[256];
+            snprintf(link, sizeof(link), "Настройки HomeDash: %s", ui_preferences.settings_url);
+            lv_label_set_text(home_settings_link, link);
+        } else {
+            lv_label_set_text(home_settings_link, "Настройки HomeDash: подключитесь к Bridge");
+        }
+        return;
+    }
+    set_screen_off(false);
+    char status[256];
+    snprintf(status, sizeof(status), "Локальная сеть %s · пароль %s · %s",
+             ssid, password ? password : "", url ? url : "");
+    lv_label_set_text(home_settings_link, status);
+}
+
+bool ui_dashboard_filter_wake_touch(bool pressed, lv_indev_data_t *data)
+{
+    int64_t now_seconds = esp_timer_get_time() / 1000000;
+    if (wake_swallow_until_release) {
+        if (!pressed) wake_swallow_until_release = false;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return true;
+    }
+    if (pressed && ui_screen_off) {
+        wake_swallow_until_release = true;
+        ui_last_touch = now_seconds;
+        wake_override_until = now_seconds + 60;
+        set_screen_off(false);
+        data->state = LV_INDEV_STATE_RELEASED;
+        return true;
+    }
+    if (pressed) ui_last_touch = now_seconds;
+    return false;
+}
 
 void ui_dashboard_update_photo_status(const char *status)
 {

@@ -29,7 +29,7 @@ LVGL_SRCS = $(shell find $(LVGL_DIR)/src -name '*.c' | grep -v 'lv_demo\|lv_exam
 LVGL_OBJS = $(patsubst $(LVGL_DIR)/%.c,$(BUILD)/lvgl/%.o,$(LVGL_SRCS))
 
 # App C++ sources
-CXX_SRCS = main_sim_sdl.cpp stubs.cpp photo_frame_runtime.cpp $(SRC_DIR)/photo_frame.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/weather_icons.cpp
+CXX_SRCS = main_sim_sdl.cpp stubs.cpp photo_frame_runtime.cpp $(SRC_DIR)/web_settings.cpp $(SRC_DIR)/photo_frame.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/weather_icons.cpp
 CXX_OBJS = $(patsubst %.cpp,$(BUILD)/%.o,$(notdir $(CXX_SRCS)))
 
 # Font + cJSON C sources
@@ -58,6 +58,10 @@ $(BUILD)/photo_frame.o: $(SRC_DIR)/photo_frame.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(BUILD)/photo_frame_runtime.o: photo_frame_runtime.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/web_settings.o: $(SRC_DIR)/web_settings.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
@@ -94,13 +98,29 @@ $(BUILD)/calendar_scroll_test.o: calendar_scroll_test.cpp $(SRC_DIR)/ui_dashboar
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/calendar_scroll_test: $(BUILD)/calendar_scroll_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/calendar_scroll_test: $(BUILD)/calendar_scroll_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-calendar: $(BUILD)/calendar_scroll_test
 	./$(BUILD)/calendar_scroll_test
 
 .PHONY: all clean run test-calendar
+
+$(BUILD)/stubs_home_test.o: stubs.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -Drequest_light_toggle=sim_request_light_toggle -c $< -o $@
+
+$(BUILD)/light_sensor_mapping_test.o: light_sensor_mapping_test.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/bridge.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/light_sensor_mapping_test: $(BUILD)/light_sensor_mapping_test.o $(LVGL_OBJS) $(BUILD)/stubs_home_test.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-home: $(BUILD)/light_sensor_mapping_test
+	./$(BUILD)/light_sensor_mapping_test
+
+.PHONY: test-home
 
 $(BUILD)/stubs_photo_test.o: stubs.cpp
 	@mkdir -p $(BUILD)
@@ -110,7 +130,7 @@ $(BUILD)/photo_frame_test.o: photo_frame_test.cpp $(SRC_DIR)/photo_frame.cpp $(S
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -DPHOTO_FRAME_TEST -c $< -o $@
 
-$(BUILD)/photo_frame_test: $(BUILD)/photo_frame_test.o $(LVGL_OBJS) $(BUILD)/stubs_photo_test.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/photo_frame_test: $(BUILD)/photo_frame_test.o $(LVGL_OBJS) $(BUILD)/stubs_photo_test.o $(BUILD)/web_settings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-photo-frame: $(BUILD)/photo_frame_test
@@ -128,3 +148,8 @@ test-ota:
 	./ota_test/run.sh
 
 .PHONY: test-ota
+
+test-settings:
+	./settings_test/run.sh
+
+.PHONY: test-settings

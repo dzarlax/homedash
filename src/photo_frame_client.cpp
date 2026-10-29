@@ -3,6 +3,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_timer.h"
+#include "web_identity.h"
 #include "mbedtls/sha256.h"
 #include <stdio.h>
 #include <string.h>
@@ -51,6 +52,10 @@ struct request {
     if (!client)
       return PHOTO_FAILED;
     esp_http_client_set_header(client, "X-API-Key", key);
+    if (web_identity_set_http_header(client) != ESP_OK) {
+      diagnostic.stage = "device_id";
+      return PHOTO_FAILED;
+    }
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
     deadline = esp_timer_get_time() + budget_us;
     photo_result result = check(cancel, arg);

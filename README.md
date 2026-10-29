@@ -9,6 +9,7 @@ A smart home dashboard for the **Waveshare ESP32-S3-Touch-LCD-7B** (7" 1024×600
   - **Самочувствие**: health metrics (readiness, steps, sleep, HR, HRV, SpO2), Todoist tasks and news
   - **Дом**: Home Assistant light controls and air-quality sensors per room
 - **OTA updates** — firmware updates over WiFi via Bridge, with automatic rollback
+- **Web-managed preferences** — the Bridge settings page controls the display name, city/timezone, clock format, visible dashboard sections, idle/night behavior, photo timing, and managed update policy
 - **Full Cyrillic UI** — Russian-localized interface with custom Montserrat fonts
 - **Dual-core** — LVGL renders on Core 1, all network I/O on Core 0
 - **Anti-tear display** — PSRAM double-buffer + bounce buffer pipeline
@@ -37,10 +38,23 @@ ESP32 Bridge (Go server)
     ESP32 Display
       NVS: wifi_ssid, wifi_pass, bridge_url, bridge_key
       Polls /api/dashboard every 30s
+      Syncs web preferences every 10s on /api/device/v1/sync
       Checks OTA every 30 min (or manual button on Page 3)
+      NVS namespace `webidentity`: stable 32-hex device ID shared by all native requests
+      NVS namespace `webprefs`: optional versioned settings, revision, command replay marker, network trial journal
 ```
 
 All secrets (WiFi credentials, Bridge URL, API key) are stored in the **NVS partition**, not in the firmware binary.
+
+One Bridge can manage multiple displays with shared service connections and independent
+screen preferences, source selections and photo albums. Each display creates a stable
+`device_id` in NVS namespace `webidentity` and sends `X-Device-ID` on dashboard,
+calendar, Home Assistant, photo, OTA and settings requests. Settings reset and network
+changes preserve that identity. The display registers on its first authenticated
+settings sync; select it in the Bridge web panel. Headerless legacy clients retain
+the existing default Bridge feed.
+
+Use the Bridge web settings page for managed display preferences. The device keeps its compact three-page dashboard; it does not expose a large local settings menu. A long press on the Home page title starts a protected setup access point for ten minutes. Its unique WPA2 password and local setup URL appear on the display. Network changes are tried before they are committed, and an interrupted trial restores the previous NVS configuration on boot.
 
 ### Dual-Core Layout
 
@@ -140,6 +154,11 @@ The production firmware keeps Bridge credentials in NVS. Do not put a Bridge URL
 | `src/nvs_config.cpp/.h` | NVS credential reader |
 | `src/weather_icons.cpp/.h` | Canvas-drawn weather icons |
 | `src/wifi_manager.cpp/.h` | Event-driven WiFi connect/reconnect |
+| `src/web_identity.cpp/.h` | Persistent device identity and native request header |
+| `src/web_sync.cpp/.h` | Bounded authenticated settings heartbeat and capability report |
+| `src/web_settings.cpp/.h` | Settings schema validation and defaults |
+| `src/web_settings_store.cpp/.h` | Versioned preferences, command replay markers, and network rollback journal |
+| `src/recovery_ap.cpp/.h` | Short-lived protected local setup page |
 | `src/config.h` | Compile-time constants (version, NTP, timezone) |
 | `tools/gen_nvs.py` | NVS binary generator |
 | `partitions.csv` | Dual OTA partition layout |
@@ -179,6 +198,9 @@ first successful manifest and on subsequent idle periods.
 Run `make -C sim test-photo-frame test-photo-client` for fake-clock UI and
 HTTP-client protocol checks. The client test needs a C++ compiler and OpenSSL
 development headers; it uses temporary files and a mocked transport.
+
+Run `make -C sim test-settings` for host checks of settings validation, NVS
+rollback/commit behavior, command replay, and post-reboot command results.
 
 The Home page also has a **Фоторамка** button for an immediate photo-frame
 attempt without waiting for the idle timer. It still respects Bridge's enabled

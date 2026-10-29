@@ -1,5 +1,6 @@
 #include "photo_frame_client.h"
 #include "esp_http_client.h"
+#include "web_identity.h"
 #include <openssl/sha.h>
 #include <algorithm>
 #include <cstdio>
@@ -9,7 +10,7 @@
 
 struct mock_http { esp_http_client_config_t config; };
 struct scenario {
-  std::string body, encoding, range, url, api_key, accept_encoding;
+  std::string body, encoding, range, url, api_key, accept_encoding, device_id;
   int open_error = 0, header_error = 0;
   int stall_after = 1, stalls = 0;
   int status = 200, chunked = 0, read_calls = 0, timeout = 0, cancel_after_reads = 0;
@@ -25,7 +26,8 @@ static bool cancelled(void *) { return s.cancel; }
 int64_t esp_timer_get_time() { return s.now; }
 esp_err_t esp_crt_bundle_attach(void *) { return ESP_OK; }
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c) { client.config = *c; s.url = c->url; s.redirected = !c->disable_auto_redirect; return &client; }
-esp_err_t esp_http_client_set_header(esp_http_client_handle_t, const char *k, const char *v) { if (!strcmp(k,"X-API-Key")) s.api_key=v; if (!strcmp(k,"Accept-Encoding")) s.accept_encoding=v; return ESP_OK; }
+esp_err_t esp_http_client_set_header(esp_http_client_handle_t, const char *k, const char *v) { if (!strcmp(k,"X-API-Key")) s.api_key=v; if (!strcmp(k,"X-Device-ID")) s.device_id=v; if (!strcmp(k,"Accept-Encoding")) s.accept_encoding=v; return ESP_OK; }
+esp_err_t web_identity_set_http_header(esp_http_client_handle_t client) { return esp_http_client_set_header(client,"X-Device-ID","0123456789abcdef0123456789abcdef"); }
 esp_err_t esp_http_client_open(esp_http_client_handle_t, int) { if(s.cancel_on_open) s.cancel=true; if(s.deadline_on_open) s.now=60000000; return s.open_error; }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h) {
   auto send=[&](const char *k,const std::string &v) { if (!v.empty()) { esp_http_client_event_t e={HTTP_EVENT_ON_HEADER,h->config.user_data,k,v.c_str()}; h->config.event_handler(&e); } };
@@ -112,6 +114,7 @@ int main() {
   assert_true("JSON diagnostic", !strcmp(diagnostic.stage, "JSON"));
   reset(manifest()); expect("diagnose success", diagnose(), PHOTO_OK);
   assert_true("success diagnostic reset", !strcmp(diagnostic.stage, "ok") && diagnostic.transport_error == 0);
+  assert_true("manifest has device header", s.device_id=="0123456789abcdef0123456789abcdef");
   std::string pixels(PHOTO_FRAME_BYTES,'\0'); for(size_t i=0;i<pixels.size();i++) pixels[i]=(char)(i%251);
   photo_frame_entry entry{}; std::strcpy(entry.id,id.c_str()); std::strcpy(entry.sha256,hex((const unsigned char*)pixels.data(),pixels.size()).c_str());
   std::vector<uint8_t> buf(PHOTO_FRAME_BYTES+2,0x5a);
@@ -125,6 +128,7 @@ int main() {
   reset(pixels); s.stalls=1; s.cancel_after_reads=1;
   expect("pixel stall cancellation",get_pixels(),PHOTO_CANCELLED);
   reset(pixels); expect("valid pixels",get_pixels(),PHOTO_OK);
+  assert_true("binary frame has device header", s.device_id=="0123456789abcdef0123456789abcdef");
   assert_true("bytes and guards",buf.front()==0x5a && buf.back()==0x5a && !memcmp(buf.data()+1,pixels.data(),pixels.size()));
   assert_true("frame URL",s.url=="https://bridge/api/photo-frame/v1/frames/"+id);
   for(int status : {401,302,404}) { reset(pixels); s.status=status; expect("pixel status",get_pixels(),status==404?PHOTO_NOT_FOUND:PHOTO_FAILED); }
