@@ -1,7 +1,9 @@
 #include "ota.h"
 #include "config.h"
 #include "wifi_manager.h"
+#include "photo_frame.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include "esp_log.h"
@@ -109,6 +111,12 @@ void ota_check_and_update(void)
 
     ESP_LOGI(TAG, "Update available: %s → %s. Starting OTA...", FW_VERSION, new_version);
 
+    // Pause the photo worker only when a real firmware download will start.
+    if (!photo_frame_pause_for_ota()) {
+        ESP_LOGW(TAG, "Photo worker is busy; postponing OTA");
+        return;
+    }
+
     // 2. Download and flash firmware
     char fw_url[256];
     snprintf(fw_url, sizeof(fw_url), "%s/api/ota/firmware", s_url);
@@ -130,4 +138,5 @@ void ota_check_and_update(void)
     } else {
         ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(err));
     }
+    photo_frame_resume_after_ota();
 }

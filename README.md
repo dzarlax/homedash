@@ -186,3 +186,9 @@ state and OTA activity. The adjacent status shows collection loading, image
 loading, an unavailable source, or an image-buffer allocation failure. A touch
 during preparation cancels the manual attempt; the first touch on a displayed
 frame returns to the same dashboard page without relaunching it.
+
+
+Photo-frame loading and manifest refresh retain the current image until the next
+frame has downloaded successfully. OTA checks also leave the photo frame active;
+only an available update pauses the worker and releases its buffers before
+flashing. If the worker cannot acknowledge the pause, flashing is postponed.

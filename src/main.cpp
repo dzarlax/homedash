@@ -91,7 +91,7 @@ static void network_task(void *param)
             if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
             else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
-            else if (photo_frame_pause_for_ota()) { ota_check_and_update(); photo_frame_resume_after_ota(); }
+            else ota_check_and_update();
         }
 
         // Bridge polling
@@ -121,7 +121,7 @@ static void network_task(void *param)
 
         // Periodic OTA check
         if (ota_elapsed >= OTA_CHECK_INTERVAL_MS) {
-            if (photo_frame_pause_for_ota()) { ota_check_and_update(); photo_frame_resume_after_ota(); }
+            ota_check_and_update();
             ota_elapsed = 0;
         }
 
@@ -130,7 +130,7 @@ static void network_task(void *param)
             if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
             else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
-            else if (photo_frame_pause_for_ota()) { ota_check_and_update(); photo_frame_resume_after_ota(); }
+            else ota_check_and_update();
         }
         uint32_t elapsed = (xTaskGetTickCount() - started) * portTICK_PERIOD_MS;
         bridge_elapsed += elapsed;
