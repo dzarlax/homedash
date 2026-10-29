@@ -41,12 +41,12 @@ int xSemaphoreGive(SemaphoreHandle_t) { return pdTRUE; }
 bool lvgl_port_lock(int) { return true; }
 void lvgl_port_unlock() {}
 photo_result photo_fetch_manifest(const char *, const char *, photo_manifest *,
-                                  photo_cancel_fn, void *) {
+                                  photo_cancel_fn, void *, photo_diagnostic *) {
   return PHOTO_FAILED;
 }
 photo_result photo_fetch_pixels(const char *, const char *,
                                 const photo_frame_entry *, uint8_t *,
-                                photo_cancel_fn, void *) {
+                                photo_cancel_fn, void *, photo_diagnostic *) {
   return PHOTO_FAILED;
 }
 static void complete_manifest() {
@@ -245,11 +245,12 @@ int main() {
   pointer(indev, false, 740, 20);
   assert(busy.load() && job.kind == MANIFEST);
   job.result = PHOTO_FAILED;
+  job.diagnostic = {"HTTP", 401, 0};
   job.complete = true;
   busy = false;
   tick(nullptr);
   assert(!overlay);
-  assert(strstr(lv_label_get_text(home_photo_status), "список"));
+  assert(strstr(lv_label_get_text(home_photo_status), "Список фото: HTTP / HTTP 401 / err 0"));
   photo_frame_touch(true);
   photo_frame_touch(false);
   // A touch while a manual frame is loading cancels the force override too.

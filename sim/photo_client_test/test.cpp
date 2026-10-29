@@ -10,6 +10,7 @@
 struct mock_http { esp_http_client_config_t config; };
 struct scenario {
   std::string body, encoding, range, url, api_key, accept_encoding;
+  int open_error = 0, header_error = 0;
   int status = 200, chunked = 0, read_calls = 0, timeout = 0, cancel_after_reads = 0;
   int64_t length = -1, now = 0;
   size_t pos = 0, max_read = 8192;
@@ -24,12 +25,12 @@ int64_t esp_timer_get_time() { return s.now; }
 esp_err_t esp_crt_bundle_attach(void *) { return ESP_OK; }
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c) { client.config = *c; s.url = c->url; s.redirected = !c->disable_auto_redirect; return &client; }
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t, const char *k, const char *v) { if (!strcmp(k,"X-API-Key")) s.api_key=v; if (!strcmp(k,"Accept-Encoding")) s.accept_encoding=v; return ESP_OK; }
-esp_err_t esp_http_client_open(esp_http_client_handle_t, int) { if(s.cancel_on_open) s.cancel=true; if(s.deadline_on_open) s.now=15000000; return ESP_OK; }
+esp_err_t esp_http_client_open(esp_http_client_handle_t, int) { if(s.cancel_on_open) s.cancel=true; if(s.deadline_on_open) s.now=15000000; return s.open_error; }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h) {
   auto send=[&](const char *k,const std::string &v) { if (!v.empty()) { esp_http_client_event_t e={HTTP_EVENT_ON_HEADER,h->config.user_data,k,v.c_str()}; h->config.event_handler(&e); } };
   send("Content-Encoding",s.encoding); send("Content-Range",s.range);
   if(s.cancel_on_headers) s.cancel=true; if(s.deadline_on_headers) s.now=15000000;
-  return s.length;
+  return s.header_error ? s.header_error : s.length;
 }
 int esp_http_client_get_status_code(esp_http_client_handle_t) { return s.status; }
 bool esp_http_client_is_chunked_response(esp_http_client_handle_t) { return s.chunked; }
@@ -83,6 +84,21 @@ int main() {
   reset(manifest()); s.deadline_on_open=true; expect("deadline on open manifest",get_manifest(&m),PHOTO_FAILED);
   reset(manifest()); s.deadline_on_headers=true; expect("deadline on headers manifest",get_manifest(&m),PHOTO_FAILED);
   reset(manifest()); s.deadline_on_final=true; expect("deadline on final manifest read",get_manifest(&m),PHOTO_FAILED);
+  photo_diagnostic diagnostic;
+  auto diagnose = [&]() { return photo_fetch_manifest("https://bridge", "secret", &m, cancelled, nullptr, &diagnostic); };
+  reset(manifest()); s.open_error = -123;
+  expect("diagnose connect", diagnose(), PHOTO_FAILED);
+  assert_true("connect diagnostic", !strcmp(diagnostic.stage, "connect") && diagnostic.transport_error == -123 && diagnostic.http_status == 0);
+  reset(manifest()); s.header_error = -456;
+  expect("diagnose headers", diagnose(), PHOTO_FAILED);
+  assert_true("header diagnostic", !strcmp(diagnostic.stage, "headers") && diagnostic.transport_error == -456);
+  reset(manifest()); s.status = 401;
+  expect("diagnose HTTP", diagnose(), PHOTO_FAILED);
+  assert_true("HTTP diagnostic", !strcmp(diagnostic.stage, "HTTP") && diagnostic.http_status == 401 && diagnostic.transport_error == 0);
+  reset("not json"); expect("diagnose JSON", diagnose(), PHOTO_FAILED);
+  assert_true("JSON diagnostic", !strcmp(diagnostic.stage, "JSON"));
+  reset(manifest()); expect("diagnose success", diagnose(), PHOTO_OK);
+  assert_true("success diagnostic reset", !strcmp(diagnostic.stage, "ok") && diagnostic.transport_error == 0);
   std::string pixels(PHOTO_FRAME_BYTES,'\0'); for(size_t i=0;i<pixels.size();i++) pixels[i]=(char)(i%251);
   photo_frame_entry entry{}; std::strcpy(entry.id,id.c_str()); std::strcpy(entry.sha256,hex((const unsigned char*)pixels.data(),pixels.size()).c_str());
   std::vector<uint8_t> buf(PHOTO_FRAME_BYTES+2,0x5a);

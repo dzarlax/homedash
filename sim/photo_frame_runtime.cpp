@@ -50,7 +50,7 @@ void vTaskDelay(unsigned ms) {
 bool lvgl_port_lock(int) { return true; }
 void lvgl_port_unlock() {}
 photo_result photo_fetch_manifest(const char *, const char *, photo_manifest *m,
-                                  photo_cancel_fn cancel, void *arg) {
+                                  photo_cancel_fn cancel, void *arg, photo_diagnostic *) {
   if (cancel(arg))
     return PHOTO_CANCELLED;
   *m = {};
@@ -66,7 +66,7 @@ photo_result photo_fetch_manifest(const char *, const char *, photo_manifest *m,
 }
 photo_result photo_fetch_pixels(const char *, const char *,
                                 const photo_frame_entry *e, uint8_t *data,
-                                photo_cancel_fn cancel, void *arg) {
+                                photo_cancel_fn cancel, void *arg, photo_diagnostic *) {
   for (unsigned y = 0; y < 600; y++) {
     if (cancel(arg))
       return PHOTO_CANCELLED;
