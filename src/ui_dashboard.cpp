@@ -64,6 +64,7 @@ static lv_obj_t *week_day_buttons[7] = {};
 static lv_obj_t *week_day_labels[7] = {};
 static lv_calendar_date_t week_dates[7] = {};
 static lv_obj_t *reader_overlay = NULL;
+static lv_obj_t *home_photo_status = NULL;
 
 // bridge_data_t includes bounded Evening News summaries and is larger than the
 // LVGL task stack. All LVGL timers run serially, so one static snapshot keeps
@@ -1767,6 +1768,12 @@ static void ota_btn_cb(lv_event_t *e)
     request_ota_check();
 }
 
+static void photo_frame_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    photo_frame_start_now();
+}
+
 static void climate_power_btn_cb(lv_event_t *e)
 {
     (void)e;
@@ -1799,6 +1806,27 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_set_style_text_font(pg_title, &font_montserrat_24_cyr, 0);
     lv_label_set_text(pg_title, "Дом");
     lv_obj_set_pos(pg_title, 15, 8);
+
+    home_photo_status = lv_label_create(tile);
+    lv_obj_set_style_text_color(home_photo_status, COLOR_TEXT_DIM, 0);
+    lv_obj_set_style_text_font(home_photo_status, &font_montserrat_16_cyr, 0);
+    lv_obj_set_pos(home_photo_status, 120, 12);
+    lv_obj_set_width(home_photo_status, 570);
+    lv_label_set_long_mode(home_photo_status, LV_LABEL_LONG_DOT);
+    lv_label_set_text(home_photo_status, "Авто: через 5 мин без касаний");
+
+    lv_obj_t *btn_photo = lv_btn_create(tile);
+    lv_obj_set_size(btn_photo, 170, 30);
+    lv_obj_set_pos(btn_photo, 710, 6);
+    lv_obj_set_style_bg_color(btn_photo, COLOR_ACCENT, 0);
+    lv_obj_set_style_radius(btn_photo, 15, 0);
+    lv_obj_set_style_shadow_width(btn_photo, 0, 0);
+    lv_obj_add_event_cb(btn_photo, photo_frame_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *photo_lbl = lv_label_create(btn_photo);
+    lv_obj_set_style_text_color(photo_lbl, COLOR_TEXT, 0);
+    lv_obj_set_style_text_font(photo_lbl, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(photo_lbl, "Фоторамка");
+    lv_obj_center(photo_lbl);
 
     // OTA update button
     lv_obj_t *btn_ota = lv_btn_create(tile);
@@ -2154,3 +2182,8 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
 }
 
 bool ui_dashboard_reader_open(void) { return reader_overlay != NULL; }
+
+void ui_dashboard_update_photo_status(const char *status)
+{
+    if (home_photo_status) lv_label_set_text(home_photo_status, status);
+}

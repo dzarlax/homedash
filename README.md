@@ -179,3 +179,10 @@ first successful manifest and on subsequent idle periods.
 Run `make -C sim test-photo-frame test-photo-client` for fake-clock UI and
 HTTP-client protocol checks. The client test needs a C++ compiler and OpenSSL
 development headers; it uses temporary files and a mocked transport.
+
+The Home page also has a **Фоторамка** button for an immediate photo-frame
+attempt without waiting for the idle timer. It still respects Bridge's enabled
+state and OTA activity. The adjacent status shows collection loading, image
+loading, an unavailable source, or an image-buffer allocation failure. A touch
+during preparation cancels the manual attempt; the first touch on a displayed
+frame returns to the same dashboard page without relaunching it.
