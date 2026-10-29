@@ -222,10 +222,9 @@ bool recovery_ap_start(void) {
     }
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 4;
-    // Configuration validation performs the same bounded TLS probe as the
-    // network task, including its 8 KiB response buffer. Keep equal stack
-    // headroom while this short-lived recovery server is active.
-    config.stack_size = 32 * 1024;
+    // Network trials and TLS validation run on the network task; this server
+    // only parses the form, waits for completion and sends the response.
+    config.stack_size = 6144;
     if (httpd_start(&s_server, &config) != ESP_OK) {
         wifi_stop_recovery_ap();
         xSemaphoreGive(s_lock);

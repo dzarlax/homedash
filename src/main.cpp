@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_random.h"
@@ -30,8 +31,9 @@
 static const char *TAG = "main";
 
 // Network task handle for cross-core notification
-enum request_kind_t { REQUEST_CALENDAR, REQUEST_TOGGLE, REQUEST_CLIMATE, REQUEST_OTA, REQUEST_RECOVERY };
-struct network_request_t { request_kind_t kind; int year, month, day; char entity[48]; char action[20]; char mode[16]; float temperature; };
+struct recovery_job_t { web_network_update_t update; SemaphoreHandle_t done; bool result; };
+enum request_kind_t { REQUEST_CALENDAR, REQUEST_TOGGLE, REQUEST_CLIMATE, REQUEST_OTA, REQUEST_RECOVERY, REQUEST_RECOVERY_CONFIG };
+struct network_request_t { request_kind_t kind; int year, month, day; char entity[48]; char action[20]; char mode[16]; float temperature; recovery_job_t *recovery; };
 static QueueHandle_t s_request_queue = NULL;
 static device_config_t s_runtime_config = {};
 static char s_boot_id[17] = {};
@@ -265,7 +267,7 @@ static void finalize_network_handoff(const device_config_t *candidate, bool wifi
     s_network_handoff_pending = false;
 }
 
-bool recovery_apply_network_update(const web_network_update_t *update)
+static bool apply_recovery_network_update_now(const web_network_update_t *update)
 {
     device_config_t candidate = {};
     bool changed = false, trial = false;
@@ -295,6 +297,37 @@ bool recovery_apply_network_update(const web_network_update_t *update)
         finalize_network_handoff(&candidate, trial);
     }
     return true;
+}
+
+// The HTTP task waits for the network task instead of mutating live
+// credentials, NVS journals and HTTP clients concurrently with polling.
+bool recovery_apply_network_update(const web_network_update_t *update)
+{
+    if (!update || !s_request_queue) return false;
+    recovery_job_t job = {};
+    job.update = *update;
+    job.done = xSemaphoreCreateBinary();
+    if (!job.done) return false;
+    network_request_t request = {};
+    request.kind = REQUEST_RECOVERY_CONFIG;
+    request.recovery = &job;
+    if (xQueueSend(s_request_queue, &request, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        vSemaphoreDelete(job.done);
+        return false;
+    }
+    // The caller owns the job until completion. A timeout must not release
+    // its storage while the network task could still commit the change.
+    xSemaphoreTake(job.done, portMAX_DELAY);
+    vSemaphoreDelete(job.done);
+    return job.result;
+}
+
+static void complete_recovery_request(const network_request_t *request)
+{
+    recovery_job_t *job = request->recovery;
+    if (!job) return;
+    job->result = apply_recovery_network_update_now(&job->update);
+    xSemaphoreGive(job->done);
 }
 
 void request_calendar_date(int year, int month, int day)
@@ -354,8 +387,10 @@ static void network_task(void *param)
         else ESP_LOGE(TAG, "Local setup could not start");
         for (;;) {
             network_request_t setup_req = {};
-            if (xQueueReceive(s_request_queue, &setup_req, pdMS_TO_TICKS(1000)) == pdTRUE &&
-                setup_req.kind == REQUEST_RECOVERY) recovery_ap_start();
+            if (xQueueReceive(s_request_queue, &setup_req, pdMS_TO_TICKS(1000)) == pdTRUE) {
+                if (setup_req.kind == REQUEST_RECOVERY) recovery_ap_start();
+                else if (setup_req.kind == REQUEST_RECOVERY_CONFIG) complete_recovery_request(&setup_req);
+            }
         }
     }
 
@@ -415,7 +450,8 @@ static void network_task(void *param)
         halt_if_settings_fail_closed();
         network_request_t req = {};
         while (xQueueReceive(s_request_queue, &req, 0) == pdTRUE) {
-            if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
+            if (req.kind == REQUEST_RECOVERY_CONFIG) complete_recovery_request(&req);
+            else if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
             else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
             else if (req.kind == REQUEST_RECOVERY) recovery_ap_start();
@@ -517,7 +553,8 @@ static void network_task(void *param)
 
         TickType_t started = xTaskGetTickCount();
         if (xQueueReceive(s_request_queue, &req, pdMS_TO_TICKS(TICK_MS)) == pdTRUE) {
-            if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
+            if (req.kind == REQUEST_RECOVERY_CONFIG) complete_recovery_request(&req);
+            else if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
             else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
             else if (req.kind == REQUEST_RECOVERY) recovery_ap_start();
