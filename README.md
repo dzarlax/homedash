@@ -319,3 +319,33 @@ IO2 display enable and touch/LCD reset bits remain unchanged and record measured
 mapping before wiring a verified calibration into startup. Day/night dim settings are implemented in the software path but remain
 unavailable until that calibration is supplied. Existing night-off behavior
 remains in effect while the capability is disabled.
+
+
+### Day view and photo-frame controls (v1.0.31)
+
+The Day page gives the selected day's current or next event priority, with a
+large weather temperature, condition icon, daily range when available, and
+separate transport and home-air cards. Receipt labels describe when the display
+last received each section; they are not provider observation timestamps. Failed
+refreshes retain the last good weather/transport values and their original age.
+Late calendar responses cannot change the date selected by the user. Bridge
+can attach `X-HomeDash-Calendar-State: complete|partial` without changing the
+legacy event-array body. The display warns about partial calendars and avoids
+calling an unverified empty response a free day; older Bridges remain supported.
+
+In the photo frame, tap to show a compact control bar for five seconds. Swipe
+left/right or use the arrows to navigate the current manifest order. Pause stops
+only automatic photo changes: the clock and context keep updating, and manual
+navigation still works. Hide info temporarily hides clock, weather and event
+until frame exit; it does not change saved Bridge preferences. Use Exit to
+return to the dashboard and restart its idle timer. Touches do not activate
+controls beneath the frame. New images replace the visible image only after
+loading; transfer errors offer retry without leaving the frame.
+
+Brightness remains unavailable until the exact physical board has a verified
+calibration. The software accepts a versioned measured profile and a known
+baseline; no profile values are inferred from the board model. See
+[the calibration checklist](docs/brightness-calibration-checklist.md). Applying a
+profile alone performs no PWM write. Preview restoration runs locally without
+requiring network access. These changes require a new firmware installation;
+source availability does not mean that an existing display has been updated.

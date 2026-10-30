@@ -1,9 +1,11 @@
 #pragma once
 #include <stdint.h>
 #include "brightness_controller.h"
+#include "brightness_calibration.h"
 // Must be called only after explicit physical validation of polarity and a
 // trustworthy current PWM baseline. No boot path calls this by default.
-bool brightness_runtime_configure_verified(uint8_t pwm_at_10, uint8_t pwm_at_100, uint8_t current_pwm);
+bool brightness_runtime_apply_profile(const brightness_calibration_profile_t *profile,
+                                      const brightness_board_identity_t *observed_board);
 bool brightness_runtime_ready();
 const char *brightness_runtime_error();
 void brightness_runtime_mark_write_failed();

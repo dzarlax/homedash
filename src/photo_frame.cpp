@@ -1,6 +1,7 @@
 #include "photo_frame.h"
 #include "photo_frame_client.h"
 #include "ui_dashboard.h"
+#include "ui_strings.h"
 #ifndef SIMULATOR
 #include "lvgl_port.h"
 #else
@@ -15,11 +16,9 @@ void lvgl_port_unlock(void);
 #include "lvgl.h"
 #include <atomic>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#ifdef SIMULATOR
-#include <stdlib.h>
-#endif
 
 namespace {
 enum job_kind { NONE, MANIFEST, FRAME, CONTEXT, CARD };
@@ -51,6 +50,16 @@ static lv_image_dsc_t descriptor[2] = {};
 static lv_obj_t *overlay = nullptr, *image = nullptr;
 static int displayed = -1;
 static bool gesture = false, physical_down = false;
+static bool touch_started_in_photo = false, controls_visible = false;
+static bool slideshow_paused = false, info_hidden = false, load_error = false;
+static bool retry_requested = false, stale_refresh_pending = false;
+static int touch_start_x = 0, touch_start_y = 0;
+static int touch_start_action = -1;
+static bool touch_start_controls = false;
+static int64_t controls_until = 0;
+static lv_obj_t *control_bar = nullptr, *control_status = nullptr;
+static lv_obj_t *control_buttons[6] = {}, *control_labels[6] = {};
+static int64_t now();
 static int64_t last_touch = 0, last_poll = 0, last_ready = 0, last_slide = 0,
                retry_after = 0;
 static int retry_step = 0, idle_seconds = 300, interval_seconds = 60,
@@ -74,6 +83,9 @@ static size_t sim_pixel_peak = 0;
 static photo_context wanted = {};
 struct pending_photo { bool ready; unsigned generation; int buffer; char id[65]; };
 static pending_photo pending = {};
+static int manual_target = -1;
+static bool manual_target_pending = false;
+static char manual_target_id[65] = {};
 static void discard_pending() { pending = {}; }
 static bool frame_in_manifest(const char *id) {
   if (!manifest_ready) return false;
@@ -139,6 +151,105 @@ static void clear_context() {
   if (clock_panel) lv_obj_delete(clock_panel);
   clock_panel = nullptr;
   clock_label = date_label = nullptr; last_minute = -1; context_known = false; wanted = {};
+}
+static void set_info_hidden(bool hidden) {
+  info_hidden = hidden;
+  for (int i = 0; i < 3; ++i) if (cards[i].object) {
+    if (hidden) lv_obj_add_flag(cards[i].object, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(cards[i].object, LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_obj_t *objects[] = {clock_panel, clock_label, date_label,
+                         clock_shadow[0], clock_shadow[1], clock_shadow[2], clock_shadow[3],
+                         date_shadow[0], date_shadow[1], date_shadow[2], date_shadow[3]};
+  for (lv_obj_t *object : objects) if (object) {
+    if (hidden) lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(object, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+static void clear_controls() {
+  if (control_bar) lv_obj_delete(control_bar);
+  control_bar = control_status = nullptr;
+  for (int i = 0; i < 6; ++i) control_buttons[i] = control_labels[i] = nullptr;
+  controls_visible = false;
+  controls_until = 0;
+}
+static void controls_raise() {
+  if (!controls_visible || !control_bar) return;
+  lv_obj_move_foreground(control_bar);
+}
+static const char *control_caption(int action) {
+  switch (action) {
+  case 0: return ui_text("Предыдущая");
+  case 1: return ui_text("Следующая");
+  case 2: return ui_text(slideshow_paused ? "Продолжить" : "Пауза");
+  case 3: return ui_text(info_hidden ? "Показать данные" : "Скрыть данные");
+  case 4: return ui_text("Повторить");
+  default: return ui_text("Выйти");
+  }
+}
+static void update_controls() {
+  if (!control_bar) return;
+  const int count = load_error ? 6 : 5;
+  const int bar_width = 800, gap = 6, margin = 14;
+  const int button_width = (bar_width - 2 * margin - gap * (count - 1)) / count;
+  const int button_y = load_error ? 32 : 18;
+  for (int i = 0; i < 6; ++i) {
+    bool visible = i < count;
+    if (visible) lv_obj_clear_flag(control_buttons[i], LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(control_buttons[i], LV_OBJ_FLAG_HIDDEN);
+    if (!visible) continue;
+    int action = (i == count - 1) ? 5 : i;
+    lv_obj_set_pos(control_buttons[i], margin + i * (button_width + gap), button_y);
+    lv_obj_set_size(control_buttons[i], button_width, 48);
+    lv_label_set_text(control_labels[i], control_caption(action));
+    lv_obj_center(control_labels[i]);
+  }
+  if (load_error) {
+    lv_obj_clear_flag(control_status, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(control_status, ui_text("Не удалось загрузить фото"));
+    lv_obj_set_width(control_status, bar_width - 2 * margin);
+    lv_obj_set_style_text_align(control_status, LV_TEXT_ALIGN_CENTER, 0);
+  } else lv_obj_add_flag(control_status, LV_OBJ_FLAG_HIDDEN);
+  controls_raise();
+}
+static void show_controls() {
+  if (!overlay) return;
+  if (!control_bar) {
+    control_bar = lv_obj_create(overlay);
+    lv_obj_remove_style_all(control_bar);
+    lv_obj_set_pos(control_bar, 112, 258);
+    lv_obj_set_size(control_bar, 800, 84);
+    lv_obj_set_style_bg_color(control_bar, lv_color_hex(0x080b10), 0);
+    lv_obj_set_style_bg_opa(control_bar, 235, 0);
+    lv_obj_set_style_radius(control_bar, 14, 0);
+    lv_obj_set_style_border_width(control_bar, 1, 0);
+    lv_obj_set_style_border_color(control_bar, lv_color_hex(0x71839a), 0);
+    lv_obj_set_style_border_opa(control_bar, 120, 0);
+    lv_obj_clear_flag(control_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(control_bar, LV_OBJ_FLAG_CLICKABLE);
+    control_status = lv_label_create(control_bar);
+    lv_obj_set_pos(control_status, 14, 2);
+    lv_obj_set_style_text_color(control_status, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(control_status, &font_montserrat_16_cyr, 0);
+    for (int i = 0; i < 6; ++i) {
+      control_buttons[i] = lv_obj_create(control_bar);
+      lv_obj_remove_style_all(control_buttons[i]);
+      lv_obj_set_style_bg_color(control_buttons[i], lv_color_hex(0x263343), 0);
+      lv_obj_set_style_bg_opa(control_buttons[i], 255, 0);
+      lv_obj_set_style_border_color(control_buttons[i], lv_color_hex(0x71839a), 0);
+      lv_obj_set_style_border_width(control_buttons[i], 1, 0);
+      lv_obj_set_style_radius(control_buttons[i], 8, 0);
+      lv_obj_clear_flag(control_buttons[i], LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_clear_flag(control_buttons[i], LV_OBJ_FLAG_CLICKABLE);
+      control_labels[i] = lv_label_create(control_buttons[i]);
+      lv_obj_set_style_text_color(control_labels[i], lv_color_hex(0xffffff), 0);
+      lv_obj_set_style_text_font(control_labels[i], &font_montserrat_16_cyr, 0);
+      lv_obj_set_style_text_align(control_labels[i], LV_TEXT_ALIGN_CENTER, 0);
+    }
+  }
+  controls_visible = true;
+  controls_until = now() + 5;
+  update_controls();
 }
 static void render_clock() {
   if (wanted.version == 3 && !wanted.clock_enabled && clock_panel) { lv_obj_delete(clock_panel); clock_panel = nullptr; }
@@ -242,8 +353,17 @@ static bool cancelled(void *p) {
 }
 static void detach() {
   discard_pending();
+  clear_controls();
   clear_context();
   context_poll = 0;
+  slideshow_paused = false;
+  info_hidden = false;
+  load_error = false;
+  retry_requested = false;
+  stale_refresh_pending = false;
+  manual_target = -1;
+  manual_target_pending = false;
+  manual_target_id[0] = 0;
   if (overlay) {
     lv_obj_delete(overlay);
     overlay = nullptr;
@@ -305,6 +425,13 @@ static void publish(int index, const char *id) {
   strncpy(shown_id, id, 64);
   shown_id[64] = 0;
   last_slide = now();
+  load_error = false;
+  retry_requested = false;
+  if (manual_target_pending && !strcmp(manual_target_id, id)) {
+    manual_target_pending = false;
+    manual_target = -1;
+    manual_target_id[0] = 0;
+  }
 }
 static void worker_task(void *) {
   for (;;) {
@@ -366,6 +493,132 @@ static void retry() {
   if (retry_step < 3)
     retry_step++;
 }
+static int frame_index(const char *id) {
+  for (int i = 0; i < current_manifest.count; ++i)
+    if (!strcmp(id, current_manifest.frames[i].id)) return i;
+  return -1;
+}
+static void request_navigation(int direction) {
+  if (!manifest_ready || current_manifest.count <= 0) {
+    load_error = true;
+    last_poll = 0;
+    retry_after = 0;
+    update_controls();
+    return;
+  }
+  int base = manual_target_pending ? frame_index(manual_target_id) : frame_index(shown_id);
+  if (base < 0) base = direction > 0 ? -1 : 0;
+  manual_target = (base + direction + current_manifest.count) % current_manifest.count;
+  strncpy(manual_target_id, current_manifest.frames[manual_target].id, 64);
+  manual_target_id[64] = 0;
+  if (overlay && !strcmp(shown_id, manual_target_id)) {
+    // Returning to the visible frame supersedes any in-flight request just as
+    // selecting a different target does. Its late completion must stay stale.
+    epoch.fetch_add(1);
+    discard_pending();
+    manual_target_pending = false;
+    manual_target = -1;
+    manual_target_id[0] = 0;
+    load_error = false;
+    retry_after = 0;
+    controls_until = now() + 5;
+    update_controls();
+    return;
+  }
+  manual_target_pending = true;
+  epoch.fetch_add(1);
+  discard_pending();
+  load_error = false;
+  retry_after = 0;
+  controls_until = now() + 5;
+  update_controls();
+}
+static void execute_control(int action) {
+  switch (action) {
+  case 0: request_navigation(-1); break;
+  case 1: request_navigation(1); break;
+  case 2:
+    if (slideshow_paused) { slideshow_paused = false; last_slide = now(); }
+    else slideshow_paused = true;
+    update_controls();
+    break;
+  case 3:
+    set_info_hidden(!info_hidden);
+    update_controls();
+    break;
+  case 4:
+    load_error = false;
+    stale_refresh_pending = false;
+    retry_after = 0;
+    retry_step = 0;
+    last_poll = 0;
+    retry_requested = true;
+    update_controls();
+    break;
+  case 5:
+    manual_requested = false;
+    slideshow_paused = false;
+    info_hidden = false;
+    load_error = false;
+    manual_target_pending = false;
+    manual_target = -1;
+    manual_target_id[0] = 0;
+    detach();
+    last_touch = now();
+    ui_dashboard_photo_exit();
+    break;
+  }
+}
+static int control_at(int x, int y) {
+  if (!controls_visible) return -1;
+  const int count = load_error ? 6 : 5;
+  for (int i = 0; i < count; ++i) {
+    lv_area_t coords;
+    lv_obj_get_coords(control_buttons[i], &coords);
+    if (x >= coords.x1 && x <= coords.x2 && y >= coords.y1 && y <= coords.y2)
+      return (i == count - 1) ? 5 : i;
+  }
+  return -1;
+}
+static bool process_photo_touch(bool pressed, int x, int y) {
+  int64_t t = now();
+  if (pressed) {
+    if (physical_down) return touch_started_in_photo;
+    physical_down = true;
+    last_touch = t;
+    touch_start_x = x;
+    touch_start_y = y;
+    touch_started_in_photo = overlay != nullptr;
+    touch_start_controls = controls_visible;
+    touch_start_action = touch_start_controls ? control_at(x, y) : -1;
+    gesture = touch_started_in_photo;
+    if (!touch_started_in_photo) {
+      epoch.fetch_add(1);
+      manual_requested = false;
+      return false;
+    }
+    if (!touch_start_controls) show_controls();
+    return true;
+  }
+  physical_down = false;
+  if (!touch_started_in_photo) {
+    touch_started_in_photo = false;
+    gesture = false;
+    return false;
+  }
+  int dx = x - touch_start_x, dy = y - touch_start_y;
+  if (abs(dx) >= 60 && abs(dy) < abs(dx) / 2) request_navigation(dx < 0 ? 1 : -1);
+  else if (touch_start_action >= 0) {
+    controls_until = t + 5;
+    execute_control(touch_start_action);
+  } else if (touch_start_controls && controls_visible) clear_controls();
+  else if (!touch_start_controls && overlay) show_controls();
+  touch_start_action = -1;
+  touch_start_controls = false;
+  touch_started_in_photo = false;
+  gesture = false;
+  return true;
+}
 static void schedule_info() {
   if (overlay && !network_update_pending && ((current_manifest.scene_context_version == 3 && protocol_negotiated) || shown_in_manifest()) && !busy.load() && (context_poll == 0 || esp_timer_get_time() / 1000000 - context_poll >= 60)) {
     if (submit(CONTEXT, 0, nullptr)) context_poll = esp_timer_get_time() / 1000000;
@@ -425,7 +678,7 @@ static void tick(lv_timer_t *) {
   xSemaphoreGive(mutex);
   int64_t t = now();
   bool eligible = !physical_down && !ui_dashboard_reader_open() &&
-                  (manual_requested || t - last_touch >= idle_seconds);
+                  (manual_target_pending || retry_requested || manual_requested || t - last_touch >= idle_seconds);
   if (pending.ready && (pending.generation != epoch.load() || !frame_in_manifest(pending.id))) discard_pending();
   if (completed && result.generation == epoch.load()) {
     if (result.kind == CONTEXT && overlay && (result.version == 3 || (shown_in_manifest() && !strcmp(result.bound_frame, shown_id)))) {
@@ -502,7 +755,7 @@ static void tick(lv_timer_t *) {
       }
       protocol_negotiated = true;
       eligible = !physical_down && !ui_dashboard_reader_open() &&
-                 (manual_requested || t - last_touch >= idle_seconds);
+                 (manual_target_pending || retry_requested || manual_requested || t - last_touch >= idle_seconds);
       if (!strcmp(m.state, "disabled") || !strcmp(m.state, "empty")) {
         detach();
         free_buffers();
@@ -515,10 +768,24 @@ static void tick(lv_timer_t *) {
         retry_step = 0;
         retry_after = 0;
         manifest_ready = true;
+        if (manual_target_pending) {
+          int found = frame_index(manual_target_id);
+          if (found < 0) {
+            manual_target_pending = false;
+            manual_target = -1;
+            manual_target_id[0] = 0;
+          } else manual_target = found;
+        }
+        load_error = false;
+        if (stale_refresh_pending) {
+          stale_refresh_pending = false;
+          retry_requested = false;
+        }
         if (overlay && !shown_in_manifest() && m.scene_context_version != 3) { clear_context(); context_poll = 0; }
       } else {
         manifest_ready = false;
         retry();
+        load_error = overlay != nullptr;
       }
     } else if (result.kind == FRAME && result.result == PHOTO_OK && eligible) {
       if (result.version == 3) {
@@ -530,8 +797,10 @@ static void tick(lv_timer_t *) {
     } else if (result.result == PHOTO_NOT_FOUND && result.kind == FRAME) {
       last_poll = 0;
       retry_after = 0;
+      load_error = overlay != nullptr;
     } else if (result.result != PHOTO_CANCELLED) {
       retry();
+      if (result.kind == FRAME || result.kind == MANIFEST) load_error = overlay != nullptr;
     }
   }
   if (completed && result.staging) free(result.staging);
@@ -539,19 +808,36 @@ static void tick(lv_timer_t *) {
     for (int i = 0; i < 3; ++i) if (cards[i].pixels && cards[i].meta.expires_at <= server_now()) clear_card(i);
     render_clock();
   }
-  if (current_manifest.scene_context_version != 3) schedule_info();
+  if (info_hidden) set_info_hidden(true);
+  if (controls_visible && t >= controls_until) clear_controls();
+  if (controls_visible) update_controls();
+  controls_raise();
   if (last_ready && t - last_ready >= stale_seconds) {
     const bool was_visible = overlay != nullptr;
-    detach();
     epoch.fetch_add(1);
+    discard_pending();
     manifest_ready = false;
+    protocol_negotiated = false;
     last_ready = 0;
-    manual_requested = false;
+    last_poll = 0;
+    retry_after = 0;
+    retry_step = 0;
+    clear_context();
+    manual_target_pending = false;
+    manual_target = -1;
+    manual_target_id[0] = 0;
     if (was_visible) {
-      last_touch = t;
-      return;
+      load_error = true;
+      retry_requested = true;
+      stale_refresh_pending = true;
+      eligible = true;
+      update_controls();
+    } else {
+      detach();
+      manual_requested = false;
     }
   }
+  if (current_manifest.scene_context_version != 3) schedule_info();
   if (eligible && !busy.load() && t >= retry_after &&
       (last_poll == 0 || t - last_poll >= 60)) {
     if (submit(MANIFEST, 0, nullptr))
@@ -559,9 +845,10 @@ static void tick(lv_timer_t *) {
   }
   if (current_manifest.scene_context_version != 3 && eligible && manifest_ready && !busy.load() && t >= retry_after &&
       current_manifest.count > 0 &&
-      (!overlay || t - last_slide >= interval_seconds)) {
+      (manual_target_pending || retry_requested || !overlay || (!slideshow_paused && t - last_slide >= interval_seconds))) {
     int next_frame = 0;
-    if (overlay) {
+    if (manual_target_pending) next_frame = manual_target;
+    else if (overlay) {
       int current = -1;
       for (int i = 0; i < current_manifest.count; i++)
         if (!strcmp(shown_id, current_manifest.frames[i].id)) {
@@ -574,16 +861,23 @@ static void tick(lv_timer_t *) {
     const photo_frame_entry *entry = &current_manifest.frames[next_frame];
     if (strcmp(shown_id, entry->id) && allocate_buffers())
       submit(FRAME, displayed == 0 ? 1 : 0, entry);
+    else if (manual_target_pending && !strcmp(shown_id, entry->id)) {
+      manual_target_pending = false;
+      manual_target = -1;
+      manual_target_id[0] = 0;
+    }
   }
   if (current_manifest.scene_context_version == 3 && eligible && manifest_ready && !network_update_pending) {
-    if (pending.ready && pending.generation == epoch.load() && frame_in_manifest(pending.id) && (!overlay || t - last_slide >= interval_seconds)) {
+    bool manual_pending_ready = manual_target_pending && pending.ready && !strcmp(pending.id, manual_target_id);
+    if (pending.ready && pending.generation == epoch.load() && frame_in_manifest(pending.id) && (!overlay || manual_pending_ready || (!slideshow_paused && t - last_slide >= interval_seconds))) {
       publish(pending.buffer, pending.id); discard_pending();
     }
     int lead = interval_seconds / 2 < 15 ? interval_seconds / 2 : 15;
     if (!pending.ready && !busy.load() && t >= retry_after && current_manifest.count > 0 &&
-        (!overlay || ((!shown_in_manifest() || current_manifest.count > 1) && t - last_slide >= interval_seconds - lead))) {
+        (manual_target_pending || retry_requested || !overlay || (!slideshow_paused && ((!shown_in_manifest() || current_manifest.count > 1) && t - last_slide >= interval_seconds - lead)))) {
       int next = 0;
-      for (int i = 0; i < current_manifest.count; ++i) if (!strcmp(shown_id, current_manifest.frames[i].id)) { next = (i + 1) % current_manifest.count; break; }
+      if (manual_target_pending) next = manual_target;
+      else for (int i = 0; i < current_manifest.count; ++i) if (!strcmp(shown_id, current_manifest.frames[i].id)) { next = (i + 1) % current_manifest.count; break; }
       if (allocate_buffers()) submit(FRAME, displayed == 0 ? 1 : 0, &current_manifest.frames[next]);
     }
   }
@@ -659,28 +953,11 @@ bool photo_frame_start_now() {
   return true;
 }
 bool photo_frame_touch(bool pressed) {
-  int64_t t = now();
-  if (pressed) {
-    if (!physical_down) {
-      epoch.fetch_add(1);
-      manual_requested = false;
-    }
-    physical_down = true;
-    last_touch = t;
-    if (overlay) {
-      gesture = true;
-      detach();
-    }
-    return gesture;
-  }
-  physical_down = false;
-  bool consumed = gesture;
-  gesture = false;
-  return consumed;
+  return process_photo_touch(pressed, 0, 0);
 }
 void photo_frame_filter_touch(bool pressed, uint16_t x, uint16_t y,
                               lv_indev_data_t *data) {
-  if (photo_frame_touch(pressed)) {
+  if (process_photo_touch(pressed, x, y)) {
     data->state = LV_INDEV_STATE_RELEASED;
     return;
   }

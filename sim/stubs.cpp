@@ -16,7 +16,7 @@
 
 #include "bridge.h"
 #include "brightness_runtime.h"
-bool brightness_runtime_configure_verified(uint8_t, uint8_t, uint8_t) { return false; }
+bool brightness_runtime_apply_profile(const brightness_calibration_profile_t *, const brightness_board_identity_t *) { return false; }
 bool brightness_runtime_ready() { return false; }
 const char *brightness_runtime_error() { return ""; }
 void brightness_runtime_mark_write_failed() {}
@@ -50,6 +50,7 @@ static void set_calendar_for_date(int year, int month, int day)
     s_calendar = {};
     s_calendar.events.resize(6);
     s_calendar.valid = true;
+    s_calendar.completeness_known = true;
     s_calendar.year = year;
     s_calendar.month = month;
     s_calendar.day = day;

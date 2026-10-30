@@ -19,10 +19,13 @@ int main()
 
     bridge_cal_data_t data = {};
     data.valid = true;
+    data.completeness_known = true;
     // A fixed future date makes hero selection independent of the wall clock.
     data.year = 2099;
     data.month = 1;
     data.day = 15;
+    sel_year = data.year; sel_month = data.month; sel_day = data.day;
+    update_schedule_title(sel_year, sel_month, sel_day);
     data.count = 25;
     data.events.resize(data.count);
     for (int i = 0; i < data.count; ++i) {

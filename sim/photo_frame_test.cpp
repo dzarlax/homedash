@@ -21,6 +21,35 @@ static void pointer(lv_indev_t *indev, bool down, int x, int y) {
   lv_tick_inc(40);
   lv_indev_read(indev);
 }
+static lv_area_t control_coords(int index) {
+  assert(control_buttons[index]);
+  lv_obj_update_layout(overlay);
+  lv_area_t coords = {};
+  lv_obj_get_coords(control_buttons[index], &coords);
+  return coords;
+}
+static void assert_controls_on_screen() {
+  assert(control_bar && controls_visible);
+  lv_obj_update_layout(overlay);
+  lv_area_t bar = {};
+  lv_obj_get_coords(control_bar, &bar);
+  assert(bar.x1 >= 0 && bar.y1 >= 0 && bar.x2 < 1024 && bar.y2 < 600);
+  const int count = load_error ? 6 : 5;
+  for (int i = 0; i < count; ++i) {
+    assert(!lv_obj_has_flag(control_buttons[i], LV_OBJ_FLAG_HIDDEN));
+    lv_area_t coords = control_coords(i);
+    assert(coords.x1 >= 0 && coords.y1 >= 0 && coords.x2 < 1024 && coords.y2 < 600);
+    assert(coords.x2 - coords.x1 + 1 >= 44 && coords.y2 - coords.y1 + 1 >= 44);
+    int action = i == count - 1 ? 5 : i;
+    assert(control_at((coords.x1 + coords.x2) / 2, (coords.y1 + coords.y2) / 2) == action);
+  }
+}
+static void tap_control(lv_indev_t *indev, int index) {
+  lv_area_t coords = control_coords(index);
+  int x = (coords.x1 + coords.x2) / 2, y = (coords.y1 + coords.y2) / 2;
+  pointer(indev, true, x, y);
+  pointer(indev, false, x, y);
+}
 
 extern "C" int64_t esp_timer_get_time() { return fake_seconds * 1000000; }
 unsigned ulTaskNotifyTake(int, unsigned) { return 0; }
@@ -107,17 +136,50 @@ int main() {
   assert(overlay && displayed >= 0);
   assert(shown_id[0] == 'a');
   complete_context_404();
-  // A press is consumed through release, including a drag and hold.
-  pointer(indev, true, 10, 10);
-  assert(!overlay);
-  pointer(indev, true, 80, 80);
-  pointer(indev, false, 80, 80);
-  assert(clicks == 0);
-  pointer(indev, true, 10, 10);
-  pointer(indev, false, 10, 10);
-  assert(clicks == 1);
+  // Photo taps reveal a timed control strip; subsequent background taps hide
+  // it. Every contact stays inside the photo mode and never reaches dashboard.
+  lv_obj_t *initial_overlay = overlay;
+  if (controls_visible) { pointer(indev, true, 10, 10); pointer(indev, false, 10, 10); }
+  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  assert(overlay == initial_overlay && controls_visible && clicks == 0);
+  assert_controls_on_screen();
+  pointer(indev, true, 80, 80); pointer(indev, false, 80, 80);
+  assert(overlay == initial_overlay && !controls_visible && clicks == 0);
+  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  fake_seconds += 5; tick(nullptr);
+  assert(!controls_visible && overlay == initial_overlay);
+  // A horizontal swipe advances in manifest order and replaces only after the
+  // requested image is ready.
+  pointer(indev, true, 300, 240); pointer(indev, false, 380, 245);
+  assert(manual_target_pending && manual_target_id[0] == 'b');
+  tick(nullptr); assert(busy && job.kind == FRAME && job.frame.id[0] == 'b');
+  unsigned obsolete_generation = job.generation;
+  pointer(indev, true, 380, 240); pointer(indev, false, 300, 245);
+  assert(!manual_target_pending && shown_id[0] == 'a' && epoch.load() != obsolete_generation);
+  complete_frame(); tick(nullptr);
+  assert(shown_id[0] == 'a' && overlay == initial_overlay && !manual_target_pending);
+  // A fresh next request can proceed after the obsolete response is discarded.
+  pointer(indev, true, 300, 240); pointer(indev, false, 380, 245);
+  assert(manual_target_pending && manual_target_id[0] == 'b');
+  tick(nullptr); assert(busy && job.kind == FRAME && job.frame.id[0] == 'b');
+  complete_frame(); tick(nullptr); assert(shown_id[0] == 'b');
+  assert(overlay == initial_overlay);
+  complete_context_404();
+  // Pause stops timed changes but manual navigation continues to work.
+  assert_controls_on_screen();
+  tap_control(indev, 2);
+  assert(slideshow_paused);
+  pointer(indev, true, 400, 240); pointer(indev, false, 480, 240);
+  assert(manual_target_pending && manual_target_id[0] == 'a');
+  tick(nullptr); assert(busy && job.kind == FRAME && job.frame.id[0] == 'a');
+  complete_frame(); tick(nullptr); assert(shown_id[0] == 'a' && slideshow_paused);
+  complete_context_404();
+  execute_control(5);
+  assert(!overlay && !slideshow_paused && !info_hidden);
   // An unfinished transfer from the previous idle generation cannot publish.
   fake_seconds = 600;
+  last_poll = fake_seconds - 60;
+  last_touch = fake_seconds - idle_seconds;
   tick(nullptr);
   assert(job.kind == MANIFEST);
   unsigned old = job.generation;
@@ -154,25 +216,38 @@ int main() {
   complete_frame();
   tick(nullptr);
   assert(overlay);
-  // Stale source must exit without immediately redisplaying an old frame.
-  last_ready = fake_seconds - 900;
+  // Just before source expiry the current photo remains visible. Once it
+  // expires, stale context/manifest data is stopped while Retry stays available.
+  lv_obj_t *stale_overlay = overlay;
+  slideshow_paused = true;
+  last_ready = fake_seconds - stale_seconds + 1;
   last_poll = fake_seconds;
   busy = false;
   job.complete = false;
   tick(nullptr);
-  assert(!overlay);
-  assert(!busy.load());
-  assert(!manifest_ready);
-  // A previously ready manifest cannot start a first frame after expiry.
-  manifest_ready = true;
-  last_ready = fake_seconds - 900;
-  last_poll = fake_seconds;
-  retry_after = 0;
-  last_touch = fake_seconds - 300;
+  assert(overlay == stale_overlay && manifest_ready && !busy.load());
+  last_ready = fake_seconds - stale_seconds;
   tick(nullptr);
-  assert(!manifest_ready);
-  assert(!busy.load());
-  assert(!overlay);
+  assert(overlay == stale_overlay && !manifest_ready && load_error);
+  assert(busy && job.kind == MANIFEST && stale_refresh_pending);
+  job.result = PHOTO_FAILED; job.complete = true; busy = false; tick(nullptr);
+  assert(overlay == stale_overlay && load_error && retry_requested);
+  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  assert(controls_visible && control_status && !lv_obj_has_flag(control_status, LV_OBJ_FLAG_HIDDEN));
+  assert_controls_on_screen();
+  tap_control(indev, 4);
+  assert(retry_requested && !stale_refresh_pending);
+  tick(nullptr); assert(busy && job.kind == MANIFEST);
+  complete_manifest(); tick(nullptr);
+  assert(overlay == stale_overlay && manifest_ready && shown_id[0] == 'a');
+  if (busy && job.kind == CONTEXT) complete_context_404();
+  assert(busy && job.kind == FRAME && job.frame.id[0] == 'b');
+  complete_frame(); tick(nullptr);
+  assert(overlay == stale_overlay && shown_id[0] == 'b' && !load_error && !retry_requested);
+  complete_context_404();
+  // The expired manifest never starts a frame until a fresh ready response.
+  assert(manifest_ready && overlay == stale_overlay);
+  slideshow_paused = false;
   // Slide timing uses the playlist between manifest polls.
   fake_seconds = 3000;
   last_touch = fake_seconds - 300;
@@ -249,9 +324,11 @@ int main() {
   assert(overlay);
   complete_context_404();
   assert(lv_tileview_get_tile_active(tileview) == nav_tiles[2]);
-  // Dismiss over the launch button: the same gesture cannot relaunch it.
+  // Exit is explicit, and the same gesture cannot relaunch the frame.
   pointer(indev, true, 740, 20);
   pointer(indev, false, 740, 20);
+  assert_controls_on_screen();
+  tap_control(indev, 4);
   assert(!overlay && !manual_requested && !busy.load());
   // A failed manual attempt leaves photo mode closed.
   assert(photo_frame_start_now());
@@ -296,11 +373,17 @@ int main() {
   complete_manifest(); tick(nullptr);
   assert(busy.load() && job.kind == FRAME && overlay == visible_overlay);
   complete_frame(PHOTO_FAILED); tick(nullptr);
-  assert(overlay == visible_overlay && shown_id[0] == 'a');
-  fake_seconds += 30; tick(nullptr);
-  assert(busy.load() && job.kind == FRAME && overlay == visible_overlay);
+  assert(overlay == visible_overlay && shown_id[0] == 'a' && load_error);
+  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  assert(controls_visible && control_status && !lv_obj_has_flag(control_status, LV_OBJ_FLAG_HIDDEN));
+  assert_controls_on_screen();
+  tap_control(indev, 4);
+  assert(!load_error && retry_requested);
+  tick(nullptr); assert(busy && job.kind == MANIFEST);
+  complete_manifest(); tick(nullptr);
+  assert(busy.load() && job.kind == FRAME && job.frame.id[0] == 'b' && overlay == visible_overlay);
   complete_frame(); tick(nullptr);
-  assert(overlay == visible_overlay && shown_id[0] == 'b');
+  assert(overlay == visible_overlay && shown_id[0] == 'b' && !retry_requested);
   // Context changes do not reset the current image or slide time; card failures
   // retain non-expired pixels, and expiry uses monotonic server time.
   complete_context_404();
@@ -321,6 +404,15 @@ int main() {
   job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
   assert(cards[0].pixels && overlay == visible_overlay && last_slide == slide_before);
   assert(clock_label && date_label && !lv_obj_has_flag(clock_label, LV_OBJ_FLAG_HIDDEN));
+  if (controls_visible) { pointer(indev, true, 10, 10); pointer(indev, false, 10, 10); }
+  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  assert_controls_on_screen();
+  tap_control(indev, 3);
+  assert(info_hidden && lv_obj_has_flag(cards[0].object, LV_OBJ_FLAG_HIDDEN));
+  assert(lv_obj_has_flag(clock_label, LV_OBJ_FLAG_HIDDEN) && lv_obj_has_flag(date_label, LV_OBJ_FLAG_HIDDEN));
+  tap_control(indev, 3);
+  assert(!info_hidden && !lv_obj_has_flag(cards[0].object, LV_OBJ_FLAG_HIDDEN));
+  assert(!lv_obj_has_flag(clock_label, LV_OBJ_FLAG_HIDDEN));
   for (int i = 0; i < 4; ++i) {
     assert(clock_shadow[i] && date_shadow[i]);
     assert(lv_obj_get_index(clock_shadow[i]) < lv_obj_get_index(clock_label));

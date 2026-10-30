@@ -6,9 +6,9 @@ typedef int esp_err_t;
 #define ESP_ERR_HTTP_CONNECT 0x7002
 const char *esp_err_to_name(esp_err_t);
 typedef struct mock_http *esp_http_client_handle_t;
-enum { HTTP_EVENT_ERROR, HTTP_EVENT_ON_DATA };
+enum { HTTP_EVENT_ERROR, HTTP_EVENT_ON_DATA, HTTP_EVENT_ON_HEADER };
 enum { HTTP_METHOD_GET, HTTP_METHOD_POST };
-struct esp_http_client_event_t { int event_id; void *user_data; void *data; int data_len; };
+struct esp_http_client_event_t { int event_id; void *user_data; void *data; int data_len; char *header_key; char *header_value; };
 struct esp_http_client_config_t {
  const char *url; int method; int timeout_ms; bool disable_auto_redirect;
  esp_err_t (*crt_bundle_attach)(void *);
