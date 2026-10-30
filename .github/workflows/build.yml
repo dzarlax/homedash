@@ -38,8 +38,10 @@ jobs:
       - name: Build firmware
         run: pio run
 
-      - name: Check network stack budget
-        run: python tools/check_network_stack.py
+      - name: Check network memory configuration
+        run: |
+          python tools/check_network_stack.py
+          python tools/check_tls_memory.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
