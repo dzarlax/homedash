@@ -248,6 +248,12 @@ int main()
             if (std::getenv("HOMEDASH_SIM_RECOVERY"))
                 ui_dashboard_update_recovery("HomeDash-Setup-DEMO", "DemoPassword1234", "http://192.168.4.1");
             if (std::getenv("HOMEDASH_SIM_ACTION_FIXTURES")) { sim_set_action_feedback_fixtures(); refresh_all_data(); ui_dashboard_sim_set_selected_temperature(21); }
+            if (std::getenv("HOMEDASH_SIM_PARTIAL_CALENDAR")) {
+                bridge_cal_data_t partial = {}; bridge_copy_calendar_data(&partial);
+                partial.valid = true; partial.sources_partial = true; partial.completeness_known = true;
+                partial.count = 0; partial.events.clear();
+                ui_dashboard_update_ha_calendar(&partial);
+            }
             ui_dashboard_sim_set_page(page_env ? std::atoi(page_env) : 0);
             ui_dashboard_sim_refresh_feedback();
             for (int i = 0; i < 5; ++i) lv_timer_handler();
@@ -292,6 +298,19 @@ int main()
             }
             photo_frame_confirm_timezone("Europe/Belgrade", "CET-1CEST,M3.5.0,M10.5.0/3");
             for (int i = 0; i < 200; ++i) { lv_tick_inc(20); lv_timer_handler(); SDL_Delay(5); }
+            const char *photo_locale = std::getenv("HOMEDASH_SIM_PHOTO_SCREENSHOT_LOCALE");
+            if (photo_locale) {
+                web_preferences_t prefs = {}; web_preferences_defaults(&prefs); prefs.revision = 1;
+                std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "https://example.test/settings/");
+                std::snprintf(prefs.locale, sizeof(prefs.locale), "%s", photo_locale);
+                ui_dashboard_apply_preferences(&prefs);
+            }
+            if (std::getenv("HOMEDASH_SIM_PHOTO_CONTROLS")) {
+                lv_indev_data_t touch = {};
+                photo_frame_filter_touch(true, 512, 200, &touch);
+                photo_frame_filter_touch(false, 512, 200, &touch);
+                lv_obj_update_layout(lv_screen_active());
+            }
             const char *photo_shot = std::getenv("HOMEDASH_SIM_PHOTO_SCREENSHOT_PATH");
             if (photo_shot) { lv_refr_now(display); render(); if (!save_screenshot(photo_shot)) return 11; }
             std::puts("[SIM] Photo frame remains open through locale changes");

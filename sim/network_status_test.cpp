@@ -21,7 +21,8 @@ int main()
     assert(area.y1 >= 514 && area.y2 < 540);
     assert(lv_label_get_long_mode(lbl_connection_status) == LV_LABEL_LONG_DOT);
     const char *text = lv_label_get_text(lbl_connection_status);
-    assert(strstr(text, "Sync:ESP_ERR_HTTP_CONNECT") && strstr(text, "Data:ESP_OK/404"));
+    assert(!strcmp(text, ui_text("Нет связи с Bridge. Проверьте настройки")));
+    assert(!strstr(text, "ESP_ERR") && !strstr(text, "404"));
     sim_set_connection_status("OK", "Sync:OK");
     ui_dashboard_update_time();
     assert(lv_obj_has_flag(lbl_connection_status, LV_OBJ_FLAG_HIDDEN));

@@ -2,6 +2,7 @@
 #include "wifi_manager.h"
 
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <cmath>
 #include "esp_log.h"
@@ -55,12 +56,19 @@ typedef struct {
     char *data;
     int   len;
     int   cap;
+    uint8_t calendar_state; // 0 unknown, 1 complete, 2 partial.
 } http_buf_t;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
     http_buf_t *buf = (http_buf_t *)evt->user_data;
     switch (evt->event_id) {
+    case HTTP_EVENT_ON_HEADER:
+        if (evt->header_key && evt->header_value && !strcasecmp(evt->header_key, "X-HomeDash-Calendar-State")) {
+            if (!strcmp(evt->header_value, "partial")) buf->calendar_state = 2;
+            else if (!strcmp(evt->header_value, "complete") && buf->calendar_state != 2) buf->calendar_state = 1;
+        }
+        break;
     case HTTP_EVENT_ON_DATA:
         if (buf->len + evt->data_len >= buf->cap) {
             int new_cap = buf->cap + evt->data_len + 1024;
@@ -315,78 +323,82 @@ static void parse_climate(cJSON *arr)
     s_data.climate_valid = true;
 }
 
+static bool finite_number(cJSON *v) {
+    return cJSON_IsNumber(v) && std::isfinite(v->valuedouble);
+}
+
 static void parse_weather(cJSON *obj)
 {
-    s_data.weather.valid = false;
-    if (!obj || !cJSON_IsObject(obj)) return;
-
-    cJSON *v;
-    v = cJSON_GetObjectItem(obj, "temp"); if (v) s_data.weather.temp = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(obj, "hum");  if (v) s_data.weather.humidity = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(obj, "wind"); if (v) s_data.weather.wind_speed = (float)v->valuedouble;
-    v = cJSON_GetObjectItem(obj, "wc");   if (v) s_data.weather.weather_code = v->valueint;
-
-    s_data.weather.daily_count = 0;
+    // Preserve the last good observation when a section is absent or malformed.
+    s_data.weather.last_attempt_failed = true;
+    if (!cJSON_IsObject(obj)) return;
+    cJSON *temp = cJSON_GetObjectItem(obj, "temp");
+    cJSON *code = cJSON_GetObjectItem(obj, "wc");
+    if (!finite_number(temp) || !finite_number(code)) return;
+    bridge_weather_t fresh = {};
+    fresh.temp = temp->valuedouble;
+    fresh.weather_code = code->valueint;
+    cJSON *v = cJSON_GetObjectItem(obj, "hum");
+    if (finite_number(v)) fresh.humidity = v->valuedouble;
+    v = cJSON_GetObjectItem(obj, "wind");
+    if (finite_number(v)) fresh.wind_speed = v->valuedouble;
     cJSON *daily = cJSON_GetObjectItem(obj, "daily");
-    if (daily && cJSON_IsArray(daily)) {
+    if (cJSON_IsArray(daily)) {
         int n = cJSON_GetArraySize(daily);
         if (n > BRIDGE_FORECAST_DAYS) n = BRIDGE_FORECAST_DAYS;
-        for (int i = 0; i < n; i++) {
+        for (int i = 0; i < n; ++i) {
             cJSON *d = cJSON_GetArrayItem(daily, i);
-            if (!d) continue;
-            bridge_weather_daily_t *wd = &s_data.weather.daily[i];
-            v = cJSON_GetObjectItem(d, "tmax"); if (v) wd->temp_max = (float)v->valuedouble;
-            v = cJSON_GetObjectItem(d, "tmin"); if (v) wd->temp_min = (float)v->valuedouble;
-            v = cJSON_GetObjectItem(d, "wc");   if (v) wd->weather_code = v->valueint;
-            s_data.weather.daily_count++;
+            cJSON *hi = cJSON_GetObjectItem(d, "tmax"), *lo = cJSON_GetObjectItem(d, "tmin");
+            cJSON *wc = cJSON_GetObjectItem(d, "wc");
+            if (!finite_number(hi) || !finite_number(lo) || !finite_number(wc)) break;
+            fresh.daily[fresh.daily_count++] = {(float)hi->valuedouble, (float)lo->valuedouble, wc->valueint};
         }
     }
-    s_data.weather.valid = true;
+    fresh.valid = true;
+    fresh.received_ms = esp_timer_get_time() / 1000;
+    s_data.weather = fresh;
 }
 
 static void parse_transport(cJSON *arr)
 {
-    s_data.transport.valid = false;
-    if (!arr || !cJSON_IsArray(arr)) return;
-
+    s_data.transport.last_attempt_failed = true;
+    if (!cJSON_IsArray(arr)) return;
+    bridge_transport_t fresh = {};
     int n = cJSON_GetArraySize(arr);
     if (n > BRIDGE_TRANSPORT_STOPS) n = BRIDGE_TRANSPORT_STOPS;
-
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n; ++i) {
         cJSON *stop = cJSON_GetArrayItem(arr, i);
-        if (!stop) continue;
-
-        bridge_transport_stop_t *ts = &s_data.transport.stops[i];
-        ts->count = 0;
-
         cJSON *vehicles = cJSON_GetObjectItem(stop, "vehicles");
-        if (!vehicles || !cJSON_IsArray(vehicles)) continue;
-
+        if (!cJSON_IsObject(stop) || !cJSON_IsArray(vehicles)) return;
         int vc = cJSON_GetArraySize(vehicles);
         if (vc > BRIDGE_TRANSPORT_VEHICLES) vc = BRIDGE_TRANSPORT_VEHICLES;
-
-        for (int j = 0; j < vc; j++) {
+        for (int j = 0; j < vc; ++j) {
             cJSON *v = cJSON_GetArrayItem(vehicles, j);
-            if (!v) continue;
-            bridge_transport_vehicle_t *tv = &ts->vehicles[ts->count];
-            memset(tv, 0, sizeof(*tv));
-
             cJSON *ln = cJSON_GetObjectItem(v, "ln");
-            if (ln && cJSON_IsString(ln)) strncpy(tv->line_number, ln->valuestring, sizeof(tv->line_number) - 1);
-            cJSON *sl = cJSON_GetObjectItem(v, "sl");
-            if (sl) tv->seconds_left = sl->valueint;
-            cJSON *sb = cJSON_GetObjectItem(v, "sb");
-            if (sb) tv->stations_between = sb->valueint;
-            ts->count++;
+            cJSON *sl = cJSON_GetObjectItem(v, "sl"), *sb = cJSON_GetObjectItem(v, "sb");
+            if (!cJSON_IsString(ln) || !finite_number(sl) || !finite_number(sb)) return;
+            bridge_transport_vehicle_t *tv = &fresh.stops[i].vehicles[fresh.stops[i].count++];
+            snprintf(tv->line_number, sizeof(tv->line_number), "%s", ln->valuestring);
+            tv->seconds_left = sl->valueint;
+            tv->stations_between = sb->valueint;
         }
     }
-    s_data.transport.valid = true;
+    fresh.valid = true;
+    fresh.received_ms = esp_timer_get_time() / 1000;
+    s_data.transport = fresh;
+}
+
+static void mark_dashboard_failure() {
+    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
+    s_data.weather.last_attempt_failed = s_data.transport.last_attempt_failed = true;
+    xSemaphoreGive(s_data_mutex);
 }
 
 void bridge_fetch_and_update(void)
 {
     if (!wifi_is_connected()) {
         snprintf(s_last_error, sizeof(s_last_error), "No WiFi");
+        mark_dashboard_failure();
         return;
     }
 
@@ -397,12 +409,15 @@ void bridge_fetch_and_update(void)
 
     http_buf_t resp = {};
     if (!http_get(url, &resp, s_last_error, sizeof(s_last_error))) {
+        mark_dashboard_failure();
         return;
     }
 
     cJSON *root = cJSON_Parse(resp.data);
     free(resp.data);
-    if (!root) {
+    if (!cJSON_IsObject(root)) {
+        if (root) cJSON_Delete(root);
+        mark_dashboard_failure();
         snprintf(s_last_error, sizeof(s_last_error), "JSON parse error");
         return;
     }
@@ -777,9 +792,19 @@ void bridge_climate_action(const char *entity_id, const char *action, float temp
     free(resp.data);
 }
 
+static void mark_calendar_failure(int year, int month, int day) {
+    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
+    if (s_cal_data.year != year || s_cal_data.month != month || s_cal_data.day != day) {
+        s_cal_data = {};
+        s_cal_data.year = year; s_cal_data.month = month; s_cal_data.day = day;
+    }
+    s_cal_data.last_attempt_failed = true;
+    xSemaphoreGive(s_data_mutex);
+}
+
 void bridge_fetch_calendar(int year, int month, int day)
 {
-    if (!wifi_is_connected()) return;
+    if (!wifi_is_connected()) { mark_calendar_failure(year, month, day); return; }
 
     char url[256];
     snprintf(url, sizeof(url), "%s/api/calendar?date=%04d-%02d-%02d", s_bridge_url, year, month, day);
@@ -788,6 +813,7 @@ void bridge_fetch_calendar(int year, int month, int day)
     char cal_err[32];
     if (!http_get(url, &resp, cal_err, sizeof(cal_err))) {
         ESP_LOGE(TAG, "Calendar fetch failed: %s", cal_err);
+        mark_calendar_failure(year, month, day);
         return;
     }
 
@@ -795,6 +821,7 @@ void bridge_fetch_calendar(int year, int month, int day)
     free(resp.data);
     if (!root || !cJSON_IsArray(root)) {
         if (root) cJSON_Delete(root);
+        mark_calendar_failure(year, month, day);
         return;
     }
 
@@ -829,6 +856,10 @@ void bridge_fetch_calendar(int year, int month, int day)
         s_cal_data.count++;
     }
     s_cal_data.valid = true;
+    s_cal_data.received_ms = esp_timer_get_time() / 1000;
+    s_cal_data.last_attempt_failed = false;
+    s_cal_data.completeness_known = resp.calendar_state != 0;
+    s_cal_data.sources_partial = resp.calendar_state == 2;
     xSemaphoreGive(s_data_mutex);
     cJSON_Delete(root);
 }

@@ -82,6 +82,8 @@ struct bridge_weather_t {
     bridge_weather_daily_t daily[BRIDGE_FORECAST_DAYS];
     int   daily_count;
     bool  valid;
+    int64_t received_ms; // Local monotonic receipt time, never a provider timestamp.
+    bool last_attempt_failed;
 };
 
 // Transport
@@ -99,6 +101,8 @@ struct bridge_transport_stop_t {
 struct bridge_transport_t {
     bridge_transport_stop_t stops[BRIDGE_TRANSPORT_STOPS];
     bool valid;
+    int64_t received_ms;
+    bool last_attempt_failed;
 };
 
 // Calendar
@@ -117,6 +121,10 @@ struct bridge_cal_data_t {
     int   count;
     bool  valid;
     int   year, month, day;
+    int64_t received_ms;
+    bool last_attempt_failed;
+    bool completeness_known;
+    bool sources_partial;
 };
 
 struct bridge_data_t {

@@ -4,7 +4,7 @@
 #include <string>
 
 struct mock_http { esp_http_client_config_t config; } client;
-static std::string response_body, posted_body, request_url;
+static std::string response_body, posted_body, request_url, calendar_header;
 static bool connected=true, init_fail=false, header_fail=false, redirect=false;
 static int response_status=200, perform_error=0, calls=0, timeout=0;
 static int method=HTTP_METHOD_GET;
@@ -26,6 +26,11 @@ esp_err_t web_identity_set_http_header(esp_http_client_handle_t) { return ESP_OK
 esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t,const char *body,int length) { posted_body.assign(body,length); return ESP_OK; }
 esp_err_t esp_http_client_perform(esp_http_client_handle_t h) {
     ++calls;
+    if (!calendar_header.empty()) {
+        esp_http_client_event_t event={HTTP_EVENT_ON_HEADER,h->config.user_data,nullptr,0,
+            const_cast<char *>("X-HomeDash-Calendar-State"), calendar_header.data()};
+        if (h->config.event_handler(&event) != ESP_OK) return ESP_FAIL;
+    }
     if (!response_body.empty()) {
         for (size_t pos=0; pos<response_body.size();) {
             size_t length = stream_delay ? 1 : response_body.size();
@@ -41,7 +46,7 @@ int esp_http_client_get_errno(esp_http_client_handle_t) { return 0; }
 int esp_http_client_get_status_code(esp_http_client_handle_t) { return response_status; }
 esp_err_t esp_http_client_cleanup(esp_http_client_handle_t) { return ESP_OK; }
 static void reset(const std::string &body) {
-    response_body=body;posted_body.clear();request_url.clear();connected=true;init_fail=false;header_fail=false;calls=0;perform_error=0;response_status=200;fake_now=0;stream_delay=0;
+    response_body=body;calendar_header.clear();posted_body.clear();request_url.clear();connected=true;init_fail=false;header_fail=false;calls=0;perform_error=0;response_status=200;fake_now=0;stream_delay=0;
 }
 static bridge_action_result_t send() { return bridge_action_request("light.a","turn_on",0,nullptr); }
 static std::string observation(const char *entity="light.a",const char *state="on",bool available=true,const char *kind="light") {
@@ -91,5 +96,38 @@ int main() {
     r=bridge_action_request("climate.a","set_temperature",25,nullptr);assert(r.phase==ACTION_ACCEPTED&&r.has_observation&&r.observation.target==25);
     bridge_action_merge_observation(r.observation);
     assert(s_data.climates[0].current_temp==27&&s_data.climates[0].target_temp==25&&s_data.climate_count==1&&s_data.light_count==2);
-    puts("PASS: typed action HTTP, explicit intents, bounded responses, legacy acceptance, normalized observations, safe errors and single-entity merge");
+    // Test the real dashboard parser: zero degrees is data; missing/malformed
+    // sections preserve the previous values and their original receipt time.
+    reset(R"({"ts":123,"weather":{"temp":0,"wc":0,"daily":[]},"transport":[{"vehicles":[{"ln":"26","sl":120,"sb":2}]}]})");
+    fake_now = 60000000;
+    bridge_fetch_and_update();
+    assert(s_data.weather.valid && s_data.weather.temp == 0 && s_data.weather.daily_count == 0);
+    assert(!s_data.weather.last_attempt_failed && s_data.weather.received_ms == 60000);
+    assert(s_data.transport.valid && s_data.transport.stops[0].count == 1 && s_data.transport.stops[1].count == 0);
+    reset(R"({"ts":124,"weather":{"temp":"bad","wc":0},"transport":null})"); fake_now = 90000000;
+    bridge_fetch_and_update();
+    assert(s_data.weather.valid && s_data.weather.last_attempt_failed && s_data.weather.received_ms == 60000);
+    assert(s_data.transport.valid && s_data.transport.last_attempt_failed && s_data.transport.received_ms == 60000);
+    reset("{}"); connected = false; bridge_fetch_and_update();
+    assert(s_data.weather.last_attempt_failed && s_data.transport.last_attempt_failed);
+    reset(R"({"weather":{"temp":12,"wc":3},"transport":[]})"); fake_now = 120000000;
+    bridge_fetch_and_update();
+    assert(s_data.weather.temp == 12 && !s_data.weather.last_attempt_failed && s_data.weather.received_ms == 120000);
+    assert(s_data.transport.valid && s_data.transport.stops[0].count == 0);
+    reset("[]"); fake_now = 180000000; bridge_fetch_and_update();
+    assert(s_data.weather.temp == 12 && s_data.weather.last_attempt_failed && s_data.weather.received_ms == 120000);
+    http_buf_t header_test = {};
+    esp_http_client_event_t header = {HTTP_EVENT_ON_HEADER, &header_test, nullptr, 0,
+        const_cast<char *>("x-homedash-calendar-state"), const_cast<char *>("partial")};
+    http_event_handler(&header); assert(header_test.calendar_state == 2);
+    header.header_value = const_cast<char *>("complete"); http_event_handler(&header);
+    assert(header_test.calendar_state == 2); // Conflicting duplicate headers stay conservative.
+    reset("[]"); calendar_header="partial"; fake_now = 200000000; bridge_fetch_calendar(2099, 1, 1);
+    assert(s_cal_data.valid && !s_cal_data.last_attempt_failed && s_cal_data.received_ms == 200000);
+    assert(s_cal_data.completeness_known && s_cal_data.sources_partial && s_cal_data.count == 0);
+    reset("{}"); response_status = 500; bridge_fetch_calendar(2099, 1, 1);
+    assert(s_cal_data.valid && s_cal_data.last_attempt_failed && s_cal_data.received_ms == 200000);
+    bridge_fetch_calendar(2099, 1, 2);
+    assert(!s_cal_data.valid && s_cal_data.day == 2 && s_cal_data.last_attempt_failed);
+    puts("PASS: dashboard receipt, stale retention, recovery, selected-day failure; typed action HTTP, explicit intents, bounded responses, legacy acceptance, normalized observations, safe errors and single-entity merge");
 }

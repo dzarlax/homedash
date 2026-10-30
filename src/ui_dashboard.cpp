@@ -102,6 +102,9 @@ static void home_feedback_tick(lv_timer_t *);
 static bool settings_is_active(void);
 static lv_obj_t *page1_schedule_panel = NULL;
 static lv_obj_t *page1_overview_panel = NULL;
+static lv_obj_t *day_weather_card = NULL, *day_transport_card = NULL, *day_air_card = NULL;
+static lv_obj_t *lbl_weather_condition = NULL, *lbl_weather_freshness = NULL, *lbl_day_city = NULL;
+static lv_obj_t *lbl_transport_freshness = NULL, *lbl_calendar_freshness = NULL;
 static lv_obj_t *page2_health_panel = NULL;
 static lv_obj_t *page2_tasks_panel = NULL;
 static lv_obj_t *page2_news_panel = NULL;
@@ -493,6 +496,11 @@ static bool is_today(int y, int m, int d)
 static void update_schedule_title(int y, int m, int d)
 {
     if (!lbl_sched_title) return;
+    if (ui_calendar_snapshot.year != y || ui_calendar_snapshot.month != m || ui_calendar_snapshot.day != d) {
+        bridge_cal_data_t waiting = {};
+        waiting.year = y; waiting.month = m; waiting.day = d;
+        ui_dashboard_update_ha_calendar(&waiting);
+    }
     if (is_today(y, m, d)) {
         set_static_ui_label(lbl_sched_title, "Расписание");
         if (btn_today) lv_obj_add_flag(btn_today, LV_OBJ_FLAG_HIDDEN);
@@ -896,10 +904,7 @@ static void create_day_planner(lv_obj_t *page)
     lbl_datetime = day_static_label(surface, 28, 18, 600, "План на день", &font_montserrat_24_cyr, COLOR_TEXT);
     day_static_label(surface, 28, 54, 240, "НЕДЕЛЯ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
-    lv_obj_t *day_context = make_card(surface, 670, 18, 326, 118);
-    day_static_label(day_context, 18, 14, 290, "РАСПИСАНИЕ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_day_context = day_label(day_context, 18, 42, 290, "", &font_montserrat_24_cyr, COLOR_TEXT);
-    lbl_day_summary = day_static_label(day_context, 18, 78, 290, "Загружаю расписание", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    day_static_label(surface, 670, 20, 326, "Погода и транспорт", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
     int y, m, d;
     get_today_date(&y, &m, &d);
@@ -955,16 +960,21 @@ static void create_day_planner(lv_obj_t *page)
 
     lv_obj_t *plan = make_card(surface, 28, 154, 622, 360);
     page1_schedule_panel = plan;
-    lbl_sched_title = day_static_label(plan, 18, 15, 300, "Сегодня", &font_montserrat_24_cyr, COLOR_TEXT);
-    hero_event_card = make_card(plan, 16, 56, 590, 105);
+    lbl_sched_title = day_static_label(plan, 18, 15, 290, "Сегодня", &font_montserrat_24_cyr, COLOR_TEXT);
+    lbl_day_context = day_label(plan, 330, 18, 260, "", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_day_summary = day_label(plan, 330, 38, 260, "", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_calendar_freshness = day_label(plan, 18, 332, 580, "", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    hero_event_card = make_card(plan, 16, 66, 590, 146);
     lv_obj_set_style_bg_color(hero_event_card, COLOR_PANEL, 0);
     lbl_hero_status = day_static_label(hero_event_card, 14, 10, 540, "Следующее", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
     lbl_hero_title = day_static_label(hero_event_card, 14, 35, 540, "Нет событий", &font_montserrat_24_cyr, COLOR_TEXT);
-    lbl_hero_time = day_label(hero_event_card, 14, 72, 540, "", &font_montserrat_16_cyr, COLOR_HIGHLIGHT);
+    lv_label_set_long_mode(lbl_hero_title, LV_LABEL_LONG_WRAP);
+    lv_obj_set_height(lbl_hero_title, 60);
+    lbl_hero_time = day_label(hero_event_card, 14, 108, 540, "", &font_montserrat_16_cyr, COLOR_HIGHLIGHT);
     events_scroll = lv_obj_create(plan);
     lv_obj_remove_style_all(events_scroll);
-    lv_obj_set_size(events_scroll, 590, 160);
-    lv_obj_set_pos(events_scroll, 16, 177);
+    lv_obj_set_size(events_scroll, 590, 102);
+    lv_obj_set_pos(events_scroll, 16, 224);
     lv_obj_set_flex_flow(events_scroll, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(events_scroll, 10, 0);
     lv_obj_set_scroll_dir(events_scroll, LV_DIR_VER);
@@ -979,22 +989,48 @@ static void create_day_planner(lv_obj_t *page)
     }
     lbl_no_events = day_static_label(events_scroll, 0, 0, 580, "Нет событий", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
-    lv_obj_t *right = make_card(surface, 670, 154, 326, 360);
+    lv_obj_t *right = lv_obj_create(surface);
+    lv_obj_remove_style_all(right);
+    lv_obj_set_pos(right, 670, 66);
+    lv_obj_set_size(right, 326, 448);
+    lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
     page1_overview_panel = right;
-    lbl_topbar_temp = day_label(right, 18, 15, 290, WEATHER_CITY, &font_montserrat_24_cyr, COLOR_TEXT);
-    lbl_weather_detail = day_static_label(right, 18, 52, 290, "Нет данных о погоде", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    day_static_label(right, 18, 104, 290, "ТРАНСПОРТ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_transport_out = lv_spangroup_create(right);
-    lv_obj_set_pos(lbl_transport_out, 18, 132);
+    day_weather_card = make_card(right, 0, 0, 326, 196);
+    lbl_day_city = day_label(day_weather_card, 18, 12, 290, ui_has_preferences ? ui_preferences.city : WEATHER_CITY,
+              &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    // Reuse the existing 48px canvas and buffer rather than allocating another image.
+    if (weather_canvas && canvas_buf) {
+        lv_obj_set_parent(weather_canvas, day_weather_card);
+        lv_obj_set_pos(weather_canvas, 18, 48);
+        lv_obj_clear_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
+    }
+    lbl_topbar_temp = day_label(day_weather_card, 92, 36, 215, "--", &lv_font_montserrat_48, COLOR_TEXT);
+    lbl_weather_condition = day_static_label(day_weather_card, 18, 99, 290, "Нет данных о погоде", &font_montserrat_16_cyr, COLOR_TEXT);
+    lbl_weather_detail = day_label(day_weather_card, 18, 124, 290, "", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_weather_freshness = day_label(day_weather_card, 18, 151, 290, "", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lv_label_set_long_mode(lbl_weather_freshness, LV_LABEL_LONG_WRAP);
+    day_transport_card = make_card(right, 0, 208, 326, 136);
+    day_static_label(day_transport_card, 18, 10, 290, "ТРАНСПОРТ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_transport_out = lv_spangroup_create(day_transport_card);
+    lv_obj_set_pos(lbl_transport_out, 18, 36);
     lv_obj_set_width(lbl_transport_out, 290);
     lv_obj_set_style_text_font(lbl_transport_out, &font_montserrat_16_cyr, 0);
-    lbl_transport_in = lv_spangroup_create(right);
-    lv_obj_set_pos(lbl_transport_in, 18, 164);
+    lv_spangroup_set_mode(lbl_transport_out, LV_SPAN_MODE_BREAK);
+    lv_spangroup_set_max_lines(lbl_transport_out, 1);
+    lv_spangroup_set_overflow(lbl_transport_out, LV_SPAN_OVERFLOW_ELLIPSIS);
+    lbl_transport_in = lv_spangroup_create(day_transport_card);
+    lv_obj_set_pos(lbl_transport_in, 18, 62);
     lv_obj_set_width(lbl_transport_in, 290);
     lv_obj_set_style_text_font(lbl_transport_in, &font_montserrat_16_cyr, 0);
-    day_static_label(right, 18, 226, 290, "ВОЗДУХ ДОМА", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_air_primary = day_static_label(right, 18, 254, 290, "Гостиная: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_air_detail = day_static_label(right, 18, 284, 290, "Кабинет: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lv_spangroup_set_mode(lbl_transport_in, LV_SPAN_MODE_BREAK);
+    lv_spangroup_set_max_lines(lbl_transport_in, 1);
+    lv_spangroup_set_overflow(lbl_transport_in, LV_SPAN_OVERFLOW_ELLIPSIS);
+    lbl_transport_freshness = day_label(day_transport_card, 18, 90, 290, "", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lv_label_set_long_mode(lbl_transport_freshness, LV_LABEL_LONG_WRAP);
+    day_air_card = make_card(right, 0, 356, 326, 92);
+    day_static_label(day_air_card, 18, 8, 290, "ВОЗДУХ ДОМА", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_air_primary = day_static_label(day_air_card, 18, 34, 290, "Гостиная: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_air_detail = day_static_label(day_air_card, 18, 60, 290, "Кабинет: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
     update_week_selection();
 }
 
@@ -1329,53 +1365,80 @@ static const char *weather_code_to_text(int code)
     return index >= 0 ? labels[language][index] : "???";
 }
 
+static void update_receipt_label(lv_obj_t *label, bool valid, bool failed, int64_t received_ms) {
+    if (!label) return;
+    char buf[128];
+    if (!valid) snprintf(buf, sizeof(buf), "%s", ui_text(failed ? "Не удалось обновить" : "Ещё не обновлялось"));
+    else {
+        int64_t age = esp_timer_get_time() / 1000 - received_ms;
+        if (age < 0) age = 0;
+        if (failed) {
+            snprintf(buf, sizeof(buf), ui_text("Последние данные: %d мин назад"), (int)(age / 60000));
+            lv_label_set_text(label, buf);
+            return;
+        }
+        if (age < 60000) snprintf(buf, sizeof(buf), "%s", ui_text("Получено дисплеем только что"));
+        else snprintf(buf, sizeof(buf), ui_text("Получено дисплеем %d мин назад"), (int)(age / 60000));
+    }
+    lv_label_set_text(label, buf);
+}
+
 void ui_dashboard_update_weather(const bridge_weather_t *data)
 {
     if (!data) return;
     if (data != &ui_bridge_snapshot.weather) ui_bridge_snapshot.weather = *data;
-    if (!data->valid) return;
-
-    // Update weather icon (only redraw if code changed)
-    if (weather_canvas && canvas_buf && data->weather_code != last_weather_code) {
-        weather_icon_draw(weather_canvas, data->weather_code);
-        last_weather_code = data->weather_code;
+    if (lbl_day_city) lv_label_set_text(lbl_day_city, ui_has_preferences ? ui_preferences.city : WEATHER_CITY);
+    update_receipt_label(lbl_weather_freshness, data->valid, data->last_attempt_failed, data->received_ms);
+    if (!data->valid) {
+        if (lbl_topbar_temp) lv_label_set_text(lbl_topbar_temp, "--");
+        if (lbl_weather_condition) set_static_ui_label(lbl_weather_condition, "Нет данных о погоде");
+        if (lbl_weather_detail) lv_label_set_text(lbl_weather_detail, "");
+        if (weather_canvas) lv_obj_add_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
+        return;
     }
-
+    if (weather_canvas && canvas_buf) {
+        if (!ui_has_preferences || ui_preferences.visible_weather) lv_obj_clear_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
+        if (data->weather_code != last_weather_code) {
+            weather_icon_draw(weather_canvas, data->weather_code, COLOR_CARD);
+            last_weather_code = data->weather_code;
+        }
+    }
     if (lbl_topbar_temp) {
         unbind_static_ui_label(lbl_topbar_temp);
-        char buf[128];
-        const char *city = ui_has_preferences ? ui_preferences.city : WEATHER_CITY;
-        if (ui_has_preferences)
-            snprintf(buf, sizeof(buf), "%s · %s · %s %.0fC", ui_preferences.name, city,
-                     weather_code_to_text(data->weather_code), data->temp);
-        else
-            snprintf(buf, sizeof(buf), "%s %s %.0fC", city,
-                     weather_code_to_text(data->weather_code), data->temp);
+        char buf[32]; snprintf(buf, sizeof(buf), "%.0f°", data->temp);
         lv_label_set_text(lbl_topbar_temp, buf);
     }
-
+    if (lbl_weather_condition) {
+        unbind_static_ui_label(lbl_weather_condition);
+        lv_label_set_text(lbl_weather_condition, weather_code_to_text(data->weather_code));
+    }
     if (lbl_weather_detail) {
-        char buf[96];
-        const char *units = !strcmp(ui_strings_locale(), "ru") ? "км/ч" : "km/h";
-        snprintf(buf, sizeof(buf), "%.0f%% %.0f%s %.0f/%.0fC",
-                 data->humidity, data->wind_speed, units,
-                 data->daily[1].temp_max,
-                 data->daily[1].temp_min);
-        unbind_static_ui_label(lbl_weather_detail);
-        lv_label_set_text(lbl_weather_detail, buf);
+        char buf[96] = {};
+        if (data->daily_count > 0) snprintf(buf, sizeof(buf), ui_text("Сегодня: %.0f° / %.0f°"),
+                            data->daily[0].temp_min, data->daily[0].temp_max);
+        unbind_static_ui_label(lbl_weather_detail); lv_label_set_text(lbl_weather_detail, buf);
     }
 }
 
 void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
 {
+    if (data && data->year > 0 && (data->year != sel_year || data->month != sel_month || data->day != sel_day)) return;
+    if (data) {
+        update_receipt_label(lbl_calendar_freshness, data->valid, data->last_attempt_failed, data->received_ms);
+        if (data->valid && data->sources_partial && !data->last_attempt_failed && lbl_calendar_freshness) {
+            int64_t age = esp_timer_get_time() / 1000 - data->received_ms;
+            if (age < 0) age = 0;
+            char text[128]; snprintf(text, sizeof(text), ui_text("Часть календарей недоступна · %d мин назад"), (int)(age / 60000));
+            lv_label_set_text(lbl_calendar_freshness, text);
+        }
+    }
     if (!data || !data->valid) {
         ui_calendar_snapshot.valid = false;
         last_cal_event_count = -2;
         update_day_context(sel_year, sel_month, sel_day, -2);
         if (lbl_hero_status) set_static_ui_label(lbl_hero_status, "Календарь");
-        if (lbl_hero_title) set_static_ui_label(lbl_hero_title, "Нет данных");
-        char error[64] = {};
-        if (lbl_hero_time && bridge_copy_last_error(error, sizeof(error))) lv_label_set_text(lbl_hero_time, error);
+        if (lbl_hero_title) set_static_ui_label(lbl_hero_title, data && !data->last_attempt_failed ? "Загружаю расписание" : "Нет данных календаря");
+        if (lbl_hero_time) lv_label_set_text(lbl_hero_time, data && !data->last_attempt_failed ? "" : ui_text("Проверьте подключение в настройках"));
         if (lbl_no_events) lv_obj_add_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
         for (lv_obj_t *label : lbl_events) {
             if (label) lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
@@ -1395,6 +1458,8 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         update_week_selection();
     }
     update_day_context(sel_year, sel_month, sel_day, data->count);
+    if (lbl_day_context && data->sources_partial) lv_label_set_text(lbl_day_context, ui_text("Неполное расписание"));
+    else if (lbl_day_context && !data->completeness_known && data->count == 0) lv_label_set_text(lbl_day_context, ui_text("Нет событий в ответе"));
 
     const int display_count = data->count;
     while (lbl_events.size() < static_cast<size_t>(display_count)) {
@@ -1517,13 +1582,15 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     } else {
         if (lbl_hero_status) lv_label_set_text(lbl_hero_status, selected_today ? ui_text("Сегодня") : ui_text("Выбранный день"));
         if (lbl_hero_title) {
-            const char *message_key = has_all_day ?
+            const char *message_key = data->sources_partial ? "Список событий неполный" :
+                (!data->completeness_known && display_count == 0) ? "Нет событий в ответе" : has_all_day ?
                 (selected_today ? "На сегодня больше событий нет" : "На эту дату больше событий нет") : "Свободный день";
             set_static_ui_label(lbl_hero_title, message_key);
             lv_obj_set_style_text_color(lbl_hero_title, COLOR_TEXT, 0);
         }
         if (lbl_hero_time) {
             lv_label_set_text(lbl_hero_time,
+                data->sources_partial ? ui_text("Часть календарей недоступна") :
                 has_all_day ? ui_text("События на весь день ниже") :
                 (selected_today ? ui_text("Нет событий в расписании") : ui_text("На эту дату нет событий")));
             lv_obj_set_style_text_color(lbl_hero_time, COLOR_TEXT_DIM, 0);
@@ -1562,7 +1629,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     }
 
     if (list_idx == 0 && lbl_no_events) {
-        set_static_ui_label(lbl_no_events, hero_idx >= 0 ? "Больше событий нет" : "Нет событий");
+        set_static_ui_label(lbl_no_events, data->sources_partial || !data->completeness_known ? "Нет событий в ответе" : hero_idx >= 0 ? "Больше событий нет" : "Нет событий");
         lv_obj_clear_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -1592,7 +1659,7 @@ static void append_transport_stop(lv_obj_t *spangroup, const char *label, const 
         return;
     }
 
-    int n = stop->count < 3 ? stop->count : 3;
+    int n = stop->count < 2 ? stop->count : 2;
     for (int i = 0; i < n; i++) {
         const bridge_transport_vehicle_t *v = &stop->vehicles[i];
         int mins = (v->seconds_left + 30) / 60;
@@ -1635,7 +1702,13 @@ void ui_dashboard_update_transport(const bridge_transport_t *data)
 {
     if (!data) return;
     if (data != &ui_bridge_snapshot.transport) ui_bridge_snapshot.transport = *data;
-    if (!data->valid) return;
+    update_receipt_label(lbl_transport_freshness, data->valid, data->last_attempt_failed, data->received_ms);
+    if (!data->valid) {
+        bridge_transport_stop_t empty = {};
+        if (lbl_transport_out) append_transport_stop(lbl_transport_out, ui_text("Из центра  "), &empty);
+        if (lbl_transport_in) append_transport_stop(lbl_transport_in, ui_text("В центр    "), &empty);
+        return;
+    }
 
     if (lbl_transport_out) {
         append_transport_stop(lbl_transport_out, ui_text("Из центра  "), &data->stops[0]);
@@ -1715,8 +1788,7 @@ void ui_dashboard_update_time(void)
         bool healthy = wifi_is_connected() && !strcmp(sync, "Sync:OK") && data_ok;
         if (healthy) lv_obj_add_flag(lbl_connection_status, LV_OBJ_FLAG_HIDDEN);
         else {
-            snprintf(status, sizeof(status), "WiFi:%s %s Data:%s",
-                     wifi_is_connected() ? "OK" : "--", sync, data);
+            snprintf(status, sizeof(status), "%s", ui_text(wifi_is_connected() ? "Нет связи с Bridge. Проверьте настройки" : "Нет Wi-Fi. Проверьте настройки"));
             unbind_static_ui_label(lbl_connection_status);
             lv_label_set_text(lbl_connection_status, status);
             lv_obj_clear_flag(lbl_connection_status, LV_OBJ_FLAG_HIDDEN);
@@ -2988,6 +3060,12 @@ void ui_dashboard_apply_preferences(const web_preferences_t *prefs)
         if (prefs->visible_calendar) lv_obj_clear_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
     }
+    lv_obj_t *day_cards[] = {day_weather_card, day_transport_card, day_air_card};
+    const bool visible[] = {prefs->visible_weather, prefs->visible_transport, prefs->visible_home};
+    for (int i = 0; i < 3; ++i) if (day_cards[i]) {
+        if (visible[i]) lv_obj_clear_flag(day_cards[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(day_cards[i], LV_OBJ_FLAG_HIDDEN);
+    }
     if (page1_overview_panel) {
         bool show = prefs->visible_weather || prefs->visible_transport || prefs->visible_home;
         if (show) lv_obj_clear_flag(page1_overview_panel, LV_OBJ_FLAG_HIDDEN);
@@ -3056,6 +3134,7 @@ void ui_dashboard_reset_preferences(void)
     wake_override_until = 0;
     if (lbl_topbar_temp) lv_label_set_text(lbl_topbar_temp, WEATHER_CITY);
     if (weather_canvas) lv_obj_clear_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
+    for (lv_obj_t *card : {day_weather_card, day_transport_card, day_air_card}) if (card) lv_obj_clear_flag(card, LV_OBJ_FLAG_HIDDEN);
     refresh_settings();
     if (page1_schedule_panel) lv_obj_clear_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
     if (page1_overview_panel) lv_obj_clear_flag(page1_overview_panel, LV_OBJ_FLAG_HIDDEN);
@@ -3172,4 +3251,8 @@ bool ui_dashboard_filter_wake_touch(bool pressed, lv_indev_data_t *data)
 
 bool ui_dashboard_timezone_matches(const char *timezone, const char *posix_timezone) {
     return timezone && posix_timezone && ui_has_preferences && !strcmp(timezone, ui_preferences.timezone) && !strcmp(posix_timezone, ui_preferences.posix_timezone);
+}
+
+void ui_dashboard_photo_exit(void) {
+    ui_last_touch = esp_timer_get_time() / 1000000;
 }

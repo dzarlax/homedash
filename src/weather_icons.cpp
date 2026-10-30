@@ -95,9 +95,9 @@ static void draw_fog_lines(lv_layer_t *layer)
     }
 }
 
-void weather_icon_draw(lv_obj_t *canvas, int weather_code)
+void weather_icon_draw(lv_obj_t *canvas, int weather_code, lv_color_t background)
 {
-    lv_canvas_fill_bg(canvas, CLR_BG, LV_OPA_COVER);
+    lv_canvas_fill_bg(canvas, background, LV_OPA_COVER);
 
     lv_layer_t layer;
     lv_canvas_init_layer(canvas, &layer);

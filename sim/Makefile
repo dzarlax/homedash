@@ -1,6 +1,6 @@
 CXX = g++
 CC = gcc
-CXXFLAGS = -O2 -g -Wall -std=c++17
+CXXFLAGS = -O2 -g -Wall -std=c++17 -MMD -MP
 CFLAGS_C = -O2 -g -Wall -std=c11
 
 # Paths
@@ -222,3 +222,18 @@ test-action-executor:
 .PHONY: test-brightness
 test-brightness:
 	sh brightness_test/run.sh
+
+$(BUILD)/day_test.o: day_test.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/bridge.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/day_test: $(BUILD)/day_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-day: $(BUILD)/day_test
+	./$(BUILD)/day_test
+
+.PHONY: test-day
+
+# Track shared structure/header changes in incremental simulator builds.
+-include $(wildcard $(BUILD)/*.d)
