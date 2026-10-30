@@ -126,6 +126,23 @@ If the new firmware fails to connect to Bridge after boot, the bootloader automa
 
 ## Desktop UI Simulator
 
+Network/bootstrap regression checks run without a device:
+
+```bash
+sh sim/settings_test/run.sh
+sh sim/sync_client_test/run.sh
+sh sim/ota_test/run.sh
+sh sim/photo_client_test/run.sh
+make -C sim test-network test-calendar
+pio run
+python3 tools/check_network_stack.py
+```
+
+The sync client checks include address/undefined sanitizers, bounded responses,
+identity/revision rejection and response-allocation failures. The stack check
+budgets compiled application frames before HTTP/TLS; it does not measure the
+complete runtime TLS stack or replace verification on the display.
+
 You can preview the real LVGL UI without flashing the ESP32-S3:
 
 ```powershell

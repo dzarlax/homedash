@@ -153,6 +153,7 @@ void bridge_toggle_light(const char *entity_id);
 void bridge_climate_action(const char *entity_id, const char *action, float temperature, const char *hvac_mode);
 void bridge_fetch_calendar(int year, int month, int day);
 bool bridge_copy_data(bridge_data_t *out);
+bool bridge_has_data(void);
 bool bridge_copy_calendar_data(bridge_cal_data_t *out);
 bool bridge_copy_last_error(char *out, size_t out_size);
 const char *bridge_get_url(void);

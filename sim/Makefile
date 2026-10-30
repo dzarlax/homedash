@@ -106,6 +106,18 @@ test-calendar: $(BUILD)/calendar_scroll_test
 
 .PHONY: all clean run test-calendar
 
+$(BUILD)/network_status_test.o: network_status_test.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/web_sync.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/network_status_test: $(BUILD)/network_status_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-network: $(BUILD)/network_status_test
+	./$(BUILD)/network_status_test
+
+.PHONY: test-network
+
 $(BUILD)/stubs_home_test.o: stubs.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -Drequest_light_toggle=sim_request_light_toggle -c $< -o $@

@@ -39,6 +39,8 @@ bool web_sync_probe_bridge(const char *bridge_url, const char *bridge_key,
 bool web_sync_ack(const char *bridge_url, const char *bridge_key,
                   const char *firmware, const char *boot_id);
 void web_sync_set_error(const char *safe_error_code);
+// Bounded, secret-free transport status copied safely for the UI task.
+bool web_sync_copy_diagnostic(char *out, size_t size);
 bool web_sync_send_command_result(const char *bridge_url, const char *bridge_key,
                                   const char *firmware, const char *boot_id,
                                   const char *id, const char *state,

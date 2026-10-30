@@ -423,6 +423,15 @@ void bridge_fetch_and_update(void)
     snprintf(s_last_error, sizeof(s_last_error), "OK");
 }
 
+bool bridge_has_data(void)
+{
+    if (!s_data_mutex) return false;
+    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
+    bool available = s_data.ts > 0;
+    xSemaphoreGive(s_data_mutex);
+    return available;
+}
+
 bool bridge_copy_data(bridge_data_t *out)
 {
     if (!out || !s_data_mutex) return false;

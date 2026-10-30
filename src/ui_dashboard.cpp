@@ -3,6 +3,7 @@
 #include "config.h"
 #include "wifi_manager.h"
 #include "bridge.h"
+#include "web_sync.h"
 #include "weather_icons.h"
 #include "lvgl.h"
 #include "esp_timer.h"
@@ -30,6 +31,7 @@ LV_FONT_DECLARE(font_montserrat_24_cyr);
 static lv_obj_t *lbl_datetime    = NULL;
 static lv_obj_t *lbl_topbar_temp = NULL;
 static lv_obj_t *lbl_bottom      = NULL;
+static lv_obj_t *lbl_connection_status = NULL;
 static lv_obj_t *calendar        = NULL;
 
 // Weather card elements
@@ -723,6 +725,11 @@ static void create_day_planner(lv_obj_t *page)
         week_day_buttons[i] = day;
         lv_obj_add_event_cb(day, week_day_click_cb, LV_EVENT_CLICKED, &week_dates[i]);
     }
+
+    lbl_connection_status = day_label(surface, 28, 519, 968, "Подключение…",
+                                      &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lv_label_set_long_mode(lbl_connection_status, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(lbl_connection_status, 19);
 
     lv_obj_t *plan = make_card(surface, 28, 154, 622, 360);
     page1_schedule_panel = plan;
@@ -1440,6 +1447,22 @@ void ui_dashboard_update_time(void)
             } else {
                 sync_calendar_selection();
             }
+        }
+    }
+
+    // The legacy footer is covered by navigation; keep failures visible here.
+    if (lbl_connection_status) {
+        char sync[96] = {}, data[64] = {}, status[192];
+        web_sync_copy_diagnostic(sync, sizeof(sync));
+        bridge_copy_last_error(data, sizeof(data));
+        bool data_ok = !strcmp(data, "OK") || (!strcmp(data, "Fetching...") && bridge_has_data());
+        bool healthy = wifi_is_connected() && !strcmp(sync, "Sync:OK") && data_ok;
+        if (healthy) lv_obj_add_flag(lbl_connection_status, LV_OBJ_FLAG_HIDDEN);
+        else {
+            snprintf(status, sizeof(status), "WiFi:%s %s Data:%s",
+                     wifi_is_connected() ? "OK" : "--", sync, data);
+            lv_label_set_text(lbl_connection_status, status);
+            lv_obj_clear_flag(lbl_connection_status, LV_OBJ_FLAG_HIDDEN);
         }
     }
 

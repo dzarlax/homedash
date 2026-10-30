@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "lvgl_lock.h"
 #include "esp_err.h"
 #include "esp_lcd_types.h"
 #include "touch.h"
@@ -70,7 +71,5 @@
 #endif
 
 esp_err_t lvgl_port_init(esp_lcd_panel_handle_t lcd_handle, esp_lcd_touch_handle_t tp_handle);
-bool lvgl_port_lock(int timeout_ms);
-void lvgl_port_unlock(void);
 bool lvgl_port_notify_rgb_vsync(void);
 void lvgl_port_task_start(void);
