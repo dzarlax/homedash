@@ -283,6 +283,10 @@ int main()
                     return 10;
                 }
             }
+            photo_frame_confirm_timezone("Europe/Belgrade", "CET-1CEST,M3.5.0,M10.5.0/3");
+            for (int i = 0; i < 200; ++i) { lv_tick_inc(20); lv_timer_handler(); SDL_Delay(5); }
+            const char *photo_shot = std::getenv("HOMEDASH_SIM_PHOTO_SCREENSHOT_PATH");
+            if (photo_shot) { lv_refr_now(display); render(); if (!save_screenshot(photo_shot)) return 11; }
             std::puts("[SIM] Photo frame remains open through locale changes");
         }
         std::puts("[SIM] Locale cycle, provider data preservation, static labels, and Serbian glyphs OK");

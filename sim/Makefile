@@ -34,7 +34,7 @@ CXX_OBJS = $(patsubst %.cpp,$(BUILD)/%.o,$(notdir $(CXX_SRCS)))
 
 # Font + cJSON C sources
 FONT_SRCS = $(SRC_DIR)/fonts/font_montserrat_16_cyr.c $(SRC_DIR)/fonts/font_montserrat_24_cyr.c
-FONT_OBJS = $(BUILD)/font_montserrat_16_cyr.o $(BUILD)/font_montserrat_24_cyr.o
+FONT_OBJS = $(BUILD)/font_montserrat_16_cyr.o $(BUILD)/font_montserrat_24_cyr.o $(BUILD)/font_photo_clock_80.o
 CJSON_OBJ = $(BUILD)/cJSON.o
 
 TARGET = homedash_sim
@@ -82,6 +82,10 @@ $(BUILD)/font_montserrat_16_cyr.o: $(SRC_DIR)/fonts/font_montserrat_16_cyr.c
 	$(CC) $(CFLAGS_C) $(INCLUDES) -c $< -o $@
 
 $(BUILD)/font_montserrat_24_cyr.o: $(SRC_DIR)/fonts/font_montserrat_24_cyr.c
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS_C) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/font_photo_clock_80.o: $(SRC_DIR)/fonts/font_photo_clock_80.c
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS_C) $(INCLUDES) -c $< -o $@
 

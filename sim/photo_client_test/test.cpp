@@ -10,7 +10,7 @@
 
 struct mock_http { esp_http_client_config_t config; };
 struct scenario {
-  std::string body, encoding, range, url, api_key, accept_encoding, device_id;
+  std::string body, encoding, range, url, api_key, accept_encoding, device_id, content_type = "application/octet-stream";
   int open_error = 0, header_error = 0;
   int stall_after = 1, stalls = 0;
   int status = 200, chunked = 0, read_calls = 0, timeout = 0, cancel_after_reads = 0;
@@ -31,7 +31,7 @@ esp_err_t web_identity_set_http_header(esp_http_client_handle_t client) { return
 esp_err_t esp_http_client_open(esp_http_client_handle_t, int) { if(s.cancel_on_open) s.cancel=true; if(s.deadline_on_open) s.now=60000000; return s.open_error; }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h) {
   auto send=[&](const char *k,const std::string &v) { if (!v.empty()) { esp_http_client_event_t e={HTTP_EVENT_ON_HEADER,h->config.user_data,k,v.c_str()}; h->config.event_handler(&e); } };
-  send("Content-Encoding",s.encoding); send("Content-Range",s.range);
+  send("Content-Encoding",s.encoding); send("Content-Range",s.range); send("Content-Type",s.content_type);
   if(s.cancel_on_headers) s.cancel=true; if(s.deadline_on_headers) s.now=60000000;
   return s.header_error ? s.header_error : s.length;
 }
@@ -162,5 +162,24 @@ int main() {
   expect("diagnose pixel recovery",diagnose_pixels(),PHOTO_OK);
   assert_true("pixel recovery diagnostic", !strcmp(diagnostic.stage,"ok") && diagnostic.received==PHOTO_FRAME_BYTES && diagnostic.transport_error==0);
   assert_true("pixel guards after failures",buf.front()==0x5a && buf.back()==0x5a);
+  const std::string block = "{\"kind\":\"weather\",\"render_id\":\""+id+"\",\"sha256\":\""+std::string(64,'b')+"\",\"x\":752,\"y\":36,\"width\":236,\"height\":200,\"expires_at\":1793363400}";
+  const std::string context = "{\"version\":1,\"revision\":\""+id+"\",\"server_time\":1793361600,\"clock\":{\"enabled\":true,\"locale\":\"ru\",\"timezone\":\"Europe/Belgrade\",\"clock_format\":\"24h\"},\"blocks\":["+block+"]}";
+  photo_context c{}; auto get_context = [&]() { return photo_fetch_context("https://bridge","secret",&c,cancelled,nullptr); };
+  reset(context); expect("valid context",get_context(),PHOTO_OK);
+  assert_true("context request and metadata",s.url=="https://bridge/api/photo-frame/v1/context" && c.count==1 && c.blocks[0].width==236 && c.server_time==1793361600);
+  struct mutation context_mutations[] = {{"context version","\"version\":1","\"version\":2"},{"bad kind","weather","unknown"},{"bad width","\"width\":236","\"width\":237"},{"bad position","\"x\":752","\"x\":900"},{"bad expiry","1793363400","1.5"},{"bad locale","\"ru\"","\"fr\""},{"bad hash","aaaaaaaa","AAAAAAAA"}};
+  for (auto x:context_mutations) { auto b=context; replace(b,x.from,x.to); reset(b); expect(x.name,get_context(),PHOTO_FAILED); }
+  auto duplicate_key=context; replace(duplicate_key,"\"version\":1", "\"version\":1,\"version\":1"); reset(duplicate_key); expect("duplicate JSON key",get_context(),PHOTO_FAILED);
+  auto duplicate=context; replace(duplicate,block,block+","+block); reset(duplicate); expect("duplicate kind",get_context(),PHOTO_FAILED);
+  reset(context); s.status=404; expect("old bridge",get_context(),PHOTO_NOT_FOUND);
+  reset(context); s.cancel_on_final=true; expect("context cancellation",get_context(),PHOTO_CANCELLED);
+  reset(context); s.length=4097; expect("context size cap",get_context(),PHOTO_FAILED);
+  photo_overlay_block b{}; strcpy(b.id,id.c_str()); b.width=2; b.height=2;
+  std::string card(8,'x'); strcpy(b.sha256,hex((const unsigned char*)card.data(),card.size()).c_str());
+  uint8_t cardbuf[8]; auto get_card = [&]() {return photo_fetch_overlay("https://bridge","secret",&b,cardbuf,cancelled,nullptr);};
+  reset(card); expect("card data",get_card(),PHOTO_OK); assert_true("card route",s.url=="https://bridge/api/photo-frame/v1/overlays/"+id);
+  reset(card); s.length=7; expect("card length",get_card(),PHOTO_FAILED);
+  reset(card); s.content_type="text/plain"; expect("card type",get_card(),PHOTO_FAILED);
+  reset(card); b.sha256[0] = b.sha256[0]=='a'?'b':'a'; expect("card hash",get_card(),PHOTO_FAILED);
   std::printf("%d cases, %d failures\n",cases,failures); return failures?1:0;
 }

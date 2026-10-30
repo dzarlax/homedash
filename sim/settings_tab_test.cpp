@@ -65,8 +65,6 @@ int main() {
     reveal_password_cb(nullptr); recovery_toggle_cb(nullptr); masked(); assert(stops == 1);
     ui_dashboard_update_recovery(nullptr,nullptr,nullptr); masked(); assert(!ui_recovery_password[0]);
     reveal_password_cb(nullptr); masked();
-    ui_dashboard_update_photo_status("Авто: после простоя без касаний");
-    assert(!lv_label_get_text(home_photo_status)[0]);
     bridge_data_t data = {}; data.sensors_valid = true; data.sensor_count = 4;
     const char *values[] = {"unavailable", "unknown", "NaN", ""};
     for (int i=0;i<4;++i) {

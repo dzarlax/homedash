@@ -106,7 +106,7 @@
 #define LV_FONT_UNSCII_8  0
 #define LV_FONT_UNSCII_16 0
 
-#define LV_FONT_CUSTOM_DECLARE  LV_FONT_DECLARE(font_montserrat_16_cyr); LV_FONT_DECLARE(font_montserrat_24_cyr);
+#define LV_FONT_CUSTOM_DECLARE  LV_FONT_DECLARE(font_montserrat_16_cyr); LV_FONT_DECLARE(font_montserrat_24_cyr); LV_FONT_DECLARE(font_photo_clock_80);
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 
 #define LV_USE_FONT_PLACEHOLDER 1

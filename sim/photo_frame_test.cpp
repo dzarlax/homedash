@@ -49,6 +49,9 @@ photo_result photo_fetch_pixels(const char *, const char *,
                                 photo_cancel_fn, void *, photo_diagnostic *) {
   return PHOTO_FAILED;
 }
+photo_result photo_fetch_context(const char *, const char *, photo_context *, photo_cancel_fn, void *, photo_diagnostic *) { return PHOTO_FAILED; }
+photo_result photo_fetch_overlay(const char *, const char *, const photo_overlay_block *, uint8_t *, photo_cancel_fn, void *, photo_diagnostic *) { return PHOTO_FAILED; }
+static void complete_context_404() { if (busy && job.kind == CONTEXT) { job.result = PHOTO_NOT_FOUND; job.complete = true; busy = false; tick(nullptr); } }
 static void complete_manifest() {
   assert(busy.load() && job.kind == MANIFEST);
   job.manifest = {};
@@ -102,6 +105,7 @@ int main() {
   assert(!strcmp(lv_label_get_text(settings_password), "****************"));
   assert(overlay && displayed >= 0);
   assert(shown_id[0] == 'a');
+  complete_context_404();
   // A press is consumed through release, including a drag and hold.
   pointer(indev, true, 10, 10);
   assert(!overlay);
@@ -139,7 +143,6 @@ int main() {
   complete_frame(PHOTO_FAILED);
   job.diagnostic = {"deadline", 200, 0, 8192};
   tick(nullptr);
-  assert(strstr(lv_label_get_text(home_photo_status), "Фото: deadline 8192/1228800 H200 E0"));
   assert(!overlay);
   assert(retry_after > fake_seconds);
   fake_seconds += 60;
@@ -183,6 +186,7 @@ int main() {
   manifest_ready = true;
   assert(allocate_buffers());
   publish(0, current_manifest.frames[0].id);
+  context_poll = fake_seconds;
   fake_seconds += 14;
   tick(nullptr);
   assert(!busy.load());
@@ -225,32 +229,30 @@ int main() {
   assert(!buffers[0] && !buffers[1]);
   assert(!manifest_ready && !overlay);
   photo_frame_resume_after_ota();
-  // The actual Home button starts without waiting for the idle threshold.
+  // The web command starts without waiting for the idle threshold.
   fake_seconds = 5000;
   last_touch = fake_seconds;
   last_poll = fake_seconds;
   retry_after = fake_seconds + 300;
   lv_tileview_set_tile(tileview, nav_tiles[2], LV_ANIM_OFF);
   lv_obj_update_layout(lv_screen_active());
-  pointer(indev, true, 740, 20);
-  pointer(indev, false, 740, 20);
+  assert(photo_frame_start_now());
   assert(busy.load() && job.kind == MANIFEST);
   assert(manual_requested);
-  assert(strstr(lv_label_get_text(home_photo_status), "Получаем"));
   complete_manifest();
   tick(nullptr);
   assert(busy.load() && job.kind == FRAME);
   complete_frame();
   tick(nullptr);
   assert(overlay);
+  complete_context_404();
   assert(lv_tileview_get_tile_active(tileview) == nav_tiles[2]);
   // Dismiss over the launch button: the same gesture cannot relaunch it.
   pointer(indev, true, 740, 20);
   pointer(indev, false, 740, 20);
   assert(!overlay && !manual_requested && !busy.load());
-  // A failed manual attempt keeps its diagnostic visible on the Home page.
-  pointer(indev, true, 740, 20);
-  pointer(indev, false, 740, 20);
+  // A failed manual attempt leaves photo mode closed.
+  assert(photo_frame_start_now());
   assert(busy.load() && job.kind == MANIFEST);
   job.result = PHOTO_FAILED;
   job.diagnostic = {"HTTP", 401, 0};
@@ -258,7 +260,6 @@ int main() {
   busy = false;
   tick(nullptr);
   assert(!overlay);
-  assert(strstr(lv_label_get_text(home_photo_status), "Список фото: HTTP / HTTP 401 / err 0"));
   photo_frame_touch(true);
   photo_frame_touch(false);
   // A touch while a manual frame is loading cancels the force override too.
@@ -277,18 +278,18 @@ int main() {
   job.manifest.count = 0;
   tick(nullptr);
   assert(!overlay && !manual_requested);
-  assert(strstr(lv_label_get_text(home_photo_status), "выключена"));
   paused = true;
   assert(!photo_frame_start_now());
-  assert(strstr(lv_label_get_text(home_photo_status), "обновления"));
   paused = false;
   // Keep the current image visible throughout manifest refresh, frame loading
   // and a failed next-frame transfer; replace its source only on success.
   assert(photo_frame_start_now());
   complete_manifest(); tick(nullptr); complete_frame(); tick(nullptr);
+  complete_context_404();
   lv_obj_t *visible_overlay = overlay;
   assert(visible_overlay && shown_id[0] == 'a');
   fake_seconds += 60; tick(nullptr);
+  complete_context_404();
   assert(busy.load() && job.kind == MANIFEST && overlay == visible_overlay);
   complete_manifest(); tick(nullptr);
   assert(busy.load() && job.kind == FRAME && overlay == visible_overlay);
@@ -298,6 +299,50 @@ int main() {
   assert(busy.load() && job.kind == FRAME && overlay == visible_overlay);
   complete_frame(); tick(nullptr);
   assert(overlay == visible_overlay && shown_id[0] == 'b');
+  // Context changes do not reset the current image or slide time; card failures
+  // retain non-expired pixels, and expiry uses monotonic server time.
+  complete_context_404();
+  int64_t slide_before = last_slide;
+  context_poll = 0; tick(nullptr); assert(job.kind == CONTEXT);
+  web_preferences_t clock_prefs = {}; web_preferences_defaults(&clock_prefs);
+  clock_prefs.revision = 1; strcpy(clock_prefs.settings_url, "https://example.test/settings/");
+  ui_dashboard_apply_preferences(&clock_prefs);
+  photo_frame_confirm_timezone(clock_prefs.timezone, clock_prefs.posix_timezone);
+  job.context = {}; job.context.server_time = 1793361600; job.context.count = 1;
+  job.context.clock_enabled = true; strcpy(job.context.locale, "en");
+  strcpy(job.context.timezone, clock_prefs.timezone); strcpy(job.context.clock_format, "12h");
+  strcpy(job.context.blocks[0].kind, "weather"); memset(job.context.blocks[0].id, 'c', 64);
+  job.context.blocks[0].width = 10; job.context.blocks[0].height = 10;
+  job.context.blocks[0].expires_at = 1793361700;
+  job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+  assert(job.kind == CARD && job.staging); memset(job.staging, 0, 200);
+  job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+  assert(cards[0].pixels && overlay == visible_overlay && last_slide == slide_before);
+  assert(clock_label && date_label && !lv_obj_has_flag(clock_label, LV_OBJ_FLAG_HIDDEN));
+  assert(strstr(lv_label_get_text(clock_label), "AM") || strstr(lv_label_get_text(clock_label), "PM"));
+  assert(lv_obj_get_width(clock_label) < 468);
+  strcpy(confirmed_timezone, "UTC"); render_clock();
+  assert(lv_obj_has_flag(clock_label, LV_OBJ_FLAG_HIDDEN));
+  photo_frame_confirm_timezone(clock_prefs.timezone, clock_prefs.posix_timezone); render_clock();
+  assert(!lv_obj_has_flag(clock_label, LV_OBJ_FLAG_HIDDEN));
+  context_poll = 0; tick(nullptr); assert(job.kind == CONTEXT);
+  job.result = PHOTO_FAILED; job.complete = true; busy = false; tick(nullptr);
+  assert(cards[0].pixels && overlay == visible_overlay && last_slide == slide_before);
+  fake_seconds += 101; last_ready = fake_seconds; last_poll = fake_seconds; last_slide = fake_seconds; context_poll = fake_seconds;
+  tick(nullptr); assert(!cards[0].pixels && overlay == visible_overlay);
+  // A context delayed in transit must not extend an already expired card.
+  context_poll = 0; tick(nullptr); assert(job.kind == CONTEXT);
+  job.context = {}; job.context.server_time = 1793362000; job.context.count = 1;
+  strcpy(job.context.blocks[0].kind, "event"); memset(job.context.blocks[0].id, 'd', 64);
+  job.context.blocks[0].width = 10; job.context.blocks[0].height = 10;
+  job.context.blocks[0].expires_at = 1793362005;
+  fake_seconds += 6; job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+  assert(!cards[1].pixels && (!busy || job.kind != CARD));
+  // A disabled photo frame retains buffers while the cancelled worker owns them.
+  busy = true; web_photos_enabled = false; tick(nullptr);
+  assert(buffers[0] && buffers[1]);
+  busy = false; tick(nullptr); assert(!buffers[0] && !buffers[1]);
+
   std::puts("PASS: idle, gestures, stale completion, reader, failure recovery, "
             "slide scheduling, disabled state, OTA acknowledgement and manual button");
 }
