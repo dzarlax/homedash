@@ -49,8 +49,8 @@ photo_result photo_fetch_pixels(const char *, const char *,
                                 photo_cancel_fn, void *, photo_diagnostic *) {
   return PHOTO_FAILED;
 }
-photo_result photo_fetch_context(const char *, const char *, photo_context *, photo_cancel_fn, void *, photo_diagnostic *) { return PHOTO_FAILED; }
-photo_result photo_fetch_overlay(const char *, const char *, const photo_overlay_block *, uint8_t *, photo_cancel_fn, void *, photo_diagnostic *) { return PHOTO_FAILED; }
+photo_result photo_fetch_context(const char *, const char *, photo_context *, photo_cancel_fn, void *, photo_diagnostic *, int, const char *) { return PHOTO_FAILED; }
+photo_result photo_fetch_overlay(const char *, const char *, const photo_overlay_block *, uint8_t *, photo_cancel_fn, void *, photo_diagnostic *, int) { return PHOTO_FAILED; }
 static void complete_context_404() { if (busy && job.kind == CONTEXT) { job.result = PHOTO_NOT_FOUND; job.complete = true; busy = false; tick(nullptr); } }
 static void complete_manifest() {
   assert(busy.load() && job.kind == MANIFEST);
@@ -197,6 +197,7 @@ int main() {
   complete_frame();
   tick(nullptr);
   assert(shown_id[0] == 'b');
+  complete_context_404();
   // A one-frame playlist must not download the same frame again.
   current_manifest.frames[0] = current_manifest.frames[1];
   current_manifest.count = 1;
@@ -319,6 +320,14 @@ int main() {
   job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
   assert(cards[0].pixels && overlay == visible_overlay && last_slide == slide_before);
   assert(clock_label && date_label && !lv_obj_has_flag(clock_label, LV_OBJ_FLAG_HIDDEN));
+  for (int i = 0; i < 4; ++i) {
+    assert(clock_shadow[i] && date_shadow[i]);
+    assert(lv_obj_get_index(clock_shadow[i]) < lv_obj_get_index(clock_label));
+    assert(!strcmp(lv_label_get_text(clock_shadow[i]), lv_label_get_text(clock_label)));
+  }
+  lv_obj_update_layout(overlay);
+  assert(lv_obj_get_x(clock_shadow[0]) == 37 && lv_obj_get_x(clock_shadow[1]) == 39);
+  assert(lv_obj_get_y(clock_shadow[2]) == 474 && lv_obj_get_y(clock_shadow[3]) == 476);
   assert(strstr(lv_label_get_text(clock_label), "AM") || strstr(lv_label_get_text(clock_label), "PM"));
   assert(lv_obj_get_width(clock_label) < 468);
   strcpy(confirmed_timezone, "UTC"); render_clock();
@@ -338,6 +347,56 @@ int main() {
   job.context.blocks[0].expires_at = 1793362005;
   fake_seconds += 6; job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
   assert(!cards[1].pixels && (!busy || job.kind != CARD));
+  // Late frame-bound metadata and pixels cannot affect the successor frame.
+  if (busy) { job.result = PHOTO_CANCELLED; job.complete = true; busy = false; tick(nullptr); }
+  current_manifest.overlay_context_version = 2; context_poll = 0; tick(nullptr);
+  assert(busy && job.kind == CONTEXT); char previous[65]; strcpy(previous, shown_id);
+  char next[65]; memset(next, 'e', 64); next[64] = 0;
+  publish(displayed == 0 ? 1 : 0, next); int64_t changed_at = last_slide;
+  job.context = {}; job.context.clock_enabled = true; strcpy(job.context.tone, "dark");
+  job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+  assert(!context_known && !cards[0].pixels && !strcmp(shown_id, next) && last_slide == changed_at);
+  if (busy) { job.result = PHOTO_CANCELLED; job.complete = true; busy = false; tick(nullptr); }
+  context_poll = esp_timer_get_time() / 1000000; wanted = {}; context_known = true;
+  wanted.count = 1; strcpy(wanted.blocks[0].kind, "weather"); memset(wanted.blocks[0].id, 'f', 64);
+  wanted.blocks[0].width = 10; wanted.blocks[0].height = 10; wanted.blocks[0].expires_at = server_now() + 100;
+  uint8_t *late = (uint8_t *)malloc(200); assert(submit(CARD, 0, nullptr, &wanted.blocks[0], late));
+  strcpy(job.bound_frame, previous); job.result = PHOTO_OK; job.complete = true; busy = false;
+  card_retry = esp_timer_get_time() / 1000000 + 60; tick(nullptr);
+  assert(!cards[0].pixels && last_slide == changed_at);
+  // Protocol changes on the same slide clear old cards and immediately fetch
+  // using the negotiated version, without moving the slide deadline.
+  current_manifest.frames[0] = {}; strcpy(current_manifest.frames[0].id, next);
+  current_manifest.count = 1; current_manifest.overlay_context_version = 1;
+  for (int target_version : {2, 1}) {
+    context_known = true; strcpy(wanted.tone, "dark");
+    cards[0].pixels = (uint8_t *)malloc(200); assert(cards[0].pixels);
+    context_poll = esp_timer_get_time() / 1000000;
+    assert(submit(MANIFEST, 0, nullptr)); complete_manifest();
+    job.manifest.count = 1; strcpy(job.manifest.frames[0].id, next);
+    job.manifest.overlay_context_version = target_version;
+    int64_t unchanged_slide = last_slide; tick(nullptr);
+    assert(!context_known && !cards[0].pixels && last_slide == unchanged_slide && overlay);
+    assert(busy && job.kind == CONTEXT && job.version == target_version);
+    job.result = PHOTO_NOT_FOUND; job.complete = true; busy = false; tick(nullptr);
+  }
+  // An in-flight v1 context is invalidated immediately on network handoff.
+  current_manifest.overlay_context_version = 1;
+  assert(submit(CONTEXT, 0, nullptr)); unsigned old_network_epoch = job.generation;
+  photo_frame_update_network("new-bridge", "new-key"); tick(nullptr);
+  assert(!context_known && !manifest_ready && overlay && busy && !strcmp(shown_id, next));
+  assert(epoch != old_network_epoch);
+  job.context = {}; job.context.clock_enabled = true; job.result = PHOTO_OK;
+  job.complete = true; busy = false; tick(nullptr);
+  assert(!context_known && overlay && busy && job.kind == MANIFEST);
+  // The v2 manifest lacks the retained photo: no context or card can be fetched.
+  complete_manifest(); job.manifest.overlay_context_version = 2; tick(nullptr);
+  assert(manifest_ready && !shown_in_manifest() && !context_known && overlay && !busy);
+  context_poll = 0; tick(nullptr); assert(!busy && !cards[0].pixels);
+  // Once this same photo is included by the negotiated Bridge, v2 context is allowed.
+  current_manifest.frames[0] = {}; strcpy(current_manifest.frames[0].id, next);
+  tick(nullptr); assert(busy && job.kind == CONTEXT && job.version == 2 && !strcmp(job.bound_frame, next));
+  job.result = PHOTO_NOT_FOUND; job.complete = true; busy = false; tick(nullptr);
   // A disabled photo frame retains buffers while the cancelled worker owns them.
   busy = true; web_photos_enabled = false; tick(nullptr);
   assert(buffers[0] && buffers[1]);

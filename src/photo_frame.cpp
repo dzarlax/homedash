@@ -27,7 +27,8 @@ struct job_data {
   job_kind kind;
   unsigned generation;
   int64_t request_start_us;
-  int buffer;
+  int buffer, version;
+  char bound_frame[65];
   photo_frame_entry frame;
   photo_manifest manifest;
   photo_context context;
@@ -59,13 +60,20 @@ static bool web_timing_enabled = false;
 static char shown_id[65] = {};
 static photo_manifest current_manifest = {};
 static bool manifest_ready = false;
+static bool shown_in_manifest() {
+  if (!manifest_ready || !shown_id[0]) return false;
+  for (int i = 0; i < current_manifest.count; ++i)
+    if (!strcmp(shown_id, current_manifest.frames[i].id)) return true;
+  return false;
+}
 struct card_state { photo_overlay_block meta; uint8_t *pixels; lv_image_dsc_t desc; lv_obj_t *object; };
-static card_state cards[2] = {};
+static card_state cards[3] = {};
 static photo_context wanted = {};
 static int64_t server_anchor = 0, monotonic_anchor = 0, context_poll = 0, card_retry = 0;
 static bool context_known = false;
 static char confirmed_timezone[40] = {}, confirmed_posix_timezone[48] = {};
 static lv_obj_t *clock_label = nullptr, *date_label = nullptr;
+static lv_obj_t *clock_shadow[4] = {}, *date_shadow[4] = {};
 static int last_minute = -1;
 static int64_t server_now() { return server_anchor + (esp_timer_get_time() - monotonic_anchor) / 1000000; }
 static void clear_card(int i) {
@@ -73,17 +81,26 @@ static void clear_card(int i) {
   if (cards[i].pixels) { lv_image_cache_drop(&cards[i].desc); free(cards[i].pixels); }
   cards[i] = {};
 }
-static int slot(const char *kind) { return !strcmp(kind, "weather") ? 0 : 1; }
+static int slot(const char *kind) { return !strcmp(kind, "weather") ? 0 : !strcmp(kind, "event") ? 1 : 2; }
 static void clear_context() {
-  for (int i = 0; i < 2; ++i) clear_card(i);
+  for (int i = 0; i < 3; ++i) clear_card(i);
   if (clock_label) lv_obj_delete(clock_label);
   if (date_label) lv_obj_delete(date_label);
+  for (int i = 0; i < 4; ++i) {
+    if (clock_shadow[i]) lv_obj_delete(clock_shadow[i]);
+    if (date_shadow[i]) lv_obj_delete(date_shadow[i]);
+    clock_shadow[i] = date_shadow[i] = nullptr;
+  }
   clock_label = date_label = nullptr; last_minute = -1; context_known = false; wanted = {};
 }
 static void render_clock() {
   if (!overlay || !context_known || !wanted.clock_enabled || !ui_dashboard_timezone_matches(wanted.timezone, confirmed_posix_timezone) || strcmp(confirmed_timezone, wanted.timezone)) {
     if (clock_label) lv_obj_add_flag(clock_label, LV_OBJ_FLAG_HIDDEN);
     if (date_label) lv_obj_add_flag(date_label, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < 4; ++i) {
+      if (clock_shadow[i]) lv_obj_add_flag(clock_shadow[i], LV_OBJ_FLAG_HIDDEN);
+      if (date_shadow[i]) lv_obj_add_flag(date_shadow[i], LV_OBJ_FLAG_HIDDEN);
+    }
     return;
   }
   time_t wall = time(nullptr);
@@ -95,9 +112,21 @@ static void render_clock() {
   if (wall < 1577836800 || !localtime_r(&wall, &t)) {
     if (clock_label) lv_obj_add_flag(clock_label, LV_OBJ_FLAG_HIDDEN);
     if (date_label) lv_obj_add_flag(date_label, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < 4; ++i) {
+      if (clock_shadow[i]) lv_obj_add_flag(clock_shadow[i], LV_OBJ_FLAG_HIDDEN);
+      if (date_shadow[i]) lv_obj_add_flag(date_shadow[i], LV_OBJ_FLAG_HIDDEN);
+    }
     return;
   }
   if (!clock_label) {
+    static const int dx[4] = {-1, 1, 0, 0}, dy[4] = {0, 0, -1, 1};
+    for (int i = 0; i < 4; ++i) {
+      clock_shadow[i] = lv_label_create(overlay); date_shadow[i] = lv_label_create(overlay);
+      lv_obj_set_style_text_font(clock_shadow[i], &font_photo_clock_80, 0);
+      lv_obj_set_style_text_font(date_shadow[i], &font_montserrat_16_cyr, 0);
+      lv_obj_set_pos(clock_shadow[i], 38 + dx[i], 475 + dy[i]);
+      lv_obj_set_pos(date_shadow[i], 40 + dx[i], 558 + dy[i]);
+    }
     clock_label = lv_label_create(overlay); date_label = lv_label_create(overlay);
     lv_obj_set_style_text_color(clock_label, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_color(date_label, lv_color_hex(0xffffff), 0);
@@ -106,17 +135,25 @@ static void render_clock() {
     lv_obj_set_pos(clock_label, 38, 475); lv_obj_set_pos(date_label, 40, 558);
     last_minute = -1;
   }
+  bool dark = wanted.version == 2 && !strcmp(wanted.tone, "dark");
+  lv_obj_set_style_text_color(clock_label, lv_color_hex(dark ? 0x111111 : 0xffffff), 0);
+  lv_obj_set_style_text_color(date_label, lv_color_hex(dark ? 0x111111 : 0xffffff), 0);
+  for (int i = 0; i < 4; ++i) {
+    lv_obj_set_style_text_color(clock_shadow[i], lv_color_hex(dark ? 0xffffff : 0x000000), 0);
+    lv_obj_set_style_text_color(date_shadow[i], lv_color_hex(dark ? 0xffffff : 0x000000), 0);
+    lv_obj_clear_flag(clock_shadow[i], LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(date_shadow[i], LV_OBJ_FLAG_HIDDEN);
+  }
   lv_obj_clear_flag(clock_label, LV_OBJ_FLAG_HIDDEN); lv_obj_clear_flag(date_label, LV_OBJ_FLAG_HIDDEN);
   int minute = t.tm_yday * 1440 + t.tm_hour * 60 + t.tm_min;
   if (last_minute == minute) return;
   last_minute = minute; char buf[128];
   if (!strcmp(wanted.clock_format, "12h")) snprintf(buf, sizeof(buf), "%d:%02d %s", t.tm_hour % 12 ? t.tm_hour % 12 : 12, t.tm_min, t.tm_hour >= 12 ? "PM" : "AM");
   else snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
-  lv_label_set_text(clock_label, buf);
+  lv_label_set_text(clock_label, buf); for (auto *label : clock_shadow) lv_label_set_text(label, buf);
   static const char *months[][12] = {{"января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"},{"January","February","March","April","May","June","July","August","September","October","November","December"},{"januar","februar","mart","april","maj","jun","jul","avgust","septembar","oktobar","novembar","decembar"}};
   int language = !strcmp(wanted.locale,"en") ? 1 : !strcmp(wanted.locale,"sr-Latn") ? 2 : 0;
   static const char *days[][7] = {{"воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"},{"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"},{"nedelja","ponedeljak","utorak","sreda","četvrtak","petak","subota"}};
-  snprintf(buf, sizeof(buf), "%s, %d %s", days[language][t.tm_wday], t.tm_mday, months[language][t.tm_mon]); lv_label_set_text(date_label, buf);
+  snprintf(buf, sizeof(buf), "%s, %d %s", days[language][t.tm_wday], t.tm_mday, months[language][t.tm_mon]); lv_label_set_text(date_label, buf); for (auto *label : date_shadow) lv_label_set_text(label, buf);
 }
 
 // UI-owned override; cleared by the next physical touch or OTA handoff.
@@ -171,6 +208,7 @@ static bool allocate_buffers() {
   return true;
 }
 static void publish(int index, const char *id) {
+  if (strcmp(shown_id, id)) { clear_context(); context_poll = 0; card_retry = 0; }
   if (!overlay) {
     ui_dashboard_hide_sensitive();
     overlay = lv_obj_create(lv_screen_active());
@@ -211,9 +249,9 @@ static void worker_task(void *) {
         result = photo_fetch_manifest(bridge_url, bridge_key, &local.manifest,
                                       cancelled, &local.generation, &local.diagnostic);
       else if (local.kind == CONTEXT)
-        result = photo_fetch_context(bridge_url, bridge_key, &local.context, cancelled, &local.generation, &local.diagnostic);
+        result = photo_fetch_context(bridge_url, bridge_key, &local.context, cancelled, &local.generation, &local.diagnostic, local.version, local.bound_frame);
       else if (local.kind == CARD)
-        result = photo_fetch_overlay(bridge_url, bridge_key, &local.card, local.staging, cancelled, &local.generation, &local.diagnostic);
+        result = photo_fetch_overlay(bridge_url, bridge_key, &local.card, local.staging, cancelled, &local.generation, &local.diagnostic, local.version);
       else if (local.kind == FRAME)
         result = photo_fetch_pixels(bridge_url, bridge_key, &local.frame,
                                     buffers[local.buffer], cancelled,
@@ -241,6 +279,8 @@ static bool submit(job_kind kind, int index, const photo_frame_entry *entry, con
   job.generation = epoch.load();
   job.request_start_us = esp_timer_get_time();
   job.buffer = index;
+  job.version = current_manifest.overlay_context_version == 2 ? 2 : 1;
+  if (kind == CONTEXT || kind == CARD) strncpy(job.bound_frame, shown_id, 64);
   if (entry)
     job.frame = *entry;
   if (card) job.card = *card;
@@ -260,21 +300,19 @@ static void retry() {
 static void tick(lv_timer_t *) {
   if (!mutex || paused.load())
     return;
-  if (!busy.load()) {
-    xSemaphoreTake(mutex, portMAX_DELAY);
-    if (network_update_pending) {
+  xSemaphoreTake(mutex, portMAX_DELAY);
+  if (network_update_pending) {
+    clear_context(); context_poll = 0; manifest_ready = false;
+    if (!busy.load()) {
       strncpy(bridge_url, pending_bridge_url, sizeof(bridge_url) - 1);
       strncpy(bridge_key, pending_bridge_key, sizeof(bridge_key) - 1);
       bridge_url[sizeof(bridge_url) - 1] = 0;
       bridge_key[sizeof(bridge_key) - 1] = 0;
       network_update_pending = false;
-      manifest_ready = false;
-      last_ready = 0;
-      last_poll = 0;
-      retry_after = 0;
+      last_ready = 0; last_poll = 0; retry_after = 0;
     }
-    xSemaphoreGive(mutex);
   }
+  xSemaphoreGive(mutex);
   if (!web_photos_enabled) {
     xSemaphoreTake(mutex, portMAX_DELAY);
     if (job.complete) { if (job.staging) free(job.staging); job = {}; }
@@ -298,7 +336,7 @@ static void tick(lv_timer_t *) {
   bool eligible = !physical_down && !ui_dashboard_reader_open() &&
                   (manual_requested || t - last_touch >= idle_seconds);
   if (completed && result.generation == epoch.load()) {
-    if (result.kind == CONTEXT) {
+    if (result.kind == CONTEXT && overlay && shown_in_manifest() && !strcmp(result.bound_frame, shown_id)) {
       if (result.result == PHOTO_NOT_FOUND) clear_context();
       else if (result.result == PHOTO_OK && overlay) {
         // A delayed response cannot move the estimated server clock backwards.
@@ -307,10 +345,10 @@ static void tick(lv_timer_t *) {
         server_anchor = anchor; monotonic_anchor = esp_timer_get_time();
         bool clock_changed = !context_known || wanted.clock_enabled != result.context.clock_enabled ||
           strcmp(wanted.locale, result.context.locale) || strcmp(wanted.clock_format, result.context.clock_format) ||
-          strcmp(wanted.timezone, result.context.timezone);
+          strcmp(wanted.timezone, result.context.timezone) || strcmp(wanted.tone, result.context.tone);
         wanted = result.context; context_known = true;
         if (clock_changed) last_minute = -1;
-        bool present[2] = {};
+        bool present[3] = {};
         for (int i = 0; i < wanted.count; ++i) {
           int n = slot(wanted.blocks[i].kind); present[n] = true;
           if (wanted.blocks[i].expires_at <= server_now()) clear_card(n);
@@ -318,9 +356,9 @@ static void tick(lv_timer_t *) {
             cards[n].meta = wanted.blocks[i]; lv_obj_set_pos(cards[n].object, cards[n].meta.x, cards[n].meta.y);
           }
         }
-        for (int i = 0; i < 2; ++i) if (!present[i]) clear_card(i);
+        for (int i = 0; i < 3; ++i) if (!present[i]) clear_card(i);
       }
-    } else if (result.kind == CARD) {
+    } else if (result.kind == CARD && overlay && shown_in_manifest() && !strcmp(result.bound_frame, shown_id)) {
       if (result.result != PHOTO_OK) card_retry = esp_timer_get_time() / 1000000 + 60;
       int n = slot(result.card.kind);
       if (result.result == PHOTO_OK && overlay && context_known && result.card.expires_at > server_now()) {
@@ -335,13 +373,21 @@ static void tick(lv_timer_t *) {
           lv_obj_set_size(cards[n].object, result.card.width, result.card.height);
           // Two ARGB corner strips per card fit within the 320 KiB pixel budget
           // even if both cards and a maximum replacement are live together.
-          lv_obj_set_style_radius(cards[n].object, 3, 0);
-          lv_obj_set_style_clip_corner(cards[n].object, true, 0);
+          if (result.version == 1) {
+            lv_obj_set_style_radius(cards[n].object, 3, 0);
+            lv_obj_set_style_clip_corner(cards[n].object, true, 0);
+          }
           lv_obj_clear_flag(cards[n].object, LV_OBJ_FLAG_SCROLLABLE);
           lv_obj_clear_flag(cards[n].object, LV_OBJ_FLAG_CLICKABLE);
           lv_obj_t *card_image = lv_image_create(cards[n].object);
           lv_image_set_src(card_image, &d); lv_obj_set_pos(card_image, 0, 0);
           lv_obj_set_pos(cards[n].object, result.card.x, result.card.y);
+          for (int i = 0; i < 4; ++i) {
+            if (clock_shadow[i]) lv_obj_move_foreground(clock_shadow[i]);
+            if (date_shadow[i]) lv_obj_move_foreground(date_shadow[i]);
+          }
+          if (clock_label) lv_obj_move_foreground(clock_label);
+          if (date_label) lv_obj_move_foreground(date_label);
         }
       }
     } else
@@ -365,8 +411,10 @@ static void tick(lv_timer_t *) {
         last_ready = t;
         retry_step = 0;
         retry_after = 0;
+        if (current_manifest.overlay_context_version != m.overlay_context_version) { clear_context(); context_poll = 0; }
         current_manifest = m;
         manifest_ready = true;
+        if (overlay && !shown_in_manifest()) { clear_context(); context_poll = 0; }
       } else {
         manifest_ready = false;
         retry();
@@ -384,13 +432,13 @@ static void tick(lv_timer_t *) {
   }
   if (completed && result.staging) free(result.staging);
   if (overlay && context_known) {
-    for (int i = 0; i < 2; ++i) if (cards[i].pixels && cards[i].meta.expires_at <= server_now()) clear_card(i);
+    for (int i = 0; i < 3; ++i) if (cards[i].pixels && cards[i].meta.expires_at <= server_now()) clear_card(i);
     render_clock();
   }
-  if (overlay && !busy.load() && (context_poll == 0 || esp_timer_get_time() / 1000000 - context_poll >= 60)) {
+  if (overlay && shown_in_manifest() && !busy.load() && (context_poll == 0 || esp_timer_get_time() / 1000000 - context_poll >= 60)) {
     if (submit(CONTEXT, 0, nullptr)) context_poll = esp_timer_get_time() / 1000000;
   }
-  if (overlay && context_known && !busy.load() && esp_timer_get_time() / 1000000 >= card_retry) {
+  if (overlay && shown_in_manifest() && context_known && !busy.load() && esp_timer_get_time() / 1000000 >= card_retry) {
     for (int i = 0; i < wanted.count; ++i) {
       photo_overlay_block &b = wanted.blocks[i]; int n = slot(b.kind);
       if (b.expires_at <= server_now() || (cards[n].pixels && !strcmp(cards[n].meta.id, b.id) && !strcmp(cards[n].meta.sha256, b.sha256) && cards[n].meta.width == b.width && cards[n].meta.height == b.height)) continue;

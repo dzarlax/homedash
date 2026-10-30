@@ -2,6 +2,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "photo_frame_client.h"
+#include "cJSON.h"
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
@@ -62,6 +63,7 @@ photo_result photo_fetch_manifest(const char *, const char *, photo_manifest *m,
   m->idle = 300;
   m->interval = 60;
   m->stale = 900;
+  if (std::getenv("HOMEDASH_SIM_ADAPTIVE_JSON")) m->overlay_context_version = 2;
   m->count = 2;
   memset(m->frames[0].id, 'a', 64);
   memset(m->frames[1].id, 'b', 64);
@@ -89,13 +91,38 @@ photo_result photo_fetch_pixels(const char *, const char *,
   }
   return PHOTO_OK;
 }
-photo_result photo_fetch_context(const char *, const char *, photo_context *out, photo_cancel_fn cancel, void *arg, photo_diagnostic *) {
+photo_result photo_fetch_context(const char *, const char *, photo_context *out, photo_cancel_fn cancel, void *arg, photo_diagnostic *, int version, const char *frame_id) {
   if (cancel(arg)) return PHOTO_CANCELLED;
   *out = {}; out->server_time = time(nullptr); out->clock_enabled = true;
   const char *locale = std::getenv("HOMEDASH_SIM_PHOTO_LOCALE");
   const char *format = std::getenv("HOMEDASH_SIM_PHOTO_CLOCK_FORMAT");
   snprintf(out->locale, sizeof(out->locale), "%s", locale ? locale : "en");
   strcpy(out->timezone, "Europe/Belgrade"); snprintf(out->clock_format, sizeof(out->clock_format), "%s", format ? format : "24h");
+  if (version == 2) {
+    const char *path = std::getenv("HOMEDASH_SIM_ADAPTIVE_JSON");
+    FILE *file = path ? std::fopen(path, "rb") : nullptr; if (!file) return PHOTO_FAILED;
+    char json[4096]; size_t len = std::fread(json, 1, sizeof(json)-1, file); std::fclose(file); json[len] = 0;
+    cJSON *root = cJSON_Parse(json); if (!root) return PHOTO_FAILED;
+    out->version = 2; snprintf(out->frame_id, sizeof(out->frame_id), "%s", frame_id);
+    const char *kinds[] = {"weather", "event", "clock"};
+    for (const char *kind : kinds) {
+      cJSON *entry = cJSON_GetObjectItemCaseSensitive(root, kind);
+      if (!entry) { cJSON_Delete(root); return PHOTO_FAILED; }
+      if (!strcmp(kind, "clock")) {
+        cJSON *tone = cJSON_GetObjectItemCaseSensitive(entry, "tone");
+        if (!cJSON_IsString(tone)) { cJSON_Delete(root); return PHOTO_FAILED; }
+        snprintf(out->tone, sizeof(out->tone), "%s", tone->valuestring);
+        out->backdrop = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(entry, "backdrop"));
+        if (!out->backdrop) continue;
+      }
+      photo_overlay_block &b = out->blocks[out->count++]; snprintf(b.kind, sizeof(b.kind), "%s", kind);
+      memset(b.id, 'a' + out->count, 64); memset(b.sha256, 'd' + out->count, 64);
+      b.x = cJSON_GetObjectItemCaseSensitive(entry, "x")->valueint; b.y = cJSON_GetObjectItemCaseSensitive(entry, "y")->valueint;
+      b.width = cJSON_GetObjectItemCaseSensitive(entry, "width")->valueint; b.height = cJSON_GetObjectItemCaseSensitive(entry, "height")->valueint;
+      b.expires_at = out->server_time + 300;
+    }
+    cJSON_Delete(root); return PHOTO_OK;
+  }
   out->count = 2;
   strcpy(out->blocks[0].kind, "weather"); memset(out->blocks[0].id, 'a', 64);
   out->blocks[0].x = 752; out->blocks[0].y = 36; out->blocks[0].width = 236; out->blocks[0].height = 200; out->blocks[0].expires_at = out->server_time + 1800;
@@ -103,9 +130,9 @@ photo_result photo_fetch_context(const char *, const char *, photo_context *out,
   out->blocks[1].x = 506; out->blocks[1].y = 450; out->blocks[1].width = 480; out->blocks[1].height = 112; out->blocks[1].expires_at = out->server_time + 300;
   return PHOTO_OK;
 }
-photo_result photo_fetch_overlay(const char *, const char *, const photo_overlay_block *block, uint8_t *data, photo_cancel_fn cancel, void *arg, photo_diagnostic *) {
+photo_result photo_fetch_overlay(const char *, const char *, const photo_overlay_block *block, uint8_t *data, photo_cancel_fn cancel, void *arg, photo_diagnostic *, int) {
   if (cancel(arg)) return PHOTO_CANCELLED;
-  const char *path = std::getenv(!strcmp(block->kind, "weather") ? "HOMEDASH_SIM_WEATHER_RGB565" : "HOMEDASH_SIM_EVENT_RGB565");
+  const char *path = std::getenv(!strcmp(block->kind, "weather") ? "HOMEDASH_SIM_WEATHER_RGB565" : !strcmp(block->kind, "event") ? "HOMEDASH_SIM_EVENT_RGB565" : "HOMEDASH_SIM_CLOCK_RGB565");
   if (path) {
     FILE *file = std::fopen(path, "rb"); if (!file) return PHOTO_FAILED;
     size_t bytes = (size_t)block->width * block->height * 2;
