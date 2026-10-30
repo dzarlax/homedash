@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <vector>
+#include "action_feedback.h"
 
 #define BRIDGE_MAX_TASKS   8
 #define BRIDGE_MAX_NEWS    5
@@ -158,3 +159,14 @@ bool bridge_copy_calendar_data(bridge_cal_data_t *out);
 bool bridge_copy_last_error(char *out, size_t out_size);
 const char *bridge_get_url(void);
 const char *bridge_get_api_key(void);
+
+struct bridge_action_result_t {
+    action_phase_t phase;
+    action_error_t error;
+    bool has_observation;
+    action_observation_t observation;
+};
+bridge_action_result_t bridge_action_request(const char *entity, const char *action, float temperature, const char *mode);
+bridge_action_result_t bridge_action_read(const char *entity, int timeout_ms = 3000);
+// Caller checks the active request ID under LVGL lock before merging a read.
+void bridge_action_merge_observation(const action_observation_t &observation);

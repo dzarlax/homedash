@@ -15,6 +15,9 @@
 #endif
 
 #include "bridge.h"
+#include "action_feedback_runtime.h"
+#include "../src/action_feedback.cpp"
+#include "esp_timer.h"
 
 // Physical LCD backlight is controlled through the Waveshare IO extension.
 // Keep the desktop simulator window visible while night mode is exercised.
@@ -173,6 +176,64 @@ void request_calendar_date(int year, int month, int day)
     set_calendar_for_date(year, month, day);
 }
 
+static ActionFeedback sim_actions;
+static action_error_t sim_next_action_error = ACTION_ERROR_NONE;
+static bool sim_wifi_connected = true;
+static bool sim_clock_enabled = false;
+static int64_t sim_clock_us = 0;
+static unsigned sim_action_count = 0;
+void sim_feedback_reset() { sim_actions = ActionFeedback(); sim_next_action_error = ACTION_ERROR_NONE; sim_wifi_connected = true; sim_clock_enabled = true; sim_clock_us = 0; sim_action_count = 0; }
+void sim_feedback_advance(unsigned ms) { sim_clock_us += (int64_t)ms * 1000; }
+void sim_feedback_next_error(action_error_t error) { sim_next_action_error = error; }
+void sim_feedback_wifi(bool connected) { sim_wifi_connected = connected; }
+unsigned sim_feedback_count() { return sim_action_count; }
+uint32_t request_home_action(const char *entity, const char *action, float target, const char *mode)
+{
+    uint64_t now = (uint64_t)(esp_timer_get_time()/1000);
+    uint32_t id = sim_actions.begin(entity, action, target, mode, now);
+    if (id) {
+        ++sim_action_count;
+        action_error_t err = !sim_wifi_connected ? ACTION_ERROR_OFFLINE : sim_next_action_error;
+        sim_next_action_error = ACTION_ERROR_NONE;
+        if (err != ACTION_ERROR_NONE) sim_actions.result(id, ACTION_NOT_SENT, now, err);
+        else sim_actions.dispatch(id, now);
+    }
+    return id;
+}
+const action_record_t *home_action_find(const char *entity) { return sim_actions.find(entity); }
+void home_action_tick(void) { sim_actions.tick((uint64_t)(esp_timer_get_time()/1000)); }
+void sim_action_result(uint32_t id, action_phase_t phase, action_error_t error) { sim_actions.result(id, phase, (uint64_t)(esp_timer_get_time()/1000), error); }
+bool sim_action_observe(uint32_t id, const action_observation_t &o) { return sim_actions.observe(id, o, (uint64_t)(esp_timer_get_time()/1000)); }
+
+extern "C" void sim_set_action_feedback_fixtures(void)
+{
+    uint32_t id = request_home_action("light.svet_u_divana", "turn_off", 0, nullptr);
+    sim_action_result(id, ACTION_ACCEPTED, ACTION_ERROR_NONE);
+    id = request_home_action("light.svet_u_okna", "turn_on", 0, nullptr);
+    sim_action_result(id, ACTION_UNKNOWN, ACTION_ERROR_TIMEOUT);
+    id = request_home_action("light.office_light", "turn_off", 0, nullptr);
+    sim_action_result(id, ACTION_REJECTED, ACTION_ERROR_UNAUTHORIZED);
+    id = request_home_action("light.bedroom_light", "turn_on", 0, nullptr);
+    sim_action_result(id, ACTION_NOT_SENT, ACTION_ERROR_OFFLINE);
+    uint32_t climate_id = request_home_action("climate.gostinaia", "set_temperature", 21, nullptr);
+    if (getenv("HOMEDASH_SIM_ACTION_SUCCESS")) {
+        action_observation_t observed = {};
+        snprintf(observed.entity, sizeof(observed.entity), "%s", "light.svet_u_divana");
+        snprintf(observed.kind, sizeof(observed.kind), "%s", "light");
+        snprintf(observed.state, sizeof(observed.state), "%s", "off"); observed.available = true;
+        const action_record_t *sofa = sim_actions.find(observed.entity);
+        if (sofa) sim_action_observe(sofa->id, observed);
+        for (int i=0; i<s_data.light_count; ++i)
+            if (!strcmp(s_data.lights[i].entity_id, observed.entity)) s_data.lights[i].on = false;
+        sim_action_result(climate_id, ACTION_ACCEPTED, ACTION_ERROR_NONE);
+        snprintf(observed.entity, sizeof(observed.entity), "%s", "climate.gostinaia");
+        snprintf(observed.kind, sizeof(observed.kind), "%s", "climate");
+        snprintf(observed.state, sizeof(observed.state), "%s", "cool"); observed.has_target = true; observed.target = 21;
+        sim_action_observe(climate_id, observed);
+        if (s_data.climate_count) s_data.climates[0].target_temp = 21;
+    }
+}
+
 void request_light_toggle(const char *entity_id)
 {
     printf("[SIM] Toggle light requested: %s\n", entity_id ? entity_id : "");
@@ -205,6 +266,7 @@ void request_ota_check(void)
 }
 
 void request_recovery_ap(void) {}
+void request_stop_recovery_ap(void) {}
 
 void bridge_init(const char *, const char *) {}
 void bridge_fetch_and_update(void) {}
@@ -247,7 +309,7 @@ bool bridge_copy_last_error(char *out, size_t out_size)
     return true;
 }
 
-bool wifi_is_connected(void) { return true; }
+bool wifi_is_connected(void) { return sim_wifi_connected; }
 
 extern "C" {
 uint32_t esp_get_free_heap_size(void) { return 128u * 1024u; }
@@ -256,6 +318,7 @@ void *heap_caps_malloc(size_t size, uint32_t) { return malloc(size); }
 #ifndef PHOTO_FRAME_TEST
 int64_t esp_timer_get_time(void)
 {
+    if (sim_clock_enabled) return sim_clock_us;
 #if defined(_WIN32)
     static ULONGLONG start_ms = GetTickCount64();
     return (int64_t)(GetTickCount64() - start_ms) * 1000LL;
@@ -269,3 +332,12 @@ int64_t esp_timer_get_time(void)
 }
 
 // The desktop dashboard has no photo worker; the dedicated test supplies it.
+
+// Isolated reproduction of long provider labels and missing sensor values.
+extern "C" void sim_set_settings_test_fixtures(void)
+{
+    s_data.sensors[0] = {"Sensibo AirQ CO2 in the living room", "1088", "ppm"};
+    s_data.sensors[1] = {"CO2 Sensor study extended friendly name", "769", "ppm"};
+    s_data.sensors[2] = {"Fine particulate matter PM2.5", "4.0", "µg/m³"};
+    s_data.sensors[3] = {"Environment relative humidity long name", "unavailable", "%"};
+}

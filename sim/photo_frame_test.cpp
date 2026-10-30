@@ -93,7 +93,13 @@ int main() {
   tick(nullptr);
   assert(job.kind == FRAME);
   complete_frame();
+  ui_dashboard_open_settings();
+  ui_dashboard_update_recovery("HomeDash-Setup-DEMO", "TestOnlyPassword", "http://192.168.4.1");
+  reveal_password_cb(nullptr);
+  assert(settings_reveal_until_us);
   tick(nullptr);
+  assert(!settings_reveal_until_us);
+  assert(!strcmp(lv_label_get_text(settings_password), "****************"));
   assert(overlay && displayed >= 0);
   assert(shown_id[0] == 'a');
   // A press is consumed through release, including a drag and hold.

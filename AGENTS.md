@@ -6,13 +6,14 @@ Guidance for Codex and other coding agents working in this repository.
 
 HomeDash firmware for the Waveshare ESP32-S3-Touch-LCD-7B, built with PlatformIO and ESP-IDF. The display talks only to ESP32 Bridge; WiFi credentials, Bridge URL, and API key live in NVS, not in the firmware binary.
 
-The active UI is a 3-page LVGL tileview:
+The active UI is a 4-page LVGL tileview:
 
 1. Weather, Home Assistant calendar, and transport arrivals.
 2. Health metrics, Todoist tasks, and news.
-3. Home Assistant light controls, room air sensors, and manual OTA update.
+3. Home Assistant light controls, room air sensors, and photo-frame quick action.
+4. Bridge web-panel QR/link, explicit local recovery controls, and manual OTA update.
 
-AgentDeck was removed in May 2026. Do not reintroduce the fourth page, WebSocket client, mDNS dependency, or `agentdeck` source files unless the user explicitly asks for that feature again.
+AgentDeck was removed in May 2026. Do not reintroduce AgentDeck, its WebSocket client, mDNS dependency, or `agentdeck` source files unless the user explicitly asks for that feature again.
 
 ## Commands
 
@@ -74,7 +75,7 @@ The Bridge OTA configuration should point at:
 OTA_GITHUB_REPO=dzarlax/homedash
 ```
 
-The device checks OTA through Bridge, not by embedding a firmware URL directly in the display firmware. The display checks automatically on its interval, and the user can trigger a manual check from Page 3.
+The device checks OTA through Bridge, not by embedding a firmware URL directly in the display firmware. The display checks automatically on its interval, and the user can trigger a manual check from Settings.
 
 ## Generated Files
 
@@ -90,7 +91,7 @@ Do not edit build output or generated dependency output directly:
 ## Key Files
 
 - `src/main.cpp` - app entry, network task, OTA polling, Bridge polling.
-- `src/ui_dashboard.cpp` - all three UI pages and refresh logic.
+- `src/ui_dashboard.cpp` - all four UI pages and refresh logic.
 - `src/bridge.cpp` - Bridge API client.
 - `src/ota.cpp` - OTA check and firmware download through Bridge.
 - `src/config.h` - firmware version and compile-time config.
@@ -130,3 +131,9 @@ Registering both callbacks caused flicker in prior testing.
 `v1.0.2` was pushed during the AgentDeck removal release attempt, but its GitHub Actions release build failed before creating a GitHub Release. It should not affect OTA because Bridge follows the latest published GitHub Release.
 
 `v1.0.3` is the successful AgentDeck removal OTA release. It contains `firmware.bin` and pins the PlatformIO ESP-IDF platform for reproducible CI builds.
+
+## Settings privacy
+
+Keep recovery credentials off the Home page and out of QR codes. Settings navigation must never start the AP. Start/stop requests go through the network queue; missing NVS may still start recovery automatically and open Settings. Mask the temporary password until a tap, then hide it after 15 seconds, on navigation/scroll, screen off, photo mode, locale changes or AP stop. Leaving Settings must not interrupt an active phone setup session.
+
+Local UI checks: `make -C sim test-settings-tab test-home test-photo-frame test-localization`.

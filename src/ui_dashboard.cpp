@@ -3,6 +3,7 @@
 #include "config.h"
 #include "wifi_manager.h"
 #include "bridge.h"
+#include "action_feedback_runtime.h"
 #include "web_sync.h"
 #include "weather_icons.h"
 #include "ui_strings.h"
@@ -13,6 +14,8 @@
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <cmath>
+#include <cctype>
 #include <cstring>
 
 // Declared in main.cpp
@@ -21,6 +24,7 @@ extern void request_light_toggle(const char *entity_id);
 extern void request_climate_action(const char *entity_id, const char *action, float temperature, const char *mode);
 extern void request_ota_check(void);
 extern void request_recovery_ap(void);
+extern void request_stop_recovery_ap(void);
 extern void wavesahre_rgb_lcd_bl_on(void);
 extern void wavesahre_rgb_lcd_bl_off(void);
 
@@ -66,7 +70,9 @@ static lv_obj_t *lbl_air_detail = NULL;
 
 // Tileview
 static lv_obj_t *tileview = NULL;
-static lv_obj_t *nav_tiles[3] = {};
+static constexpr int PAGE_COUNT = 4;
+static constexpr int SETTINGS_PAGE = 3;
+static lv_obj_t *nav_tiles[PAGE_COUNT] = {};
 static lv_obj_t *week_day_buttons[7] = {};
 static lv_obj_t *week_day_labels[7] = {};
 static lv_calendar_date_t week_dates[7] = {};
@@ -78,7 +84,22 @@ static const char *reader_text_fallback_key = NULL;
 static const char *reader_meta_format_key = NULL;
 static char reader_meta_value[64] = {};
 static lv_obj_t *home_photo_status = NULL;
-static lv_obj_t *home_settings_link = NULL;
+static lv_obj_t *settings_web_link = NULL;
+static lv_obj_t *settings_qr = NULL;
+static lv_obj_t *settings_ap_name = NULL;
+static lv_obj_t *settings_ap_url = NULL;
+static lv_obj_t *settings_ap_help = NULL;
+static lv_obj_t *settings_password = NULL;
+static lv_obj_t *settings_reveal_btn = NULL;
+static lv_obj_t *settings_reveal_label = NULL;
+static lv_obj_t *settings_ap_button_label = NULL;
+static lv_obj_t *settings_device_status = NULL;
+static char settings_qr_url[192] = {};
+static int64_t settings_reveal_until_us = 0;
+static void refresh_settings(void);
+static void settings_privacy_tick(lv_timer_t *);
+static void home_feedback_tick(lv_timer_t *);
+static bool settings_is_active(void);
 static lv_obj_t *page1_schedule_panel = NULL;
 static lv_obj_t *page1_overview_panel = NULL;
 static lv_obj_t *page2_health_panel = NULL;
@@ -172,6 +193,8 @@ static const room_def_t ROOMS[MAX_ROOMS] = {
 
 static lv_obj_t *room_light_btns[MAX_ROOMS][MAX_ROOM_LIGHTS] = {};
 static lv_obj_t *room_light_labels[MAX_ROOMS][MAX_ROOM_LIGHTS] = {};
+static lv_obj_t *room_light_feedback[MAX_ROOMS][MAX_ROOM_LIGHTS] = {};
+static bool room_light_on[MAX_ROOMS][MAX_ROOM_LIGHTS] = {};
 static char room_light_entity_ids[MAX_ROOMS][MAX_ROOM_LIGHTS][48] = {};
 // Sensor cards per room (value + name labels)
 static lv_obj_t *room_sensor_cards[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
@@ -183,9 +206,16 @@ static lv_obj_t *home_climate_name = NULL;
 static lv_obj_t *home_climate_current = NULL;
 static lv_obj_t *home_climate_target = NULL;
 static lv_obj_t *home_climate_power = NULL;
+static lv_obj_t *home_climate_feedback = NULL;
+static lv_obj_t *home_climate_selected = NULL;
+static lv_obj_t *home_climate_temp_buttons[2] = {};
+static bool home_temp_proposed = false;
+static uint64_t home_temp_due_ms = 0;
+static float home_temp_confirmed = 22.0f;
 static lv_obj_t *home_climate_mode_btns[4] = {};
 static float home_climate_target_value = 22.0f;
 static bool home_climate_on = false;
+static bool home_climate_known = false;
 static char home_climate_entity[48] = {};
 
 #define COLOR_NOW lv_color_hex(0xC96A5A)
@@ -357,6 +387,7 @@ static bool clock_is_night(const struct tm &t) {
 }
 
 static void set_screen_off(bool off) {
+    if (off) ui_dashboard_hide_sensitive();
     if (ui_screen_off == off) return;
     ui_screen_off = off;
     if (off) wavesahre_rgb_lcd_bl_off();
@@ -418,6 +449,11 @@ static void timer_transport_cb(lv_timer_t *timer)
 {
     (void)timer;
     if (bridge_copy_data(&ui_bridge_snapshot)) ui_dashboard_update_transport(&ui_bridge_snapshot.transport);
+}
+
+void ui_dashboard_refresh_ha(void)
+{
+    if (bridge_copy_data(&ui_bridge_snapshot)) ui_dashboard_update_ha(&ui_bridge_snapshot);
 }
 
 static void timer_bridge_cb(lv_timer_t *timer)
@@ -595,6 +631,7 @@ static void sync_calendar_selection(void)
 
 static void create_page2(lv_obj_t *tile);
 static void create_page3(lv_obj_t *tile);
+static void create_settings_page(lv_obj_t *tile);
 static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h);
 
 static void nav_click_cb(lv_event_t *e)
@@ -602,12 +639,15 @@ static void nav_click_cb(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED || !tileview) return;
 
     lv_obj_t *target = (lv_obj_t *)lv_event_get_user_data(e);
-    if (target) lv_tileview_set_tile(tileview, target, LV_ANIM_ON);
+    if (target) {
+        ui_dashboard_hide_sensitive();
+        lv_tileview_set_tile(tileview, target, LV_ANIM_ON);
+    }
 }
 
 static void create_bottom_nav(lv_obj_t *page, int active_index)
 {
-    static const char *names[] = {"День", "Сводка", "Дом"};
+    static const char *names[] = {"День", "Сводка", "Дом", "Настройки"};
     lv_obj_t *nav = lv_obj_create(page);
     lv_obj_remove_style_all(nav);
     lv_obj_set_size(nav, 1024, 60);
@@ -618,10 +658,10 @@ static void create_bottom_nav(lv_obj_t *page, int active_index)
     lv_obj_set_style_border_width(nav, 1, 0);
     lv_obj_set_style_border_color(nav, COLOR_ACCENT, 0);
     lv_obj_clear_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < PAGE_COUNT; i++) {
         lv_obj_t *btn = lv_btn_create(nav);
-        lv_obj_set_size(btn, 280, 44);
-        lv_obj_set_pos(btn, 18 + i * 300, 8);
+        lv_obj_set_size(btn, 216, 44);
+        lv_obj_set_pos(btn, 16 + i * 228, 8);
         lv_obj_set_style_radius(btn, 10, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         bool selected = i == active_index;
@@ -630,7 +670,7 @@ static void create_bottom_nav(lv_obj_t *page, int active_index)
         lv_obj_t *label = lv_label_create(btn);
         lv_obj_set_style_text_color(label, selected ? COLOR_HIGHLIGHT : COLOR_TEXT_DIM, 0);
         lv_obj_set_style_text_font(label, &font_montserrat_16_cyr, 0);
-        lv_obj_set_width(label, 250);
+        lv_obj_set_width(label, 200);
         set_static_ui_label(label, names[i]);
         lv_obj_center(label);
         lv_obj_add_event_cb(btn, nav_click_cb, LV_EVENT_CLICKED, nav_tiles[i]);
@@ -677,6 +717,7 @@ static void open_reader(const char *section_key, const char *title, const char *
                         const char *text_fallback_key = nullptr)
 {
     if (!title || !title[0]) return;
+    ui_dashboard_hide_sensitive();
     if (reader_overlay) lv_obj_delete(reader_overlay);
     reader_body = reader_text_label = reader_meta_label = nullptr;
     reader_text_fallback_key = text_fallback_key;
@@ -956,10 +997,14 @@ void ui_dashboard_create(void)
 
     lv_obj_t *tile1 = lv_tileview_add_tile(tileview, 0, 0, (lv_dir_t)LV_DIR_RIGHT);
     lv_obj_t *tile2 = lv_tileview_add_tile(tileview, 1, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
-    lv_obj_t *tile3 = lv_tileview_add_tile(tileview, 2, 0, (lv_dir_t)LV_DIR_LEFT);
+    lv_obj_t *tile3 = lv_tileview_add_tile(tileview, 2, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
+    lv_obj_t *tile4 = lv_tileview_add_tile(tileview, 3, 0, (lv_dir_t)LV_DIR_LEFT);
+    lv_obj_add_event_cb(tileview, [](lv_event_t *) { ui_dashboard_hide_sensitive(); }, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(tileview, [](lv_event_t *) { ui_dashboard_hide_sensitive(); }, LV_EVENT_SCROLL_BEGIN, nullptr);
     nav_tiles[0] = tile1;
     nav_tiles[1] = tile2;
     nav_tiles[2] = tile3;
+    nav_tiles[3] = tile4;
 
     // ===== PAGE 1: Main Dashboard (existing) =====
     lv_obj_t *page = tile1;
@@ -1219,14 +1264,18 @@ void ui_dashboard_create(void)
 
     // ===== PAGE 3: HA Control =====
     create_page3(tile3);
+    create_settings_page(tile4);
 
     create_day_planner(tile1);
     create_bottom_nav(tile1, 0);
     create_bottom_nav(tile2, 1);
     create_bottom_nav(tile3, 2);
+    create_bottom_nav(tile4, 3);
 
     // Timers
     lv_timer_create(timer_time_cb, 5000, NULL);
+    lv_timer_create(settings_privacy_tick, 250, NULL);
+    lv_timer_create(home_feedback_tick, 100, NULL);
     lv_timer_create(timer_weather_cb, 10000, NULL);
     lv_timer_create(timer_ha_cal_cb, 5000, NULL);
     lv_timer_create(timer_transport_cb, 5000, NULL);
@@ -1580,6 +1629,7 @@ void ui_dashboard_update_transport(const bridge_transport_t *data)
 
 void ui_dashboard_update_time(void)
 {
+    refresh_settings();
     time_t now;
     time(&now);
     struct tm tinfo;
@@ -2036,7 +2086,8 @@ static void light_btn_cb(lv_event_t *e)
     int light = LIGHT_CB_LIGHT(id);
     if (room >= 0 && room < MAX_ROOMS && light >= 0 && light < MAX_ROOM_LIGHTS &&
         room_light_entity_ids[room][light][0]) {
-        request_light_toggle(room_light_entity_ids[room][light]);
+        request_home_action(room_light_entity_ids[room][light], room_light_on[room][light] ? "turn_off" : "turn_on", 0, NULL);
+        home_feedback_tick(NULL);
     }
 }
 
@@ -2052,16 +2103,13 @@ static void photo_frame_btn_cb(lv_event_t *e)
     photo_frame_start_now();
 }
 
-static void recovery_title_cb(lv_event_t *e)
-{
-    if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) request_recovery_ap();
-}
-
 static void climate_power_btn_cb(lv_event_t *e)
 {
     (void)e;
     if (!home_climate_entity[0]) return;
-    request_climate_action(home_climate_entity, home_climate_on ? "turn_off" : "turn_on", 0, NULL);
+    home_temp_proposed = false;
+    request_home_action(home_climate_entity, home_climate_on ? "turn_off" : "turn_on", 0, NULL);
+    home_feedback_tick(NULL);
 }
 
 static void climate_temperature_btn_cb(lv_event_t *e)
@@ -2071,14 +2119,262 @@ static void climate_temperature_btn_cb(lv_event_t *e)
     home_climate_target_value += delta;
     if (home_climate_target_value < 16) home_climate_target_value = 16;
     if (home_climate_target_value > 30) home_climate_target_value = 30;
-    request_climate_action(home_climate_entity, "set_temperature", home_climate_target_value, NULL);
+    home_temp_proposed = true;
+    home_temp_due_ms = (uint64_t)(esp_timer_get_time() / 1000) + 500;
+    if (!wifi_is_connected()) { home_temp_proposed = false; request_home_action(home_climate_entity, "set_temperature", home_climate_target_value, NULL); }
+    home_feedback_tick(NULL);
 }
 
 static void climate_mode_btn_cb(lv_event_t *e)
 {
     const char *mode = (const char *)lv_event_get_user_data(e);
     if (!home_climate_entity[0] || !mode) return;
-    request_climate_action(home_climate_entity, "set_hvac_mode", 0, mode);
+    home_temp_proposed = false;
+    request_home_action(home_climate_entity, "set_hvac_mode", 0, mode);
+    home_feedback_tick(NULL);
+}
+
+static bool feedback_blocks(const action_record_t *r)
+{
+    return r && (r->in_flight || (!r->timed_out && (r->phase == ACTION_PENDING || r->phase == ACTION_ACCEPTED || r->phase == ACTION_UNKNOWN)));
+}
+static const char *feedback_text(const action_record_t *r)
+{
+    if (!r) return "";
+    if (r->timed_out && (r->phase == ACTION_PENDING || r->phase == ACTION_ACCEPTED || r->phase == ACTION_UNKNOWN)) return ui_text("Нет подтверждения");
+    switch (r->phase) {
+    case ACTION_PENDING: return ui_text("Отправка...");
+    case ACTION_ACCEPTED: return ui_text("Проверка...");
+    case ACTION_UNKNOWN: return r->error == ACTION_ERROR_TIMEOUT ? ui_text("Таймаут. Исход неизвестен") : ui_text("Исход неизвестен");
+    case ACTION_CONFIRMED: return ui_text("Подтверждено");
+    case ACTION_UPDATED: return ui_text("Состояние обновлено");
+    case ACTION_REJECTED:
+        if (r->error == ACTION_ERROR_UNAUTHORIZED) return ui_text("Нет доступа. Отклонено");
+        if (r->error == ACTION_ERROR_UNSUPPORTED) return ui_text("Не поддерживается");
+        return ui_text("Отклонено");
+    case ACTION_NOT_SENT:
+        if (r->error == ACTION_ERROR_OFFLINE) return ui_text("Нет Wi-Fi. Не отправлено");
+        if (r->error == ACTION_ERROR_QUEUE_FULL) return ui_text("Очередь занята. Не отправлено");
+        if (r->error == ACTION_ERROR_TIMEOUT || r->timed_out) return ui_text("Время истекло. Не отправлено");
+        return ui_text("Не отправлено");
+    default: return "";
+    }
+}
+static lv_color_t feedback_color(const action_record_t *record)
+{
+    if (!record) return COLOR_TEXT_DIM;
+    if (record->phase == ACTION_REJECTED || record->phase == ACTION_NOT_SENT) return COLOR_BAD;
+    if (record->phase == ACTION_CONFIRMED || record->phase == ACTION_UPDATED) return COLOR_GOOD;
+    return COLOR_WARN;
+}
+static void home_feedback_tick(lv_timer_t *)
+{
+    uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
+    home_action_tick();
+    if (home_temp_proposed && now >= home_temp_due_ms) {
+        home_temp_proposed = false;
+        request_home_action(home_climate_entity, "set_temperature", home_climate_target_value, NULL);
+    }
+    for (int r = 0; r < MAX_ROOMS; r++) for (int l = 0; l < MAX_ROOM_LIGHTS; l++) {
+        if (!room_light_btns[r][l] || !room_light_feedback[r][l]) continue;
+        const action_record_t *record = home_action_find(room_light_entity_ids[r][l]);
+        lv_label_set_text(room_light_feedback[r][l], feedback_text(record));
+        lv_obj_set_style_text_color(room_light_feedback[r][l], feedback_color(record), 0);
+        if (feedback_blocks(record)) lv_obj_add_state(room_light_btns[r][l], LV_STATE_DISABLED);
+        else lv_obj_remove_state(room_light_btns[r][l], LV_STATE_DISABLED);
+    }
+    const action_record_t *record = home_action_find(home_climate_entity);
+    bool selecting = home_temp_proposed || (record && !strcmp(record->action, "set_temperature") && feedback_blocks(record));
+    if (!home_temp_proposed && !feedback_blocks(record)) home_climate_target_value = home_temp_confirmed;
+    if (home_climate_selected) {
+        char text[48] = {};
+        if (selecting) snprintf(text, sizeof(text), ui_text("Выбрано %.0f C"), home_climate_target_value);
+        lv_label_set_text(home_climate_selected, text);
+    }
+    if (home_climate_feedback) {
+        lv_label_set_text(home_climate_feedback, record ? feedback_text(record) : (home_climate_known ? "" : ui_text("Нет данных")));
+        lv_obj_set_style_text_color(home_climate_feedback, feedback_color(record), 0);
+    }
+    bool disabled = !home_climate_known || feedback_blocks(record);
+    if (home_climate_power) { if (disabled) lv_obj_add_state(home_climate_power, LV_STATE_DISABLED); else lv_obj_remove_state(home_climate_power, LV_STATE_DISABLED); }
+    for (int i=0;i<4;i++) if (home_climate_mode_btns[i]) { if (disabled) lv_obj_add_state(home_climate_mode_btns[i], LV_STATE_DISABLED); else lv_obj_remove_state(home_climate_mode_btns[i], LV_STATE_DISABLED); }
+    for (int i=0;i<2;i++) if (home_climate_temp_buttons[i]) { if (disabled) lv_obj_add_state(home_climate_temp_buttons[i], LV_STATE_DISABLED); else lv_obj_remove_state(home_climate_temp_buttons[i], LV_STATE_DISABLED); }
+}
+
+static bool settings_is_active(void)
+{
+    return tileview && nav_tiles[SETTINGS_PAGE] &&
+           lv_tileview_get_tile_active(tileview) == nav_tiles[SETTINGS_PAGE];
+}
+
+void ui_dashboard_hide_sensitive(void)
+{
+    settings_reveal_until_us = 0;
+    if (settings_password) lv_label_set_text(settings_password, "****************");
+    if (settings_reveal_label) set_static_ui_label(settings_reveal_label, "Показать пароль");
+}
+
+static void settings_privacy_tick(lv_timer_t *)
+{
+    if (settings_reveal_until_us && (!settings_is_active() || ui_screen_off ||
+        esp_timer_get_time() >= settings_reveal_until_us)) ui_dashboard_hide_sensitive();
+}
+
+void ui_dashboard_open_settings(void)
+{
+    ui_dashboard_hide_sensitive();
+    if (tileview && nav_tiles[SETTINGS_PAGE])
+        lv_tileview_set_tile(tileview, nav_tiles[SETTINGS_PAGE], LV_ANIM_OFF);
+}
+
+// The Bridge contract supplies only a public settings URL and optional device ID.
+// Fail closed on credentials, fragments or unrelated query parameters before
+// putting anything into a scannable QR or a visible label.
+static bool public_settings_url(const char *url)
+{
+    if (!url || strlen(url) >= sizeof(settings_qr_url)) return false;
+    const char *host = !strncmp(url, "https://", 8) ? url + 8 :
+                       !strncmp(url, "http://", 7) ? url + 7 : nullptr;
+    if (!host || !*host || strchr(host, '@') || strchr(host, '#')) return false;
+    const char *path = strchr(host, '/');
+    if (!path || path == host || strncmp(path, "/settings/", 10)) return false;
+    for (const char *p = url; *p; ++p) if (static_cast<unsigned char>(*p) <= 0x20) return false;
+    const char *query = path + 10;
+    if (!*query) return true;
+    if (strncmp(query, "?device_id=", 11)) return false;
+    query += 11;
+    if (strlen(query) != 32) return false;
+    for (; *query; ++query) if (!((*query >= '0' && *query <= '9') || (*query >= 'a' && *query <= 'f'))) return false;
+    return true;
+}
+
+static void refresh_settings(void)
+{
+    if (!settings_web_link) return;
+    const char *url = ui_has_preferences ? ui_preferences.settings_url : "";
+    if (public_settings_url(url)) {
+        lv_label_set_text(settings_web_link, url);
+        if (strcmp(settings_qr_url, url)) {
+            if (lv_qrcode_update(settings_qr, url, strlen(url)) == LV_RESULT_OK) {
+                snprintf(settings_qr_url, sizeof(settings_qr_url), "%s", url);
+                lv_obj_clear_flag(settings_qr, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                settings_qr_url[0] = 0;
+                lv_obj_add_flag(settings_qr, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    } else {
+        settings_qr_url[0] = 0;
+        lv_obj_add_flag(settings_qr, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(settings_web_link, ui_text("Откройте веб-панель Bridge в браузере"));
+    }
+    if (ui_recovery_active) {
+        char network[96];
+        snprintf(network, sizeof(network), ui_text("Сеть: %s"), ui_recovery_ssid);
+        lv_label_set_text(settings_ap_name, network);
+        lv_label_set_text(settings_ap_url, ui_recovery_url);
+        lv_obj_clear_flag(settings_reveal_btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(settings_password, LV_OBJ_FLAG_HIDDEN);
+        set_static_ui_label(settings_ap_button_label, "Выключить сеть");
+        set_static_ui_label(settings_ap_help, "Пароль открывается на 15 секунд по нажатию.");
+    } else {
+        ui_dashboard_hide_sensitive();
+        lv_label_set_text(settings_ap_name, ui_text("Временная сеть выключена"));
+        lv_label_set_text(settings_ap_url, "");
+        lv_obj_add_flag(settings_reveal_btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(settings_password, LV_OBJ_FLAG_HIDDEN);
+        set_static_ui_label(settings_ap_button_label, "Включить на 10 минут");
+        set_static_ui_label(settings_ap_help, "Для восстановления Wi-Fi или связи с Bridge.");
+    }
+    char status[256], sync[96] = {}, data[64] = {};
+    web_sync_copy_diagnostic(sync, sizeof(sync));
+    bridge_copy_last_error(data, sizeof(data));
+    const bool bridge_online = wifi_is_connected() && !strcmp(sync, "Sync:OK") &&
+        (!strcmp(data, "OK") || (!strcmp(data, "Fetching...") && bridge_has_data()));
+    snprintf(status, sizeof(status), ui_text("Wi-Fi: %s\nBridge: %s"),
+             ui_text(wifi_is_connected() ? "Подключён" : "Нет связи"),
+             ui_text(bridge_online ? "На связи" : "Нет связи"));
+    lv_label_set_text(settings_device_status, status);
+}
+
+static void reveal_password_cb(lv_event_t *)
+{
+    if (!ui_recovery_active || !settings_is_active() || ui_screen_off) return;
+    if (settings_reveal_until_us) { ui_dashboard_hide_sensitive(); return; }
+    settings_reveal_until_us = esp_timer_get_time() + 15LL * 1000000;
+    lv_label_set_text(settings_password, ui_recovery_password);
+    set_static_ui_label(settings_reveal_label, "Скрыть пароль");
+}
+
+static void recovery_toggle_cb(lv_event_t *)
+{
+    ui_dashboard_hide_sensitive();
+    if (ui_recovery_active) request_stop_recovery_ap();
+    else request_recovery_ap();
+}
+
+static lv_obj_t *settings_text(lv_obj_t *parent, int x, int y, int width, int height,
+                                const char *key, bool large = false)
+{
+    lv_obj_t *label = lv_label_create(parent);
+    lv_obj_set_pos(label, x, y);
+    lv_obj_set_size(label, width, height);
+    lv_obj_set_style_text_font(label, large ? &font_montserrat_24_cyr : &font_montserrat_16_cyr, 0);
+    lv_obj_set_style_text_color(label, COLOR_TEXT, 0);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+    if (key && key[0]) set_static_ui_label(label, key);
+    else lv_label_set_text(label, "");
+    return label;
+}
+
+static lv_obj_t *settings_button(lv_obj_t *parent, int x, int y, int width,
+                                  const char *key, lv_event_cb_t callback, lv_obj_t **out_label = nullptr)
+{
+    lv_obj_t *button = lv_btn_create(parent);
+    lv_obj_set_pos(button, x, y);
+    lv_obj_set_size(button, width, 44);
+    lv_obj_set_style_bg_color(button, COLOR_ACCENT, 0);
+    lv_obj_set_style_radius(button, 20, 0);
+    lv_obj_set_style_shadow_width(button, 0, 0);
+    lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *label = settings_text(button, 0, 0, width - 16, 24, key);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(label);
+    if (out_label) *out_label = label;
+    return button;
+}
+
+static void create_settings_page(lv_obj_t *tile)
+{
+    settings_text(tile, 18, 12, 980, 34, "Настройки", true);
+    settings_text(tile, 18, 48, 980, 24, "Веб-панель и локальное восстановление");
+    lv_obj_t *web = make_card(tile, 14, 80, 480, 270);
+    settings_text(web, 16, 12, 438, 28, "Веб-панель Bridge", true);
+    settings_text(web, 16, 52, 244, 60, "Экран, языки, фотографии и сервисы");
+    settings_web_link = settings_text(web, 16, 130, 248, 76, "");
+    settings_text(web, 16, 216, 440, 42, "Вход через пароль или Cloudflare");
+    settings_qr = lv_qrcode_create(web);
+    lv_qrcode_set_size(settings_qr, 164);
+    lv_qrcode_set_dark_color(settings_qr, COLOR_TEXT);
+    lv_qrcode_set_light_color(settings_qr, COLOR_CARD);
+    lv_obj_set_pos(settings_qr, 284, 52);
+    lv_obj_add_flag(settings_qr, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *local = make_card(tile, 508, 80, 502, 270);
+    settings_text(local, 16, 12, 470, 28, "Локальное восстановление", true);
+    settings_ap_name = settings_text(local, 16, 58, 470, 26, "");
+    settings_ap_url = settings_text(local, 16, 90, 470, 24, "");
+    settings_password = settings_text(local, 16, 120, 470, 30, "");
+    settings_reveal_btn = settings_button(local, 16, 158, 214, "Показать пароль", reveal_password_cb, &settings_reveal_label);
+    settings_button(local, 242, 158, 242, "Включить на 10 минут", recovery_toggle_cb, &settings_ap_button_label);
+    settings_ap_help = settings_text(local, 16, 214, 470, 44, "");
+
+    lv_obj_t *system = make_card(tile, 14, 364, 996, 160);
+    settings_text(system, 16, 12, 930, 28, "Устройство", true);
+    settings_device_status = settings_text(system, 16, 54, 570, 80, "");
+    settings_button(system, 620, 64, 350, "Проверить обновление", ota_btn_cb);
+    ui_dashboard_hide_sensitive();
+    refresh_settings();
 }
 
 static void create_page3(lv_obj_t *tile)
@@ -2088,27 +2384,17 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_t *pg_title = lv_label_create(tile);
     lv_obj_set_style_text_color(pg_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(pg_title, &font_montserrat_24_cyr, 0);
-    set_static_ui_label(pg_title, "Дом · удерживайте для локальной настройки");
-    lv_obj_set_width(pg_title, 640);
-    lv_obj_add_flag(pg_title, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(pg_title, recovery_title_cb, LV_EVENT_LONG_PRESSED, NULL);
+    set_static_ui_label(pg_title, "Дом");
+    lv_obj_set_width(pg_title, 180);
     lv_obj_set_pos(pg_title, 15, 8);
 
     home_photo_status = lv_label_create(tile);
     lv_obj_set_style_text_color(home_photo_status, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(home_photo_status, &font_montserrat_16_cyr, 0);
-    lv_obj_set_pos(home_photo_status, 15, 37);
-    lv_obj_set_width(home_photo_status, 680);
+    lv_obj_set_pos(home_photo_status, 215, 18);
+    lv_obj_set_width(home_photo_status, 480);
     lv_label_set_long_mode(home_photo_status, LV_LABEL_LONG_DOT);
-    set_static_ui_label(home_photo_status, "Авто: через 5 мин без касаний");
-
-    home_settings_link = lv_label_create(tile);
-    lv_obj_set_style_text_color(home_settings_link, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(home_settings_link, &font_montserrat_16_cyr, 0);
-    lv_obj_set_pos(home_settings_link, 15, 520);
-    lv_obj_set_width(home_settings_link, 680);
-    lv_label_set_long_mode(home_settings_link, LV_LABEL_LONG_DOT);
-    set_static_ui_label(home_settings_link, "Настройки HomeDash: откройте Bridge");
+    lv_label_set_text(home_photo_status, "");
 
     lv_obj_t *btn_photo = lv_btn_create(tile);
     lv_obj_set_size(btn_photo, 170, 30);
@@ -2124,24 +2410,9 @@ static void create_page3(lv_obj_t *tile)
     set_static_ui_label(photo_lbl, "Фоторамка");
     lv_obj_center(photo_lbl);
 
-    // OTA update button
-    lv_obj_t *btn_ota = lv_btn_create(tile);
-    lv_obj_set_size(btn_ota, 120, 30);
-    lv_obj_set_pos(btn_ota, 890, 6);
-    lv_obj_set_style_bg_color(btn_ota, COLOR_ACCENT, 0);
-    lv_obj_set_style_radius(btn_ota, 15, 0);
-    lv_obj_set_style_shadow_width(btn_ota, 0, 0);
-    lv_obj_add_event_cb(btn_ota, ota_btn_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *ota_lbl = lv_label_create(btn_ota);
-    lv_obj_set_style_text_color(ota_lbl, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(ota_lbl, &font_montserrat_16_cyr, 0);
-    set_static_ui_label(ota_lbl, "Обновить");
-    lv_obj_center(ota_lbl);
-
     // Air overview: the two CO2 sensors remain explicitly named, rather than
     // collapsing household air into an ambiguous sensor count.
-    lv_obj_t *air = make_card(tile, 5, 60, 400, 120);
+    lv_obj_t *air = make_card(tile, 5, 60, 400, 176);
     lv_obj_t *air_title = lv_label_create(air);
     lv_obj_set_style_text_color(air_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(air_title, &font_montserrat_16_cyr, 0);
@@ -2155,43 +2426,69 @@ static void create_page3(lv_obj_t *tile)
         lv_obj_set_style_text_color(home_air_values[i], COLOR_TEXT, 0);
         lv_obj_set_style_text_font(home_air_values[i], &font_montserrat_16_cyr, 0);
         lv_label_set_text(home_air_values[i], "---");
-        lv_obj_set_pos(home_air_values[i], 14 + col * 190, 40 + row * 42);
+        lv_obj_set_pos(home_air_values[i], 14 + col * 190, 32 + row * 68);
+        lv_obj_set_size(home_air_values[i], 174, 22);
+        lv_label_set_long_mode(home_air_values[i], LV_LABEL_LONG_DOT);
         home_air_names[i] = lv_label_create(air);
         lv_obj_set_style_text_color(home_air_names[i], COLOR_TEXT_DIM, 0);
         lv_obj_set_style_text_font(home_air_names[i], &font_montserrat_16_cyr, 0);
         set_static_ui_label(home_air_names[i], air_names[i]);
-        lv_obj_set_pos(home_air_names[i], 14 + col * 190, 62 + row * 42);
+        lv_obj_set_pos(home_air_names[i], 14 + col * 190, 54 + row * 68);
+        lv_obj_set_size(home_air_names[i], 174, 44);
+        lv_label_set_long_mode(home_air_names[i], LV_LABEL_LONG_DOT);
     }
 
-    lv_obj_t *climate = make_card(tile, 412, 60, 607, 120);
+    lv_obj_t *climate = make_card(tile, 412, 60, 607, 176);
     home_climate_name = lv_label_create(climate);
     lv_obj_set_style_text_color(home_climate_name, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(home_climate_name, &font_montserrat_16_cyr, 0);
     set_static_ui_label(home_climate_name, "Кондиционер");
     lv_obj_set_pos(home_climate_name, 14, 10);
+    lv_obj_set_size(home_climate_name, 570, 24);
+    lv_label_set_long_mode(home_climate_name, LV_LABEL_LONG_DOT);
+    home_climate_feedback = lv_label_create(climate);
+    lv_obj_set_pos(home_climate_feedback, 380, 80);
+    lv_obj_set_size(home_climate_feedback, 210, 44);
+    lv_obj_set_style_text_font(home_climate_feedback, &font_montserrat_16_cyr, 0);
+    lv_label_set_long_mode(home_climate_feedback, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(home_climate_feedback, "");
+    home_climate_selected = lv_label_create(climate);
+    lv_obj_set_pos(home_climate_selected, 174, 80);
+    lv_obj_set_size(home_climate_selected, 198, 44);
+    lv_obj_set_style_text_font(home_climate_selected, &font_montserrat_16_cyr, 0);
+    lv_label_set_long_mode(home_climate_selected, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(home_climate_selected, "");
     home_climate_current = lv_label_create(climate);
     lv_obj_set_style_text_color(home_climate_current, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(home_climate_current, &font_montserrat_16_cyr, 0);
     set_static_ui_label(home_climate_current, "Сейчас ---");
-    lv_obj_set_pos(home_climate_current, 14, 40);
+    lv_obj_set_pos(home_climate_current, 14, 46);
+    lv_obj_set_size(home_climate_current, 156, 28);
+    lv_label_set_long_mode(home_climate_current, LV_LABEL_LONG_DOT);
     home_climate_target = lv_label_create(climate);
     lv_obj_set_style_text_color(home_climate_target, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(home_climate_target, &font_montserrat_16_cyr, 0);
     set_static_ui_label(home_climate_target, "Цель ---");
-    lv_obj_set_pos(home_climate_target, 14, 72);
+    lv_obj_set_pos(home_climate_target, 14, 82);
+    lv_obj_set_size(home_climate_target, 156, 28);
+    lv_label_set_long_mode(home_climate_target, LV_LABEL_LONG_DOT);
     home_climate_power = lv_btn_create(climate);
     lv_obj_set_size(home_climate_power, 135, 36);
     lv_obj_set_pos(home_climate_power, 174, 42);
     lv_obj_set_style_radius(home_climate_power, 18, 0);
     lv_obj_set_style_shadow_width(home_climate_power, 0, 0);
+    lv_obj_set_style_opa(home_climate_power, LV_OPA_80, LV_STATE_DISABLED);
     lv_obj_add_event_cb(home_climate_power, climate_power_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *power_label = lv_label_create(home_climate_power);
+    lv_obj_set_style_text_color(power_label, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(power_label, &font_montserrat_16_cyr, 0);
     lv_obj_set_width(power_label, 125);
     set_static_ui_label(power_label, "Вкл / выкл");
     lv_obj_center(power_label);
     for (int i = 0; i < 2; i++) {
         lv_obj_t *btn = lv_btn_create(climate);
+        home_climate_temp_buttons[i] = btn;
+        lv_obj_set_style_opa(btn, LV_OPA_80, LV_STATE_DISABLED);
         lv_obj_set_size(btn, 42, 36);
         lv_obj_set_pos(btn, 320 + i * 48, 42);
         lv_obj_set_style_radius(btn, 18, 0);
@@ -2203,26 +2500,28 @@ static void create_page3(lv_obj_t *tile)
         lv_obj_center(label);
     }
     static const char *modes[] = {"cool", "heat", "dry", "fan_only"};
-    static const char *mode_labels[] = {"Охл.", "Тпл.", "Суш.", "Вен."};
+    static const char *mode_labels[] = {"Охлаждение", "Обогрев", "Осушение", "Вентиляция"};
     for (int i = 0; i < 4; i++) {
         home_climate_mode_btns[i] = lv_btn_create(climate);
-        lv_obj_set_size(home_climate_mode_btns[i], 45, 30);
-        lv_obj_set_pos(home_climate_mode_btns[i], 412 + i * 48, 82);
+        lv_obj_set_style_opa(home_climate_mode_btns[i], LV_OPA_80, LV_STATE_DISABLED);
+        lv_obj_set_size(home_climate_mode_btns[i], 136, 36);
+        lv_obj_set_pos(home_climate_mode_btns[i], 14 + i * 145, 128);
         lv_obj_set_style_radius(home_climate_mode_btns[i], 15, 0);
         lv_obj_set_style_shadow_width(home_climate_mode_btns[i], 0, 0);
         lv_obj_add_event_cb(home_climate_mode_btns[i], climate_mode_btn_cb, LV_EVENT_CLICKED, (void *)modes[i]);
         lv_obj_t *label = lv_label_create(home_climate_mode_btns[i]);
+        lv_obj_set_style_text_color(label, COLOR_TEXT, 0);
         lv_obj_set_style_text_font(label, &font_montserrat_16_cyr, 0);
-        lv_obj_set_width(label, 43);
+        lv_obj_set_width(label, 130);
         set_static_ui_label(label, mode_labels[i]);
         lv_obj_center(label);
     }
 
     // Compact 2x2 light grid. Air detail now lives in the persistent overview
     // above, leaving each room one clear action area.
-    int pw = 500, ph = 166;
+    int pw = 500, ph = 140;
     int positions[MAX_ROOMS][2] = {
-        {5, 180}, {512, 180}, {5, 354}, {512, 354}
+        {5, 246}, {512, 246}, {5, 394}, {512, 394}
     };
 
     for (int r = 0; r < MAX_ROOMS; r++) {
@@ -2239,8 +2538,8 @@ static void create_page3(lv_obj_t *tile)
         // Light toggle buttons
         for (int l = 0; l < MAX_ROOM_LIGHTS; l++) {
             lv_obj_t *btn = lv_btn_create(panel);
-            lv_obj_set_size(btn, 148, 44);
-            lv_obj_set_pos(btn, 15 + l * 156, 68);
+            lv_obj_set_size(btn, 148, 38);
+            lv_obj_set_pos(btn, 15 + l * 156, 48);
             lv_obj_set_style_bg_color(btn, COLOR_LIGHT_OFF, 0);
             lv_obj_set_style_radius(btn, 22, 0);  // pill shape
             lv_obj_set_style_pad_all(btn, 4, 0);
@@ -2257,6 +2556,13 @@ static void create_page3(lv_obj_t *tile)
             lv_label_set_text(lbl, "---");
             lv_obj_center(lbl);
 
+            room_light_feedback[r][l] = lv_label_create(panel);
+            lv_obj_set_pos(room_light_feedback[r][l], 15 + l * 156, 90);
+            lv_obj_set_size(room_light_feedback[r][l], 148, 44);
+            lv_obj_set_style_text_font(room_light_feedback[r][l], &font_montserrat_16_cyr, 0);
+            lv_label_set_long_mode(room_light_feedback[r][l], LV_LABEL_LONG_WRAP);
+            lv_label_set_text(room_light_feedback[r][l], "");
+            lv_obj_set_style_opa(btn, LV_OPA_80, LV_STATE_DISABLED);
             room_light_btns[r][l] = btn;
             room_light_labels[r][l] = lbl;
 
@@ -2282,6 +2588,7 @@ static void bind_light_slot(int room, int slot, const bridge_light_t *light)
 {
     if (!light || room < 0 || room >= MAX_ROOMS || slot < 0 || slot >= MAX_ROOM_LIGHTS) return;
     snprintf(room_light_entity_ids[room][slot], sizeof(room_light_entity_ids[room][slot]), "%s", light->entity_id);
+    room_light_on[room][slot] = light->on;
     const char *label = light->name[0] ? light->name : light->entity_id;
     lv_label_set_text(room_light_labels[room][slot], label);
     lv_obj_set_style_bg_color(room_light_btns[room][slot], light->on ? COLOR_LIGHT_ON : COLOR_LIGHT_OFF, 0);
@@ -2299,6 +2606,25 @@ static bool sensor_is_office_co2(const bridge_sensor_t *sensor)
 {
     return sensor && strstr(sensor->name, "CO2") &&
            (strstr(sensor->name, "кабинет") || strstr(sensor->name, "Кабинет"));
+}
+
+static bool sensor_value_available(const char *value)
+{
+    if (!value || !value[0]) return false;
+    char normalized[16] = {};
+    size_t n = strlen(value);
+    if (n >= sizeof(normalized)) return false;
+    for (size_t i = 0; i < n; ++i) normalized[i] = std::tolower(static_cast<unsigned char>(value[i]));
+    return strcmp(normalized, "unavailable") && strcmp(normalized, "unknown") &&
+           strcmp(normalized, "nan") && strcmp(normalized, "none");
+}
+
+static lv_color_t co2_color(const char *value)
+{
+    char *end = nullptr;
+    float co2 = strtof(value, &end);
+    if (end == value || *end || !std::isfinite(co2) || co2 <= 0) return COLOR_TEXT_DIM;
+    return co2 < 800 ? COLOR_GOOD : co2 < 1000 ? COLOR_WARN : COLOR_BAD;
 }
 
 static const char *air_sensor_label(const bridge_sensor_t *sensor, int index)
@@ -2345,27 +2671,25 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
             }
         }
 
-        if (living_room_co2) {
+        if (living_room_co2 && sensor_value_available(living_room_co2->value)) {
             char text[48];
             snprintf(text, sizeof(text), "%s: CO2 %s %s", air_sensor_location(living_room_co2), living_room_co2->value, living_room_co2->unit);
-            int value = atoi(living_room_co2->value);
             unbind_static_ui_label(lbl_air_primary);
             lv_label_set_text(lbl_air_primary, text);
             lv_obj_set_style_text_color(lbl_air_primary,
-                value < 800 ? COLOR_GOOD : value < 1000 ? COLOR_WARN : COLOR_BAD, 0);
+                co2_color(living_room_co2->value), 0);
         } else {
             set_static_ui_label(lbl_air_primary, "Гостиная: нет данных CO2");
             lv_obj_set_style_text_color(lbl_air_primary, COLOR_TEXT_DIM, 0);
         }
 
-        if (office_co2) {
+        if (office_co2 && sensor_value_available(office_co2->value)) {
             char text[48];
             snprintf(text, sizeof(text), "%s: CO2 %s %s", air_sensor_location(office_co2), office_co2->value, office_co2->unit);
-            int value = atoi(office_co2->value);
             unbind_static_ui_label(lbl_air_detail);
             lv_label_set_text(lbl_air_detail, text);
             lv_obj_set_style_text_color(lbl_air_detail,
-                value < 800 ? COLOR_GOOD : value < 1000 ? COLOR_WARN : COLOR_BAD, 0);
+                co2_color(office_co2->value), 0);
         } else {
             set_static_ui_label(lbl_air_detail, "Кабинет: нет данных CO2");
             lv_obj_set_style_text_color(lbl_air_detail, COLOR_TEXT_DIM, 0);
@@ -2431,8 +2755,8 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         const bridge_sensor_t *sensor = &data->sensors[i];
         unbind_static_ui_label(home_air_names[i]);
         lv_label_set_text(home_air_names[i], air_sensor_label(sensor, i));
-        if (!sensor->value[0]) {
-            lv_label_set_text(home_air_values[i], "---");
+        if (!sensor_value_available(sensor->value)) {
+            lv_label_set_text(home_air_values[i], "—");
             lv_obj_set_style_text_color(home_air_values[i], COLOR_TEXT_DIM, 0);
             continue;
         }
@@ -2442,8 +2766,7 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         lv_label_set_text(home_air_values[i], text);
         lv_color_t color = COLOR_TEXT;
         if (strstr(sensor->unit, "ppm")) {
-            int co2 = atoi(sensor->value);
-            color = co2 < 800 ? COLOR_GOOD : co2 < 1000 ? COLOR_WARN : COLOR_BAD;
+            color = co2_color(sensor->value);
         }
         lv_obj_set_style_text_color(home_air_values[i], color, 0);
     }
@@ -2452,8 +2775,11 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         const bridge_climate_t *climate = &data->climates[0];
         strncpy(home_climate_entity, climate->entity_id, sizeof(home_climate_entity) - 1);
         home_climate_entity[sizeof(home_climate_entity) - 1] = '\0';
-        home_climate_on = strcmp(climate->mode, "off") != 0;
-        if (climate->has_target_temp) home_climate_target_value = climate->target_temp;
+        home_climate_known = !strcmp(climate->mode, "off") || !strcmp(climate->mode, "cool") ||
+            !strcmp(climate->mode, "heat") || !strcmp(climate->mode, "dry") || !strcmp(climate->mode, "fan_only") ||
+            !strcmp(climate->mode, "auto") || !strcmp(climate->mode, "heat_cool");
+        home_climate_on = home_climate_known && strcmp(climate->mode, "off") != 0;
+        if (climate->has_target_temp) { home_temp_confirmed = climate->target_temp; if (!home_temp_proposed && !feedback_blocks(home_action_find(home_climate_entity))) home_climate_target_value = climate->target_temp; }
 
         if (home_climate_name) {
             if (climate->name[0]) {
@@ -2471,7 +2797,7 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         if (home_climate_target) {
             char text[48];
             unbind_static_ui_label(home_climate_target);
-            if (climate->has_target_temp) snprintf(text, sizeof(text), ui_text("Цель %.0f C"), climate->target_temp);
+            if (climate->has_target_temp) snprintf(text, sizeof(text), ui_text("Цель %.0f C"), home_temp_confirmed);
             else snprintf(text, sizeof(text), "%s", ui_text("Цель нет данных"));
             lv_label_set_text(home_climate_target, text);
         }
@@ -2532,7 +2858,7 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
                         const bridge_sensor_t *sen = &data->sensors[k];
 
                         // Skip unavailable sensors
-                        if (sen->value[0] == '\0' || strcmp(sen->value, "0") == 0) break;
+                        if (!sensor_value_available(sen->value)) break;
 
                         // Find entity-specific label
                         const char *label = sen->name;
@@ -2550,10 +2876,7 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
 
                         // A ppm unit is the only unambiguous CO2 signal in this contract.
                         if (strstr(sen->unit, "ppm")) {
-                            int co2 = atoi(sen->value);
-                            lv_color_t co2_color = co2 < 800 ? COLOR_GOOD :
-                                                   co2 < 1000 ? COLOR_WARN : COLOR_BAD;
-                            lv_obj_set_style_text_color(room_sensor_val_lbl[r][s], co2_color, 0);
+                            lv_obj_set_style_text_color(room_sensor_val_lbl[r][s], co2_color(sen->value), 0);
                         }
                         found = true;
                         break;
@@ -2570,37 +2893,21 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
 
 bool ui_dashboard_reader_open(void) { return reader_overlay != NULL; }
 
-static bool render_recovery_status(void)
-{
-    if (!home_settings_link || !ui_recovery_active) return false;
-    char status[256];
-    snprintf(status, sizeof(status), ui_text("Локальная сеть %s · пароль %s · %s"),
-             ui_recovery_ssid, ui_recovery_password, ui_recovery_url);
-    unbind_static_ui_label(home_settings_link);
-    lv_label_set_text(home_settings_link, status);
-    return true;
-}
-
 void ui_dashboard_apply_preferences(const web_preferences_t *prefs)
 {
     if (!prefs || !web_preferences_valid(prefs)) return;
+    ui_dashboard_hide_sensitive();
     ui_strings_set_locale(prefs->locale);
     ui_preferences = *prefs;
     ui_has_preferences = true;
     refresh_static_ui_labels();
     set_calendar_day_names();
-    const bool recovery_status_visible = render_recovery_status();
     if (lbl_topbar_temp) {
         char city[96];
         snprintf(city, sizeof(city), "%s · %s", prefs->name, prefs->city);
         lv_label_set_text(lbl_topbar_temp, city);
     }
-    if (home_settings_link && !recovery_status_visible) {
-        char link[256];
-        snprintf(link, sizeof(link), ui_text("Настройки HomeDash: %s"), prefs->settings_url);
-        unbind_static_ui_label(home_settings_link);
-        lv_label_set_text(home_settings_link, link);
-    }
+    refresh_settings();
     if (page1_schedule_panel) {
         if (prefs->visible_calendar) lv_obj_clear_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
@@ -2659,13 +2966,13 @@ void ui_dashboard_apply_preferences(const web_preferences_t *prefs)
     if (ui_calendar_snapshot.valid) ui_dashboard_update_ha_calendar(&ui_calendar_snapshot);
     ui_dashboard_update_ha(&ui_bridge_snapshot);
     if (ui_photo_status_snapshot[0]) ui_dashboard_update_photo_status(ui_photo_status_snapshot);
-    else if (home_photo_status) set_static_ui_label(home_photo_status, "Авто: через 5 мин без касаний");
     ui_dashboard_update_time();
     refresh_reader_locale();
 }
 
 void ui_dashboard_reset_preferences(void)
 {
+    ui_dashboard_hide_sensitive();
     ui_strings_set_locale("ru");
     refresh_static_ui_labels();
     ui_has_preferences = false;
@@ -2674,7 +2981,7 @@ void ui_dashboard_reset_preferences(void)
     wake_override_until = 0;
     if (lbl_topbar_temp) lv_label_set_text(lbl_topbar_temp, WEATHER_CITY);
     if (weather_canvas) lv_obj_clear_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
-    if (home_settings_link) set_static_ui_label(home_settings_link, "Настройки HomeDash: откройте Bridge");
+    refresh_settings();
     if (page1_schedule_panel) lv_obj_clear_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
     if (page1_overview_panel) lv_obj_clear_flag(page1_overview_panel, LV_OBJ_FLAG_HIDDEN);
     if (lbl_topbar_temp) lv_obj_clear_flag(lbl_topbar_temp, LV_OBJ_FLAG_HIDDEN);
@@ -2702,16 +3009,18 @@ void ui_dashboard_reset_preferences(void)
 }
 
 #if defined(SIMULATOR)
+void ui_dashboard_sim_refresh_feedback(void) { home_feedback_tick(NULL); }
+void ui_dashboard_sim_set_selected_temperature(float value) { home_climate_target_value = value; }
 void ui_dashboard_sim_set_page(int page)
 {
-    if (tileview && page >= 0 && page < 3) lv_tileview_set_tile(tileview, nav_tiles[page], LV_ANIM_OFF);
+    if (tileview && page >= 0 && page < PAGE_COUNT) lv_tileview_set_tile(tileview, nav_tiles[page], LV_ANIM_OFF);
 }
 
 int ui_dashboard_sim_current_page(void)
 {
     if (!tileview) return -1;
     lv_obj_t *active = lv_tileview_get_tile_active(tileview);
-    for (int i = 0; i < 3; ++i) if (nav_tiles[i] == active) return i;
+    for (int i = 0; i < PAGE_COUNT; ++i) if (nav_tiles[i] == active) return i;
     return -1;
 }
 
@@ -2721,14 +3030,16 @@ bool ui_dashboard_sim_fixed_labels_fit(void)
         "Задачи", "Новости", "Фоторамка", "Обновить", "Воздух дома", "Календарь",
         "Настройки HomeDash: подключитесь к Bridge", "Настройки HomeDash: откройте Bridge",
         "Авто: через 5 мин без касаний", "Вкл / выкл", "Охл.", "Тпл.", "Суш.", "Вен.",
-        "Дом · удерживайте для локальной настройки"};
+        "Настройки", "Веб-панель Bridge", "Локальное восстановление",
+        "Показать пароль", "Скрыть пароль", "Включить на 10 минут", "Выключить сеть",
+        "Проверить обновление", "Охлаждение", "Обогрев", "Осушение", "Вентиляция"};
     for (const auto &binding : static_ui_labels) {
         if (!binding.label || !binding.key) continue;
         bool check = false;
         for (const char *key : keys) if (!strcmp(binding.key, key)) { check = true; break; }
         if (!check) continue;
         const lv_font_t *font = lv_obj_get_style_text_font(binding.label, LV_PART_MAIN);
-        const char *text = lv_label_get_text(binding.label);
+        const char *text = ui_text(binding.key);
         if (!font || !text) return false;
         lv_point_t measured = {};
         lv_text_get_size(&measured, text, font,
@@ -2747,30 +3058,12 @@ bool ui_dashboard_sim_fixed_labels_fit(void)
 
 void ui_dashboard_update_recovery(const char *ssid, const char *password, const char *url)
 {
-    if (!home_settings_link) return;
-    if (!ssid || !ssid[0]) {
-        ui_recovery_active = false;
-        ui_recovery_ssid[0] = ui_recovery_password[0] = ui_recovery_url[0] = '\0';
-        if (ui_has_preferences) {
-            char link[256];
-            snprintf(link, sizeof(link), ui_text("Настройки HomeDash: %s"), ui_preferences.settings_url);
-            unbind_static_ui_label(home_settings_link);
-            lv_label_set_text(home_settings_link, link);
-        } else {
-            set_static_ui_label(home_settings_link, "Настройки HomeDash: подключитесь к Bridge");
-        }
-        return;
-    }
-    snprintf(ui_recovery_ssid, sizeof(ui_recovery_ssid), "%s", ssid);
-    snprintf(ui_recovery_password, sizeof(ui_recovery_password), "%s", password ? password : "");
-    snprintf(ui_recovery_url, sizeof(ui_recovery_url), "%s", url ? url : "");
-    ui_recovery_active = true;
-    set_screen_off(false);
-    char status[256];
-    snprintf(status, sizeof(status), ui_text("Локальная сеть %s · пароль %s · %s"),
-             ui_recovery_ssid, ui_recovery_password, ui_recovery_url);
-    unbind_static_ui_label(home_settings_link);
-    lv_label_set_text(home_settings_link, status);
+    ui_dashboard_hide_sensitive();
+    ui_recovery_active = ssid && ssid[0];
+    snprintf(ui_recovery_ssid, sizeof(ui_recovery_ssid), "%s", ui_recovery_active ? ssid : "");
+    snprintf(ui_recovery_password, sizeof(ui_recovery_password), "%s", ui_recovery_active && password ? password : "");
+    snprintf(ui_recovery_url, sizeof(ui_recovery_url), "%s", ui_recovery_active && url ? url : "");
+    refresh_settings();
 }
 
 bool ui_dashboard_filter_wake_touch(bool pressed, lv_indev_data_t *data)
@@ -2797,6 +3090,11 @@ void ui_dashboard_update_photo_status(const char *status)
 {
     if (!home_photo_status || !status) return;
     unbind_static_ui_label(home_photo_status);
+    if (!strncmp(status, "Авто:", strlen("Авто:"))) {
+        ui_photo_status_snapshot[0] = 0;
+        lv_label_set_text(home_photo_status, "");
+        return;
+    }
     if (status != ui_photo_status_snapshot)
         snprintf(ui_photo_status_snapshot, sizeof(ui_photo_status_snapshot), "%s", status);
     const char *translated = ui_text(status);

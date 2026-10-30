@@ -27,6 +27,8 @@ void ui_dashboard_update_bridge(const bridge_data_t *data);
 void ui_dashboard_update_ha(const bridge_data_t *data);
 extern "C" void sim_init_fixtures(void);
 extern "C" void sim_set_locale_test_fixtures(void);
+extern "C" void sim_set_settings_test_fixtures(void);
+extern "C" void sim_set_action_feedback_fixtures(void);
 extern "C" {
 LV_FONT_DECLARE(font_montserrat_16_cyr);
 LV_FONT_DECLARE(font_montserrat_24_cyr);
@@ -52,7 +54,7 @@ static bool label_contains(lv_obj_t *obj, const char *needle)
 static bool glyphs_available(const lv_font_t *font)
 {
     static const uint32_t glyphs[] = {0x010D, 0x0107, 0x0111, 0x0161, 0x017E,
-                                      0x010C, 0x0106, 0x0110, 0x0160, 0x017D};
+                                      0x010C, 0x0106, 0x0110, 0x0160, 0x017D, 0xB3, 0xB5, 0x2014};
     for (uint32_t cp : glyphs) {
         lv_font_glyph_dsc_t dsc = {};
         if (!lv_font_get_glyph_dsc(font, &dsc, cp, 0) || dsc.box_w == 0 || dsc.box_h == 0) return false;
@@ -154,6 +156,7 @@ int main()
     sim_init_fixtures();
     const bool locale_test = std::getenv("HOMEDASH_SIM_LOCALE_TEST") != nullptr;
     if (locale_test) sim_set_locale_test_fixtures();
+    if (std::getenv("HOMEDASH_SIM_SETTINGS_FIXTURES")) sim_set_settings_test_fixtures();
     ui_dashboard_create();
     s_photo_fixture = std::getenv("HOMEDASH_SIM_PHOTO_FRAME") != nullptr;
     if (s_photo_fixture) { photo_frame_sim_accelerate(); photo_frame_ui_init(); photo_frame_network_init("fixture", "fixture"); }
@@ -166,7 +169,7 @@ int main()
             web_preferences_t prefs = {};
             web_preferences_defaults(&prefs);
             prefs.revision = 1;
-            std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "http://homedash.local");
+            std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "https://homedash.example/settings/?device_id=0123456789abcdef0123456789abcdef");
             std::snprintf(prefs.locale, sizeof(prefs.locale), "%s", locale);
             ui_dashboard_apply_preferences(&prefs);
             for (int i = 0; i < 4; ++i) lv_timer_handler();
@@ -198,7 +201,7 @@ int main()
             web_preferences_t prefs = {};
             web_preferences_defaults(&prefs);
             prefs.revision = 1;
-            std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "http://homedash.local");
+            std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "https://homedash.example/settings/?device_id=0123456789abcdef0123456789abcdef");
             std::snprintf(prefs.locale, sizeof(prefs.locale), "%s", reader_locales[i]);
             ui_dashboard_apply_preferences(&prefs);
             for (int j = 0; j < 4; ++j) lv_timer_handler();
@@ -213,7 +216,7 @@ int main()
         web_preferences_t reset_prefs = {};
         web_preferences_defaults(&reset_prefs);
         reset_prefs.revision = 1;
-        std::snprintf(reset_prefs.settings_url, sizeof(reset_prefs.settings_url), "%s", "http://homedash.local");
+        std::snprintf(reset_prefs.settings_url, sizeof(reset_prefs.settings_url), "%s", "https://homedash.example/settings/?device_id=0123456789abcdef0123456789abcdef");
         std::snprintf(reset_prefs.locale, sizeof(reset_prefs.locale), "%s", "en");
         ui_dashboard_apply_preferences(&reset_prefs);
         if (!label_contains(lv_screen_active(), "Due: 2030-01-01")) return 8;
@@ -232,10 +235,14 @@ int main()
             web_preferences_t prefs = {};
             web_preferences_defaults(&prefs);
             prefs.revision = 1;
-            std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "http://homedash.local");
+            std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "https://homedash.example/settings/?device_id=0123456789abcdef0123456789abcdef");
             std::snprintf(prefs.locale, sizeof(prefs.locale), "%s", shot_locale);
             ui_dashboard_apply_preferences(&prefs);
+            if (std::getenv("HOMEDASH_SIM_RECOVERY"))
+                ui_dashboard_update_recovery("HomeDash-Setup-DEMO", "DemoPassword1234", "http://192.168.4.1");
+            if (std::getenv("HOMEDASH_SIM_ACTION_FIXTURES")) { sim_set_action_feedback_fixtures(); refresh_all_data(); ui_dashboard_sim_set_selected_temperature(21); }
             ui_dashboard_sim_set_page(page_env ? std::atoi(page_env) : 0);
+            ui_dashboard_sim_refresh_feedback();
             for (int i = 0; i < 5; ++i) lv_timer_handler();
             lv_refr_now(display);
             render();
@@ -268,7 +275,7 @@ int main()
                 web_preferences_t prefs = {};
                 web_preferences_defaults(&prefs);
                 prefs.revision = 1;
-                std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "http://homedash.local");
+                std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "https://homedash.example/settings/?device_id=0123456789abcdef0123456789abcdef");
                 std::snprintf(prefs.locale, sizeof(prefs.locale), "%s", locale);
                 ui_dashboard_apply_preferences(&prefs);
                 if (!photo_frame_sim_visible()) {
