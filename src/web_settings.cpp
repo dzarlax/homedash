@@ -40,8 +40,23 @@ static bool minute_value(const char *s, size_t cap) {
 
 static bool safe_text(const char *s, size_t cap) {
     if (!terminated(s, cap) || !s[0]) return false;
-    for (const unsigned char *p = (const unsigned char *)s; *p; ++p)
-        if (*p < 0x20 || *p == 0x7f) return false;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned char c = *p++;
+        if (c < 0x20 || c == 0x7f) return false;
+        if (c < 0x80) continue;
+        unsigned need = 0; unsigned code = 0, minimum = 0;
+        if (c >= 0xc2 && c <= 0xdf) { need = 1; code = c & 0x1f; minimum = 0x80; }
+        else if (c >= 0xe0 && c <= 0xef) { need = 2; code = c & 0x0f; minimum = 0x800; }
+        else if (c >= 0xf0 && c <= 0xf4) { need = 3; code = c & 0x07; minimum = 0x10000; }
+        else return false;
+        for (unsigned i = 0; i < need; ++i) {
+            if (!*p || (*p & 0xc0) != 0x80) return false;
+            code = (code << 6) | (*p++ & 0x3f);
+        }
+        if (code < minimum || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ||
+            (code >= 0x80 && code <= 0x9f)) return false;
+    }
     return true;
 }
 
@@ -113,6 +128,21 @@ bool web_preferences_valid(const web_preferences_t *p) {
         !minute_value(p->night_end, sizeof(p->night_end)) ||
         p->photo_idle_seconds < 30 || p->photo_idle_seconds > 3600 ||
         p->photo_interval_seconds < 15 || p->photo_interval_seconds > 3600) return false;
+    if ((p->backlight_percent && (p->backlight_percent < 10 || p->backlight_percent > 100)) ||
+        (p->night_backlight_percent && (p->night_backlight_percent < 10 || p->night_backlight_percent > 100)) ||
+        (p->night_dim && (!p->backlight_percent || !p->night_backlight_percent))) return false;
+    if (p->favorite_count > 4) return false;
+    for (int i = 0; i < p->favorite_count; ++i) {
+        const web_favorite_t &f = p->favorites[i];
+        if (!safe_text(f.entity_id, sizeof(f.entity_id)) ||
+            !terminated(f.kind, sizeof(f.kind)) ||
+            !terminated(f.label, sizeof(f.label)) ||
+            (strcmp(f.kind, "light") && strcmp(f.kind, "climate")) ||
+            strncmp(f.entity_id, f.kind, strlen(f.kind)) || f.entity_id[strlen(f.kind)] != '.' ||
+            !f.entity_id[strlen(f.kind) + 1]) return false;
+        if (f.label[0] && !safe_text(f.label, sizeof(f.label))) return false;
+        for (int j = 0; j < i; ++j) if (!strcmp(f.entity_id, p->favorites[j].entity_id)) return false;
+    }
     return true;
 }
 
@@ -137,7 +167,38 @@ bool web_preferences_parse(const char *json, size_t length, uint32_t revision,
     cJSON *visible = cJSON_GetObjectItemCaseSensitive(root, "visible");
     bool ok = cJSON_IsObject(screen) && cJSON_IsObject(photos) && cJSON_IsObject(visible);
     if (ok) {
-        ok = copy_json_string(screen, "locale", p.locale, sizeof(p.locale)) &&
+        cJSON *day = cJSON_GetObjectItemCaseSensitive(screen, "backlight_percent");
+        cJSON *night = cJSON_GetObjectItemCaseSensitive(screen, "night_backlight_percent");
+        cJSON *night_action = cJSON_GetObjectItemCaseSensitive(screen, "night_action");
+        auto parse_percent = [](cJSON *value, uint8_t *dst) {
+            if (!value || cJSON_IsNull(value)) return true;
+            if (!cJSON_IsNumber(value) || value->valuedouble != value->valueint || value->valueint < 10 || value->valueint > 100) return false;
+            *dst = (uint8_t)value->valueint; return true;
+        };
+        ok = parse_percent(day, &p.backlight_percent) && parse_percent(night, &p.night_backlight_percent);
+        if (night_action && !cJSON_IsNull(night_action)) {
+            if (!cJSON_IsString(night_action) || !night_action->valuestring) ok = false;
+            else if (!strcmp(night_action->valuestring, "dim")) p.night_dim = true;
+            else if (strcmp(night_action->valuestring, "") && strcmp(night_action->valuestring, "off")) ok = false;
+        }
+        cJSON *home = cJSON_GetObjectItemCaseSensitive(root, "home");
+        if (home && !cJSON_IsNull(home)) {
+            cJSON *favorites = cJSON_GetObjectItemCaseSensitive(home, "favorites");
+            if (!cJSON_IsObject(home) || (favorites && !cJSON_IsArray(favorites))) ok = false;
+            if (ok && favorites) {
+                int count = cJSON_GetArraySize(favorites);
+                if (count > 4) ok = false;
+                else for (int i = 0; ok && i < count; ++i) {
+                    cJSON *f = cJSON_GetArrayItem(favorites, i);
+                    web_favorite_t &dst = p.favorites[i];
+                    ok = cJSON_IsObject(f) && copy_json_string(f, "entity_id", dst.entity_id, sizeof(dst.entity_id), true) &&
+                        copy_json_string(f, "kind", dst.kind, sizeof(dst.kind), true) &&
+                        copy_json_string(f, "label", dst.label, sizeof(dst.label));
+                    if (ok) ++p.favorite_count;
+                }
+            }
+        }
+        ok = ok && copy_json_string(screen, "locale", p.locale, sizeof(p.locale)) &&
              copy_json_string(screen, "name", p.name, sizeof(p.name), true) &&
              copy_json_string(screen, "city", p.city, sizeof(p.city), true) &&
              copy_json_string(screen, "timezone", p.timezone, sizeof(p.timezone), true) &&

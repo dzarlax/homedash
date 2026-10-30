@@ -8,6 +8,8 @@ struct web_command_t {
     char id[65];
     char action[24];
     char expires_at[40];
+    char target_version[32];
+    uint8_t percent;
 };
 
 struct web_network_update_t {

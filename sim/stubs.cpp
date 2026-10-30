@@ -15,6 +15,17 @@
 #endif
 
 #include "bridge.h"
+#include "brightness_runtime.h"
+bool brightness_runtime_configure_verified(uint8_t, uint8_t, uint8_t) { return false; }
+bool brightness_runtime_ready() { return false; }
+const char *brightness_runtime_error() { return ""; }
+void brightness_runtime_mark_write_failed() {}
+bool brightness_runtime_preview(uint8_t) { return false; }
+bool brightness_runtime_restore() { return false; }
+bool brightness_runtime_checkpoint(brightness_checkpoint_t *) { return false; }
+bool brightness_runtime_rollback(const brightness_checkpoint_t *) { return false; }
+bool brightness_runtime_schedule(uint8_t, uint8_t, bool, bool) { return false; }
+void brightness_runtime_tick() {}
 #include "action_feedback_runtime.h"
 #include "../src/action_feedback.cpp"
 #include "esp_timer.h"

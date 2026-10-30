@@ -297,3 +297,25 @@ Run `make -C sim test-action-feedback test-action-bridge test-home test-settings
 ## License
 
 MIT
+
+### Home controls and managed updates (v1.0.30)
+
+Managed OTA recovery records the observed target only after a successful image write.
+After reboot, it reports success only if the running version matches that record.
+A missing record or a different version leaves the result unconfirmed.
+
+Home favorites are implemented with a maximum of four entries and a
+versioned preferences sidecar; they share the existing action tracker. Brightness control is not available by default and unsupported brightness settings are
+rejected instead of acknowledged. The nonfatal PWM driver serializes access to the
+expander and caps raw PWM at 97; the tested preview controller restores its saved
+baseline after 20 seconds using a local monotonic timer. No boot path configures it.
+
+Physical validation requires separate device readiness and flashing approval. First
+confirm a trustworthy readback or independently established current raw PWM without
+writing; identify whether increasing PWM increases or decreases brightness and
+measure safe endpoints, with recovery available. Do not enable preview if the prior
+PWM cannot be established, since restoration would be speculative. Validate that
+IO2 display enable and touch/LCD reset bits remain unchanged and record measured
+mapping before wiring a verified calibration into startup. Day/night dim settings are implemented in the software path but remain
+unavailable until that calibration is supplied. Existing night-off behavior
+remains in effect while the capability is disabled.

@@ -35,9 +35,20 @@ struct web_preferences_v2_t {
 
 static_assert(sizeof(web_preferences_v2_t) == 432, "Preserve the v2 NVS layout");
 
+struct web_favorite_t {
+    char entity_id[48];
+    char kind[8];
+    char label[33];
+};
+
 // Runtime-only extension; never persist this structure as a raw blob.
 struct web_preferences_t : web_preferences_v2_t {
     char locale[8];
+    uint8_t backlight_percent; // zero = absent
+    uint8_t night_backlight_percent;
+    bool night_dim;
+    uint8_t favorite_count;
+    web_favorite_t favorites[4];
 };
 
 bool web_locale_valid(const char *locale);
