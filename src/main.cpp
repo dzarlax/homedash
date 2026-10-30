@@ -27,13 +27,15 @@
 #include "web_identity.h"
 #include "recovery_ap.h"
 #include "esp_timer.h"
+#include "action_feedback_runtime.h"
+#include "action_executor.h"
 
 static const char *TAG = "main";
 
 // Network task handle for cross-core notification
 struct recovery_job_t { web_network_update_t update; SemaphoreHandle_t done; bool result; };
-enum request_kind_t { REQUEST_CALENDAR, REQUEST_TOGGLE, REQUEST_CLIMATE, REQUEST_OTA, REQUEST_RECOVERY, REQUEST_RECOVERY_CONFIG };
-struct network_request_t { request_kind_t kind; int year, month, day; char entity[48]; char action[20]; char mode[16]; float temperature; recovery_job_t *recovery; };
+enum request_kind_t { REQUEST_CALENDAR, REQUEST_TOGGLE, REQUEST_CLIMATE, REQUEST_OTA, REQUEST_RECOVERY, REQUEST_RECOVERY_STOP, REQUEST_RECOVERY_CONFIG };
+struct network_request_t { request_kind_t kind; int year, month, day; char entity[48]; char action[20]; char mode[16]; float temperature; recovery_job_t *recovery; uint32_t action_id; };
 static QueueHandle_t s_request_queue = NULL;
 static device_config_t s_runtime_config = {};
 static char s_boot_id[17] = {};
@@ -45,6 +47,12 @@ static device_config_t s_pending_new_config = {};
 void request_recovery_ap(void)
 {
     network_request_t req = { REQUEST_RECOVERY, 0, 0, 0, {} };
+    if (s_request_queue) xQueueSend(s_request_queue, &req, 0);
+}
+
+void request_stop_recovery_ap(void)
+{
+    network_request_t req = { REQUEST_RECOVERY_STOP, 0, 0, 0, {} };
     if (s_request_queue) xQueueSend(s_request_queue, &req, 0);
 }
 
@@ -336,6 +344,82 @@ void request_calendar_date(int year, int month, int day)
     if (s_request_queue) xQueueSend(s_request_queue, &req, 0);
 }
 
+// The tracker is touched only while holding the LVGL lock, including by the network task.
+static ActionFeedback s_action_feedback;
+static uint64_t action_now_ms() { return (uint64_t)(esp_timer_get_time() / 1000); }
+const action_record_t *home_action_find(const char *entity) { return s_action_feedback.find(entity); }
+void home_action_tick(void) { s_action_feedback.tick(action_now_ms()); }
+uint32_t request_home_action(const char *entity, const char *action, float target, const char *mode)
+{
+    uint32_t id = s_action_feedback.begin(entity, action, target, mode, action_now_ms());
+    if (!id) return 0;
+    if (!wifi_is_connected()) { s_action_feedback.result(id, ACTION_NOT_SENT, action_now_ms(), ACTION_ERROR_OFFLINE); return id; }
+    network_request_t req = {};
+    req.kind = REQUEST_CLIMATE; req.action_id = id; req.temperature = target;
+    strncpy(req.entity, entity, sizeof(req.entity)-1);
+    strncpy(req.action, action, sizeof(req.action)-1);
+    if (mode) strncpy(req.mode, mode, sizeof(req.mode)-1);
+    if (!s_request_queue || xQueueSend(s_request_queue, &req, 0) != pdTRUE)
+        s_action_feedback.result(id, ACTION_NOT_SENT, action_now_ms(), ACTION_ERROR_QUEUE_FULL);
+    return id;
+}
+
+static uint64_t executor_now(void *) { return action_now_ms(); }
+static bool executor_dispatch(void *, uint32_t id)
+{
+    bool dispatch = false;
+    if (lvgl_port_lock(-1)) { dispatch = s_action_feedback.dispatch(id, action_now_ms()); lvgl_port_unlock(); }
+    return dispatch;
+}
+static bridge_action_result_t executor_post(void *, const action_request_t &req)
+{ return bridge_action_request(req.entity, req.action, req.target, req.mode); }
+static bridge_action_result_t executor_read(void *, const char *entity, int timeout)
+{ return bridge_action_read(entity, timeout); }
+static void executor_publish_read(void *, uint32_t id, const bridge_action_result_t &result)
+{
+    if (!result.has_observation) return;
+    if (lvgl_port_lock(-1)) {
+        if (s_action_feedback.by_id(id)) {
+            bridge_action_merge_observation(result.observation);
+            s_action_feedback.observe(id, result.observation, action_now_ms());
+            ui_dashboard_refresh_ha();
+        }
+        lvgl_port_unlock();
+    }
+}
+static void executor_publish_post(void *, uint32_t id, const bridge_action_result_t &result)
+{
+    if (lvgl_port_lock(-1)) {
+        s_action_feedback.result(id, result.phase, action_now_ms(), result.error);
+        if (result.has_observation && s_action_feedback.by_id(id)) {
+            bridge_action_merge_observation(result.observation);
+            s_action_feedback.observe(id, result.observation, action_now_ms());
+            ui_dashboard_refresh_ha();
+        }
+        lvgl_port_unlock();
+    }
+}
+static bool executor_waiting(void *, uint32_t id, uint64_t *deadline)
+{
+    bool waiting = false;
+    if (lvgl_port_lock(-1)) {
+        const action_record_t *r = s_action_feedback.by_id(id);
+        if (r && !r->timed_out && (r->phase == ACTION_ACCEPTED || r->phase == ACTION_UNKNOWN)) { waiting = true; *deadline = r->deadline_ms; }
+        lvgl_port_unlock();
+    }
+    return waiting;
+}
+static ActionExecutor s_action_executor({nullptr, executor_now, executor_dispatch, executor_post,
+    executor_read, executor_publish_post, executor_publish_read, executor_waiting});
+static void action_run_request(const network_request_t &req)
+{
+    action_request_t action = {}; action.id = req.action_id; action.target = req.temperature;
+    strncpy(action.entity, req.entity, sizeof(action.entity)-1);
+    strncpy(action.action, req.action, sizeof(action.action)-1);
+    strncpy(action.mode, req.mode, sizeof(action.mode)-1);
+    s_action_executor.run(action);
+}
+
 // Shared light toggle request (written by UI core, read by network core)
 void request_light_toggle(const char *entity_id)
 {
@@ -383,12 +467,19 @@ static void network_task(void *param)
     web_settings_store_recover_on_boot(s_boot_id, FW_VERSION, config_present);
     if (!config_present) {
         ESP_LOGW(TAG, "Device setup missing; starting protected local setup");
-        if (recovery_ap_start()) web_settings_store_complete_reset_after_recovery();
+        if (recovery_ap_start()) {
+            web_settings_store_complete_reset_after_recovery();
+            if (lvgl_port_lock(-1)) {
+                ui_dashboard_open_settings();
+                lvgl_port_unlock();
+            }
+        }
         else ESP_LOGE(TAG, "Local setup could not start");
         for (;;) {
             network_request_t setup_req = {};
             if (xQueueReceive(s_request_queue, &setup_req, pdMS_TO_TICKS(1000)) == pdTRUE) {
                 if (setup_req.kind == REQUEST_RECOVERY) recovery_ap_start();
+                else if (setup_req.kind == REQUEST_RECOVERY_STOP) recovery_ap_stop();
                 else if (setup_req.kind == REQUEST_RECOVERY_CONFIG) complete_recovery_request(&setup_req);
             }
         }
@@ -453,10 +544,13 @@ static void network_task(void *param)
             if (req.kind == REQUEST_RECOVERY_CONFIG) complete_recovery_request(&req);
             else if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
-            else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
+            else if (req.kind == REQUEST_CLIMATE) { if (req.action_id) action_run_request(req); else bridge_climate_action(req.entity, req.action, req.temperature, req.mode); }
             else if (req.kind == REQUEST_RECOVERY) recovery_ap_start();
+            else if (req.kind == REQUEST_RECOVERY_STOP) recovery_ap_stop();
             else ota_manual_check();
         }
+
+        s_action_executor.poll();
 
         // Bootstrap identity and preferences before requesting profile-scoped data.
         if (sync_elapsed >= 10000 && wifi_is_connected()) {
@@ -551,12 +645,13 @@ static void network_task(void *param)
         }
 
         TickType_t started = xTaskGetTickCount();
-        if (xQueueReceive(s_request_queue, &req, pdMS_TO_TICKS(TICK_MS)) == pdTRUE) {
+        if (xQueueReceive(s_request_queue, &req, pdMS_TO_TICKS(s_action_executor.wait_ms(TICK_MS))) == pdTRUE) {
             if (req.kind == REQUEST_RECOVERY_CONFIG) complete_recovery_request(&req);
             else if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
-            else if (req.kind == REQUEST_CLIMATE) bridge_climate_action(req.entity, req.action, req.temperature, req.mode);
+            else if (req.kind == REQUEST_CLIMATE) { if (req.action_id) action_run_request(req); else bridge_climate_action(req.entity, req.action, req.temperature, req.mode); }
             else if (req.kind == REQUEST_RECOVERY) recovery_ap_start();
+            else if (req.kind == REQUEST_RECOVERY_STOP) recovery_ap_stop();
             else ota_manual_check();
         }
         uint32_t elapsed = (xTaskGetTickCount() - started) * portTICK_PERIOD_MS;

@@ -103,6 +103,7 @@ static bool allocate_buffers() {
 }
 static void publish(int index, const char *id) {
   if (!overlay) {
+    ui_dashboard_hide_sensitive();
     overlay = lv_obj_create(lv_screen_active());
     lv_obj_remove_style_all(overlay);
     lv_obj_set_size(overlay, 1024, 600);

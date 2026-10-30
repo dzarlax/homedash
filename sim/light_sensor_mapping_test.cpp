@@ -5,9 +5,11 @@
 
 static std::string toggled_entity;
 
-void request_light_toggle(const char *entity_id)
+uint32_t request_home_action(const char *entity_id, const char *action, float, const char *)
 {
     toggled_entity = entity_id ? entity_id : "";
+    assert(strcmp(action, "turn_off") == 0);
+    return 1;
 }
 
 static void put_light(bridge_data_t &data, int index, const char *id, const char *name, bool on)
@@ -29,6 +31,7 @@ int main()
     lv_init();
     lv_display_create(1024, 600);
     ui_dashboard_create();
+    lv_obj_update_layout(lv_screen_active());
 
     bridge_data_t data = {};
     data.lights_valid = true;

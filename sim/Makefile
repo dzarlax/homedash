@@ -41,7 +41,7 @@ TARGET = homedash_sim
 
 all: $(TARGET)
 
-$(BUILD)/lvgl/%.o: $(LVGL_DIR)/%.c
+$(BUILD)/lvgl/%.o: $(LVGL_DIR)/%.c $(SRC_DIR)/lv_conf.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_C) $(INCLUDES) -c $< -o $@
 
@@ -124,7 +124,7 @@ test-network: $(BUILD)/network_status_test
 
 $(BUILD)/stubs_home_test.o: stubs.cpp
 	@mkdir -p $(BUILD)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -Drequest_light_toggle=sim_request_light_toggle -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -Drequest_light_toggle=sim_request_light_toggle -Drequest_home_action=sim_request_home_action -c $< -o $@
 
 $(BUILD)/light_sensor_mapping_test.o: light_sensor_mapping_test.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/bridge.h
 	@mkdir -p $(BUILD)
@@ -175,3 +175,42 @@ test-localization: $(TARGET)
 	HOMEDASH_SIM_LOCALE_TEST=1 HOMEDASH_SIM_PHOTO_FRAME=1 HOMEDASH_SIM_PHOTO_MODE_TEST=1 SDL_VIDEODRIVER=dummy ./$(TARGET)
 
 .PHONY: test-localization
+
+$(BUILD)/stubs_settings_tab.o: stubs.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -DPHOTO_FRAME_TEST -Drequest_recovery_ap=sim_request_recovery_ap -Drequest_stop_recovery_ap=sim_request_stop_recovery_ap -c $< -o $@
+
+$(BUILD)/settings_tab_test.o: settings_tab_test.cpp $(SRC_DIR)/ui_dashboard.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/settings_tab_test: $(BUILD)/settings_tab_test.o $(LVGL_OBJS) $(BUILD)/stubs_settings_tab.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-settings-tab: $(BUILD)/settings_tab_test
+	./$(BUILD)/settings_tab_test
+
+.PHONY: test-settings-tab
+
+test-action-feedback: test-action-feedback-ui test-action-executor
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) action_feedback_test.cpp $(SRC_DIR)/action_feedback.cpp -o $(BUILD)/action_feedback_test
+	$(BUILD)/action_feedback_test
+
+test-action-bridge:
+	sh ./action_bridge_test/run.sh
+
+$(BUILD)/action_feedback_ui_test.o: action_feedback_ui_test.cpp $(SRC_DIR)/ui_dashboard.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/action_feedback_ui_test: $(BUILD)/action_feedback_ui_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-action-feedback-ui: $(BUILD)/action_feedback_ui_test
+	./$(BUILD)/action_feedback_ui_test
+
+test-action-executor:
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) action_executor_test.cpp $(SRC_DIR)/action_feedback.cpp $(SRC_DIR)/action_executor.cpp -o $(BUILD)/action_executor_test
+	$(BUILD)/action_executor_test

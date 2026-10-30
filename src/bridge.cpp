@@ -3,11 +3,13 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <cmath>
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
 #include "web_identity.h"
+#include "esp_timer.h"
 #include "freertos/semphr.h"
 
 static const char *TAG = "bridge";
@@ -458,6 +460,206 @@ bool bridge_copy_last_error(char *out, size_t out_size)
     out[out_size - 1] = '\0';
     xSemaphoreGive(s_data_mutex);
     return true;
+}
+
+namespace {
+constexpr size_t ACTION_RESPONSE_LIMIT = 8192;
+struct action_response_t { char *data; size_t used; bool overflow; bool timed_out; int64_t deadline_us; };
+static esp_err_t action_http_event(esp_http_client_event_t *event)
+{
+    if (event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
+    auto *response = static_cast<action_response_t *>(event->user_data);
+    if (response && esp_timer_get_time() >= response->deadline_us) {
+        response->timed_out = true;
+        return ESP_FAIL;
+    }
+    if (!response || event->data_len < 0 || static_cast<size_t>(event->data_len) > ACTION_RESPONSE_LIMIT - response->used) {
+        if (response) response->overflow = true;
+        return ESP_FAIL;
+    }
+    memcpy(response->data + response->used, event->data, event->data_len);
+    response->used += event->data_len;
+    response->data[response->used] = 0;
+    return ESP_OK;
+}
+static bool action_entity_valid(const char *entity)
+{
+    if (!entity || !*entity || strlen(entity) >= sizeof(action_observation_t::entity)) return false;
+    if (strncmp(entity, "light.", 6) && strncmp(entity, "climate.", 8)) return false;
+    for (const char *p = entity; *p; ++p)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_' || *p == '.')) return false;
+    return true;
+}
+static bool action_mode_valid(const char *mode)
+{
+    return mode && (!strcmp(mode,"off") || !strcmp(mode,"cool") || !strcmp(mode,"heat") ||
+           !strcmp(mode,"dry") || !strcmp(mode,"fan_only") || !strcmp(mode,"auto") || !strcmp(mode,"heat_cool"));
+}
+static action_error_t action_safe_error(const char *code, action_error_t fallback)
+{
+    if (!code) return fallback;
+    if (!strcmp(code,"offline")) return ACTION_ERROR_OFFLINE;
+    if (!strcmp(code,"queue_full")) return ACTION_ERROR_QUEUE_FULL;
+    if (!strcmp(code,"unauthorized")) return ACTION_ERROR_UNAUTHORIZED;
+    if (!strcmp(code,"unsupported")) return ACTION_ERROR_UNSUPPORTED;
+    if (!strcmp(code,"upstream_unavailable")) return ACTION_ERROR_UPSTREAM_UNAVAILABLE;
+    if (!strcmp(code,"invalid_response")) return ACTION_ERROR_INVALID_RESPONSE;
+    if (!strcmp(code,"timeout")) return ACTION_ERROR_TIMEOUT;
+    return fallback;
+}
+static bool parse_action_observation(cJSON *item, const char *expected, action_observation_t *out)
+{
+    if (!cJSON_IsObject(item)) return false;
+    cJSON *entity = cJSON_GetObjectItemCaseSensitive(item,"entity_id");
+    cJSON *kind = cJSON_GetObjectItemCaseSensitive(item,"kind");
+    cJSON *available = cJSON_GetObjectItemCaseSensitive(item,"available");
+    cJSON *state = cJSON_GetObjectItemCaseSensitive(item,"state");
+    if (!cJSON_IsString(entity) || !cJSON_IsString(kind) || !cJSON_IsString(state) || !cJSON_IsBool(available) ||
+        strcmp(entity->valuestring,expected) || strlen(state->valuestring) >= sizeof(out->state)) return false;
+    const bool light = !strncmp(expected,"light.",6);
+    if (strcmp(kind->valuestring,light ? "light" : "climate")) return false;
+    *out = {};
+    snprintf(out->entity,sizeof(out->entity),"%s",expected);
+    snprintf(out->kind,sizeof(out->kind),"%s",kind->valuestring);
+    snprintf(out->state,sizeof(out->state),"%s",state->valuestring);
+    out->available = cJSON_IsTrue(available);
+    if (out->available && (light ? (strcmp(out->state,"on") && strcmp(out->state,"off")) : !action_mode_valid(out->state))) return false;
+    cJSON *target = cJSON_GetObjectItemCaseSensitive(item,"target_temperature");
+    if (target) {
+        if (light || !cJSON_IsNumber(target) || !std::isfinite(target->valuedouble) || !std::isfinite(static_cast<float>(target->valuedouble))) return false;
+        out->has_target = true; out->target = static_cast<float>(target->valuedouble);
+    }
+    return true;
+}
+static void merge_action_observation(const action_observation_t &observation)
+{
+    if (!observation.available || !s_data_mutex) return;
+    xSemaphoreTake(s_data_mutex, portMAX_DELAY);
+    // A single-entity read must not replace the selected list or its names.
+    if (!strcmp(observation.kind,"light")) {
+        for (int i=0;i<s_data.light_count && i<BRIDGE_MAX_LIGHTS;++i)
+            if (!strcmp(s_data.lights[i].entity_id,observation.entity))
+                s_data.lights[i].on = !strcmp(observation.state,"on");
+    } else {
+        for (int i=0;i<s_data.climate_count && i<BRIDGE_MAX_CLIMATES;++i)
+            if (!strcmp(s_data.climates[i].entity_id,observation.entity)) {
+                snprintf(s_data.climates[i].mode,sizeof(s_data.climates[i].mode),"%s",observation.state);
+                if (observation.has_target) {
+                    s_data.climates[i].has_target_temp = true;
+                    s_data.climates[i].target_temp = observation.target;
+                }
+            }
+    }
+    xSemaphoreGive(s_data_mutex);
+}
+static bridge_action_result_t action_http(const char *entity, const char *body, int timeout_ms)
+{
+    const bool post = body != nullptr;
+    bridge_action_result_t result = {};
+    result.phase = post ? ACTION_NOT_SENT : ACTION_EMPTY;
+    result.error = ACTION_ERROR_UNSUPPORTED;
+    if (!action_entity_valid(entity) || timeout_ms <= 0) return result;
+    if (!wifi_is_connected()) { result.error = ACTION_ERROR_OFFLINE; return result; }
+    char url[256];
+    int length = post ? snprintf(url,sizeof(url),"%s/api/ha/action",s_bridge_url)
+                      : snprintf(url,sizeof(url),"%s/api/ha/state?entity_id=%s",s_bridge_url,entity);
+    if (!s_bridge_url[0] || length < 0 || length >= static_cast<int>(sizeof(url))) return result;
+    action_response_t response = {};
+    response.data = static_cast<char *>(malloc(ACTION_RESPONSE_LIMIT + 1));
+    if (!response.data) { result.error = ACTION_ERROR_UPSTREAM_UNAVAILABLE; return result; }
+    response.data[0] = 0;
+    esp_http_client_config_t config = {};
+    config.url = url; config.method = post ? HTTP_METHOD_POST : HTTP_METHOD_GET;
+    config.timeout_ms = post ? 10000 : (timeout_ms < 3000 ? timeout_ms : 3000);
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.disable_auto_redirect = true;
+    config.event_handler = action_http_event; config.user_data = &response;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) { free(response.data); result.error = ACTION_ERROR_UPSTREAM_UNAVAILABLE; return result; }
+    bool headers_ok = esp_http_client_set_header(client,"X-API-Key",s_bridge_key) == ESP_OK &&
+        esp_http_client_set_header(client,"Accept-Encoding","identity") == ESP_OK &&
+        web_identity_set_http_header(client) == ESP_OK;
+    if (post) headers_ok = headers_ok && esp_http_client_set_header(client,"Content-Type","application/json") == ESP_OK &&
+        esp_http_client_set_post_field(client,body,strlen(body)) == ESP_OK;
+    if (!headers_ok) {
+        esp_http_client_cleanup(client); free(response.data); result.error = ACTION_ERROR_UNAUTHORIZED; return result;
+    }
+    response.deadline_us = esp_timer_get_time() + static_cast<int64_t>(config.timeout_ms) * 1000;
+    esp_err_t error = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+    result.phase = post ? ACTION_UNKNOWN : ACTION_EMPTY;
+    result.error = ACTION_ERROR_UPSTREAM_UNAVAILABLE;
+    if (response.timed_out || esp_timer_get_time() >= response.deadline_us) {
+        result.error = ACTION_ERROR_TIMEOUT; free(response.data); return result;
+    }
+    if (error != ESP_OK) {
+        if (response.overflow) result.error = ACTION_ERROR_INVALID_RESPONSE;
+#ifdef ESP_ERR_TIMEOUT
+        if (error == ESP_ERR_TIMEOUT) result.error = ACTION_ERROR_TIMEOUT;
+#endif
+        free(response.data); return result;
+    }
+    if (status == 401 || status == 403) result.error = ACTION_ERROR_UNAUTHORIZED;
+    else if (status == 404) result.error = ACTION_ERROR_UNSUPPORTED;
+    else if (status == 408 || status == 504) result.error = ACTION_ERROR_TIMEOUT;
+    if (post && status >= 400 && status < 500 && status != 408) result.phase = ACTION_REJECTED;
+    if (response.overflow) { result.error = ACTION_ERROR_INVALID_RESPONSE; free(response.data); return result; }
+    cJSON *root = cJSON_ParseWithLengthOpts(response.data,response.used + 1,nullptr,true);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root); free(response.data);
+        if (status == 200) result.error = ACTION_ERROR_INVALID_RESPONSE;
+        return result;
+    }
+    cJSON *remote_result = cJSON_GetObjectItemCaseSensitive(root,"action_result");
+    cJSON *remote_error = cJSON_GetObjectItemCaseSensitive(remote_result,"error");
+    if (!cJSON_IsString(remote_error)) remote_error = cJSON_GetObjectItemCaseSensitive(root,"error");
+    if (cJSON_IsString(remote_error)) result.error = action_safe_error(remote_error->valuestring,result.error);
+    if (status == 200) {
+        if (post) {
+            cJSON *state = cJSON_GetObjectItemCaseSensitive(remote_result,"state");
+            cJSON *ok = cJSON_GetObjectItemCaseSensitive(root,"ok");
+            if ((cJSON_IsString(state) && !strcmp(state->valuestring,"accepted")) ||
+                (!remote_result && cJSON_IsTrue(ok))) {
+                result.phase = ACTION_ACCEPTED; result.error = ACTION_ERROR_NONE;
+            } else { result.error = ACTION_ERROR_INVALID_RESPONSE; }
+        } else { result.error = ACTION_ERROR_NONE; }
+        cJSON *observation = cJSON_GetObjectItemCaseSensitive(root,"observation");
+        // Legacy aggregate snapshots cannot prove availability or causality.
+        if (observation && parse_action_observation(observation,entity,&result.observation)) {
+            result.has_observation = true;
+        } else if (observation || !post) result.error = ACTION_ERROR_INVALID_RESPONSE;
+    }
+    cJSON_Delete(root); free(response.data); return result;
+}
+} // namespace
+
+bridge_action_result_t bridge_action_request(const char *entity, const char *action, float temperature, const char *mode)
+{
+    bridge_action_result_t invalid = {}; invalid.phase = ACTION_NOT_SENT; invalid.error = ACTION_ERROR_UNSUPPORTED;
+    if (!action_entity_valid(entity) || !action) return invalid;
+    const bool climate = !strncmp(entity,"climate.",8);
+    if (strcmp(action,"turn_on") && strcmp(action,"turn_off") &&
+        (!climate || (strcmp(action,"set_temperature") && strcmp(action,"set_hvac_mode")))) return invalid;
+    if (!strcmp(action,"set_temperature") && (!std::isfinite(temperature) || temperature < 16 || temperature > 30)) return invalid;
+    if (!strcmp(action,"set_hvac_mode") && (!action_mode_valid(mode) || !strcmp(mode,"off"))) return invalid;
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return invalid;
+    cJSON_AddStringToObject(root,"entity_id",entity); cJSON_AddStringToObject(root,"action",action);
+    if (!strcmp(action,"set_temperature")) cJSON_AddNumberToObject(root,"temperature",temperature);
+    if (!strcmp(action,"set_hvac_mode")) cJSON_AddStringToObject(root,"hvac_mode",mode);
+    char *body = cJSON_PrintUnformatted(root); cJSON_Delete(root);
+    if (!body) return invalid;
+    auto result = action_http(entity,body,10000); free(body); return result;
+}
+void bridge_action_merge_observation(const action_observation_t &observation)
+{
+    merge_action_observation(observation);
+}
+
+bridge_action_result_t bridge_action_read(const char *entity, int timeout_ms)
+{
+    return action_http(entity,nullptr,timeout_ms);
 }
 
 void bridge_toggle_light(const char *entity_id)

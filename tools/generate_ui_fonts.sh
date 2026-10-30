@@ -14,7 +14,7 @@ cd "$repo_root"
 font="src/fonts/Montserrat-Medium.ttf"
 for size in 16 24; do
   "$font_conv" --font "$font" \
-    --range 0xB7,0x100-0x17F,0x400-0x4FF \
+    --range 0xB3,0xB5,0xB7,0x100-0x17F,0x400-0x4FF,0x2014 \
     --size "$size" --bpp 4 --no-compress --no-prefilter \
     --format lvgl --lv-include lvgl.h \
     --lv-font-name "font_montserrat_${size}_cyr" \

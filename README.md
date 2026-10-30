@@ -39,7 +39,7 @@ ESP32 Bridge (Go server)
       NVS: wifi_ssid, wifi_pass, bridge_url, bridge_key
       Polls /api/dashboard every 30s
       Syncs web preferences every 10s on /api/device/v1/sync
-      Checks OTA every 30 min (or manual button on Page 3)
+      Checks OTA every 30 min (or manual button in Settings)
       NVS namespace `webidentity`: stable 32-hex device ID shared by all native requests
       NVS namespace `webprefs`: optional versioned settings, revision, command replay marker, network trial journal
 ```
@@ -63,7 +63,7 @@ separate versioned NVS record scoped to Bridge ID and revision. Older Bridge
 responses without a locale select Russian. No firmware update is implied by
 changing the browser language.
 
-Use the Bridge web settings page for managed display preferences. The device keeps its compact three-page dashboard; it does not expose a large local settings menu. A long press on the Home page title starts a protected setup access point for ten minutes. Its unique WPA2 password and local setup URL appear on the display. Network changes are tried before they are committed, and an interrupted trial restores the previous NVS configuration on boot.
+Use the Bridge web settings page for managed display preferences, including language. The fourth display tab, Settings, provides a public web link/QR, device status and manual OTA check. Local recovery starts only from its explicit button (or automatically when initial network configuration is missing). The temporary protected setup network lasts ten minutes and can be stopped explicitly. Its password stays masked until tapped, is revealed for 15 seconds, and hides on navigation, screen off, photo mode or a language change. Leaving Settings keeps the network active for phone setup. Network changes are tried before they are committed, and an interrupted trial restores the previous NVS configuration on boot.
 
 ### Dual-Core Layout
 
@@ -127,7 +127,7 @@ ota_1      7MB   — firmware slot B
    ```
    OTA_GITHUB_REPO=dzarlax/homedash
    ```
-5. The display picks up the new GitHub Release within 30 minutes (or tap "Обновить" on Page 3).
+5. The display picks up the new GitHub Release within 30 minutes (or tap "Проверить обновление" in Settings).
 
 ### OTA Rollback
 
@@ -244,3 +244,11 @@ Photo-frame loading and manifest refresh retain the current image until the next
 frame has downloaded successfully. OTA checks also leave the photo frame active;
 only an available update pauses the worker and releases its buffers before
 flashing. If the worker cannot acknowledge the pause, flashing is postponed.
+
+## Settings application and Home action feedback
+
+The web panel distinguishes saving on Bridge from the display acknowledging the current revision and locale. It keeps the last known status if polling fails and offers a read-only status check. A lost save response remains uncertain until reconciliation; write-only credentials are never inferred from readable settings. Draft edits survive polling and an in-flight save.
+
+Home light commands use explicit on/off intents, and climate temperature taps debounce for 500 ms. Controls for the affected entity stay disabled while its command is active. Only an available, freshly read matching Home Assistant state confirms an accepted command. A lost response remains unknown; subsequent matching reads report updated state without claiming causal success. No action is automatically resent. The 20-second UI waiting budget does not imply cancellation of an already transmitted command; ESP HTTP I/O timeouts are not a strict TLS wall-clock bound.
+
+Run `make -C sim test-action-feedback test-action-bridge test-home test-settings-tab test-photo-frame test-localization` for isolated tracker, scheduling, HTTP, and LVGL regressions. Host tests require the existing local cJSON source/header in `sim/esp_stubs/`; these are ignored simulator dependencies. Windows source lists include settings and QR dependencies, but Windows compilation must be verified on Windows.

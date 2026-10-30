@@ -29,7 +29,7 @@ if (!$VcVars) {
 
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
-$lvglDirs = @("core", "display", "draw", "font", "indev", "layouts", "misc", "osal", "stdlib", "themes", "tick", "widgets", "libs\bin_decoder")
+$lvglDirs = @("core", "display", "draw", "font", "indev", "layouts", "misc", "osal", "stdlib", "themes", "tick", "widgets", "libs\bin_decoder", "libs\qrcode")
 $lvglSources = foreach ($dir in $lvglDirs) {
     Get-ChildItem -Path (Join-Path $LvglSrc $dir) -Recurse -Filter "*.c" | ForEach-Object { $_.FullName }
 }
@@ -39,6 +39,8 @@ $sources = @(
     (Join-Path $PSScriptRoot "stubs.cpp"),
     (Join-Path $PSScriptRoot "photo_frame_runtime.cpp"),
     (Join-Path $RepoRoot "src\photo_frame.cpp"),
+    (Join-Path $RepoRoot "src\web_settings.cpp"),
+    (Join-Path $PSScriptRoot "esp_stubs\cJSON.c"),
     (Join-Path $RepoRoot "src\ui_dashboard.cpp"),
     (Join-Path $RepoRoot "src\ui_strings.cpp"),
     (Join-Path $RepoRoot "src\weather_icons.cpp"),
