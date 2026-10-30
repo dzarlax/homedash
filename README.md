@@ -4,13 +4,15 @@ A smart home dashboard for the **Waveshare ESP32-S3-Touch-LCD-7B** (7" 1024×600
 
 ## Features
 
-- **3-page tileview** — swipe between pages:
+- **4-page tileview** — swipe between pages:
   - **День**: weekly strip, closest calendar event, weather, transport and a home-air summary
-  - **Самочувствие**: health metrics (readiness, steps, sleep, HR, HRV, SpO2), Todoist tasks and news
+  - **Сводка**: health metrics (readiness, steps, sleep, HR, HRV, SpO2), Todoist tasks and news
   - **Дом**: Home Assistant light controls and air-quality sensors per room
+  - **Настройки**: Bridge web-panel link/QR, device status, local recovery and manual OTA check
 - **OTA updates** — firmware updates over WiFi via Bridge, with automatic rollback
 - **Web-managed preferences** — the Bridge settings page controls the display name, city/timezone, clock format, visible dashboard sections, idle/night behavior, photo timing, and managed update policy
-- **Full Cyrillic UI** — Russian-localized interface with custom Montserrat fonts
+- **Three UI languages** — Russian, English and Serbian Latin, with custom Montserrat fonts
+- **Photo frame** — Bridge-prepared photos, server-rendered weather/event cards and a local clock/date; each information block can be enabled independently in the web panel
 - **Dual-core** — LVGL renders on Core 1, all network I/O on Core 0
 - **Anti-tear display** — PSRAM double-buffer + bounce buffer pipeline
 
@@ -30,7 +32,11 @@ A smart home dashboard for the **Waveshare ESP32-S3-Touch-LCD-7B** (7" 1024×600
 ```
 ESP32 Bridge (Go server)
   ├─ /api/dashboard    → health, tasks, news, sensors, lights, weather, transport
-  ├─ /api/calendar     → on-demand HA calendar events
+  ├─ /api/calendar     → Calendar Platform events, with HA compatibility fallback
+  ├─ /api/photo-frame/v1/manifest → prepared photo list
+  ├─ /api/photo-frame/v1/frames/{id} → full-screen RGB565 photo
+  ├─ /api/photo-frame/v1/context → clock preferences and card metadata
+  ├─ /api/photo-frame/v1/overlays/{id} → server-rendered RGB565 cards
   ├─ /api/ha/action    → light toggle (returns fresh state)
   ├─ /api/ota/check    → firmware version comparison
   └─ /api/ota/firmware → streams firmware binary for OTA
@@ -207,13 +213,45 @@ bash sim/localization_test/run.sh /tmp/homedash-localization-screenshots
 The simulator checks layout and UI behavior; hardware networking, PSRAM, touch
 and OTA installation require separate device acceptance.
 
-## Related
+## Photo frame
 
-- [ESP32 Bridge](https://github.com/dzarlax/esp32-bridge) — Go backend that aggregates all data sources and proxies OTA updates
+Available in firmware **v1.0.27**, with a compatible Bridge. Bridge prepares
+1024×600 RGB565 photos and small weather/event cards; the ESP32 displays them and
+updates its 80px clock and date locally, in the configured language, timezone and
+12/24-hour format. A minute change does not download another photograph.
 
-## License
+Configure the source, album, idle delay, slide interval and the **Clock and date**,
+**Weather**, and **Next event** switches in the Bridge web panel. Missing visibility
+settings default to enabled. Manual launch is available from that panel; Home no
+longer contains a photo-frame button or loading/status text. A touch exits to the
+previous dashboard page and cancels a pending manual start.
 
-MIT
+Photos use centered crop when it removes at most 10% by default. Beyond that
+threshold, one complete photo is centered over a dimmed, blurred copy. Portraits
+remain whole. The clock does not add a full-width shaded strip to the photo.
+
+While the frame is visible, the display polls context once per minute and replaces
+only changed cards. Hashes, dimensions, placement and expiration are validated;
+expired cards disappear locally even when the network is unavailable. Context
+updates preserve the current photo and slide timer. Cards use bounded PSRAM
+buffers and share the existing sequential photo worker. Background dashboard
+activity does not dismiss the frame.
+
+Bridge chooses an ongoing timed event first, then the next event within 24 hours
+from the selected calendars. All-day events are excluded. If the calendar response
+is partial, only explicitly ready, non-stale sources are used, with a "From available calendars" caption. The date browsed on the Day tab does not affect this selection.
+Weather expires after 30 minutes without fresh source data; event cards expire
+after five minutes or at the next start/end transition, whichever comes first.
+
+Adaptive photo-matched cards and local light/dark clock text are available in
+firmware **v1.0.28**. With a
+compatible Bridge, the display requests v2 context for the displayed frame and
+rejects late responses for another frame. Up to three small RGB565 patches share
+a 512 KiB aggregate pixel budget including replacement staging; no third full
+photo buffer is allocated. Older Bridges continue to use v1 context. Hardware
+memory and long-running Wi-Fi acceptance require a separately authorized release.
+
+### Simulator and checks
 
 The desktop simulator can exercise the photo frame using generated color bars and
 no network credentials: set `HOMEDASH_SIM_PHOTO_FRAME=1` before launching the
@@ -221,9 +259,9 @@ simulator. Fixture time runs 30 times faster (the default idle period takes ten
 seconds); touch or click dismisses the frame. This does not test ESP32 PSRAM,
 TLS, display timing, or OTA.
 
-On a fresh boot the display waits for the default five-minute idle period before
-its first manifest request. A shorter Bridge idle setting applies after that
-first successful manifest and on subsequent idle periods.
+The default idle period is five minutes. Managed preferences can override it
+from 30 to 3600 seconds, including saved preferences restored at boot. Without
+managed preferences, manifest timing applies after the first successful request.
 
 Run `make -C sim test-photo-frame test-photo-client` for fake-clock UI and
 HTTP-client protocol checks. The client test needs a C++ compiler and OpenSSL
@@ -231,14 +269,6 @@ development headers; it uses temporary files and a mocked transport.
 
 Run `make -C sim test-settings` for host checks of settings validation, NVS
 rollback/commit behavior, command replay, and post-reboot command results.
-
-The Home page also has a **Фоторамка** button for an immediate photo-frame
-attempt without waiting for the idle timer. It still respects Bridge's enabled
-state and OTA activity. The adjacent status shows collection loading, image
-loading, an unavailable source, or an image-buffer allocation failure. A touch
-during preparation cancels the manual attempt; the first touch on a displayed
-frame returns to the same dashboard page without relaunching it.
-
 
 Photo-frame loading and manifest refresh retain the current image until the next
 frame has downloaded successfully. OTA checks also leave the photo frame active;
@@ -252,3 +282,11 @@ The web panel distinguishes saving on Bridge from the display acknowledging the 
 Home light commands use explicit on/off intents, and climate temperature taps debounce for 500 ms. Controls for the affected entity stay disabled while its command is active. Only an available, freshly read matching Home Assistant state confirms an accepted command. A lost response remains unknown; subsequent matching reads report updated state without claiming causal success. No action is automatically resent. The 20-second UI waiting budget does not imply cancellation of an already transmitted command; ESP HTTP I/O timeouts are not a strict TLS wall-clock bound.
 
 Run `make -C sim test-action-feedback test-action-bridge test-home test-settings-tab test-photo-frame test-localization` for isolated tracker, scheduling, HTTP, and LVGL regressions. Host tests require the existing local cJSON source/header in `sim/esp_stubs/`; these are ignored simulator dependencies. Windows source lists include settings and QR dependencies, but Windows compilation must be verified on Windows.
+
+## Related
+
+- [ESP32 Bridge](https://github.com/dzarlax/esp32-bridge) — Go backend that aggregates all data sources and proxies OTA updates
+
+## License
+
+MIT

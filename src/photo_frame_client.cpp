@@ -194,7 +194,7 @@ photo_result photo_fetch_manifest(const char *base, const char *key,
   photo_manifest m = {};
   int v, w, h, bytes;
   char format[16];
-  bool ok = number(root, "version", 1, 1, &v) &&
+  bool ok = cJSON_IsObject(root) && unique_object_keys(root) && number(root, "version", 1, 1, &v) &&
             number(root, "width", 1024, 1024, &w) &&
             number(root, "height", 600, 600, &h) &&
             number(root, "frame_bytes", PHOTO_FRAME_BYTES, PHOTO_FRAME_BYTES,
@@ -206,6 +206,9 @@ photo_result photo_fetch_manifest(const char *base, const char *key,
             !strcmp(format, "rgb565le") &&
             text(root, "state", m.state, sizeof(m.state)) &&
             text(root, "generation", m.generation, sizeof(m.generation));
+  m.overlay_context_version = 1;
+  cJSON *overlay_version = cJSON_GetObjectItemCaseSensitive(root, "overlay_context_version");
+  if (overlay_version && !number(root, "overlay_context_version", 1, 2, &m.overlay_context_version)) ok = false;
   cJSON *frames = cJSON_GetObjectItemCaseSensitive(root, "frames");
   if (!cJSON_IsArray(frames))
     ok = false;
@@ -234,13 +237,13 @@ photo_result photo_fetch_manifest(const char *base, const char *key,
   return PHOTO_OK;
 }
 static photo_result fetch_image(const char *base, const char *key,
-                                const photo_frame_entry *entry, uint8_t *buffer, size_t bytes, const char *route,
+                                const photo_frame_entry *entry, uint8_t *buffer, size_t bytes, const char *route, int version,
                                 photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic) {
   if (diagnostic) *diagnostic = {};
   if (!hex64(entry->id) || !hex64(entry->sha256))
     return PHOTO_FAILED;
   char url[256];
-  if (snprintf(url, sizeof(url), "%s/api/photo-frame/v1/%s/%s", base, route,
+  if (snprintf(url, sizeof(url), "%s/api/photo-frame/v%d/%s/%s", base, version, route,
                entry->id) >= (int)sizeof(url))
     return PHOTO_FAILED;
   request r(diagnostic);
@@ -309,20 +312,22 @@ done:
 }
 
 photo_result photo_fetch_pixels(const char *base, const char *key, const photo_frame_entry *entry, uint8_t *buffer, photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic) {
-  return fetch_image(base, key, entry, buffer, PHOTO_FRAME_BYTES, "frames", cancel, arg, diagnostic);
+  return fetch_image(base, key, entry, buffer, PHOTO_FRAME_BYTES, "frames", 1, cancel, arg, diagnostic);
 }
-photo_result photo_fetch_overlay(const char *base, const char *key, const photo_overlay_block *block, uint8_t *buffer, photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic) {
-  if (!block || !buffer || block->width < 1 || block->height < 1 || (size_t)block->width * block->height * 2 > 107520) return PHOTO_FAILED;
+photo_result photo_fetch_overlay(const char *base, const char *key, const photo_overlay_block *block, uint8_t *buffer, photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic, int version) {
+  if ((version != 1 && version != 2) || !block || !buffer || block->width < 1 || block->height < 1 || (size_t)block->width * block->height * 2 > (version == 2 ? 122880u : 107520u)) return PHOTO_FAILED;
   photo_frame_entry entry = {};
   memcpy(entry.id, block->id, sizeof(entry.id)); memcpy(entry.sha256, block->sha256, sizeof(entry.sha256));
-  return fetch_image(base, key, &entry, buffer, (size_t)block->width * block->height * 2, "overlays", cancel, arg, diagnostic);
+  return fetch_image(base, key, &entry, buffer, (size_t)block->width * block->height * 2, "overlays", version, cancel, arg, diagnostic);
 }
 
 photo_result photo_fetch_context(const char *base, const char *key, photo_context *out,
-                                 photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic) {
+                                 photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic, int requested_version, const char *frame_id) {
   if (diagnostic) *diagnostic = {};
   char url[256];
-  if (!out || snprintf(url, sizeof(url), "%s/api/photo-frame/v1/context", base) >= (int)sizeof(url)) return PHOTO_FAILED;
+  if (!out || (requested_version != 1 && requested_version != 2) || (requested_version == 2 && !hex64(frame_id))) return PHOTO_FAILED;
+  int url_len = requested_version == 2 ? snprintf(url, sizeof(url), "%s/api/photo-frame/v2/context?frame_id=%s", base, frame_id) : snprintf(url, sizeof(url), "%s/api/photo-frame/v1/context", base);
+  if (url_len < 0 || url_len >= (int)sizeof(url)) return PHOTO_FAILED;
   request r(diagnostic);
   photo_result opened = r.open(url, key, cancel, arg);
   if (opened != PHOTO_OK) return opened;
@@ -354,16 +359,26 @@ photo_result photo_fetch_context(const char *base, const char *key, photo_contex
   };
   cJSON *clock = cJSON_GetObjectItemCaseSensitive(root, "clock");
   cJSON *enabled = cJSON_GetObjectItemCaseSensitive(clock, "enabled");
-  bool ok = cJSON_IsObject(root) && unique_object_keys(root) && number(root, "version", 1, 1, &version) && text(root, "revision", c.revision, sizeof(c.revision)) && hex64(c.revision) && epoch_value(root, "server_time", &c.server_time) && cJSON_IsObject(clock) && cJSON_IsBool(enabled) && text(clock, "locale", c.locale, sizeof(c.locale)) && (!strcmp(c.locale, "ru") || !strcmp(c.locale, "en") || !strcmp(c.locale, "sr-Latn")) && text(clock, "timezone", c.timezone, sizeof(c.timezone)) && c.timezone[0] && text(clock, "clock_format", c.clock_format, sizeof(c.clock_format)) && (!strcmp(c.clock_format, "12h") || !strcmp(c.clock_format, "24h"));
-  c.clock_enabled = cJSON_IsTrue(enabled);
+  bool ok = cJSON_IsObject(root) && unique_object_keys(root) && number(root, "version", requested_version, requested_version, &version) && text(root, "revision", c.revision, sizeof(c.revision)) && hex64(c.revision) && epoch_value(root, "server_time", &c.server_time) && cJSON_IsObject(clock) && cJSON_IsBool(enabled) && text(clock, "locale", c.locale, sizeof(c.locale)) && (!strcmp(c.locale, "ru") || !strcmp(c.locale, "en") || !strcmp(c.locale, "sr-Latn")) && text(clock, "timezone", c.timezone, sizeof(c.timezone)) && c.timezone[0] && text(clock, "clock_format", c.clock_format, sizeof(c.clock_format)) && (!strcmp(c.clock_format, "12h") || !strcmp(c.clock_format, "24h"));
+  c.clock_enabled = cJSON_IsTrue(enabled); c.version = version;
+  if (requested_version == 2) {
+    cJSON *backdrop = cJSON_GetObjectItemCaseSensitive(clock, "backdrop");
+    ok = ok && text(root, "frame_id", c.frame_id, sizeof(c.frame_id)) && hex64(c.frame_id) && !strcmp(c.frame_id, frame_id) && text(clock, "tone", c.tone, sizeof(c.tone)) && (!strcmp(c.tone, "light") || !strcmp(c.tone, "dark")) && cJSON_IsBool(backdrop);
+    c.backdrop = cJSON_IsTrue(backdrop);
+  }
   cJSON *blocks = cJSON_GetObjectItemCaseSensitive(root, "blocks");
   if (!cJSON_IsArray(blocks)) ok = false;
   else {
-    c.count = cJSON_GetArraySize(blocks); if (c.count > 2) ok = false;
+    c.count = cJSON_GetArraySize(blocks); if (c.count > (requested_version == 2 ? 3 : 2)) ok = false;
+    size_t total = 0, largest = 0; bool has_clock = false;
     for (int i = 0; ok && i < c.count; ++i) {
       photo_overlay_block &b = c.blocks[i]; cJSON *item = cJSON_GetArrayItem(blocks, i);
-      ok = cJSON_IsObject(item) && text(item, "kind", b.kind, sizeof(b.kind)) && (!strcmp(b.kind, "weather") || !strcmp(b.kind, "event")) && text(item, "render_id", b.id, sizeof(b.id)) && hex64(b.id) && text(item, "sha256", b.sha256, sizeof(b.sha256)) && hex64(b.sha256) && number(item, "x", 0, 1023, &b.x) && number(item, "y", 0, 599, &b.y) && number(item, "width", 1, !strcmp(b.kind, "weather") ? 236 : 480, &b.width) && number(item, "height", 1, !strcmp(b.kind, "weather") ? 200 : 112, &b.height) && b.x + b.width <= 1024 && b.y + b.height <= 600 && epoch_value(item, "expires_at", &b.expires_at) && b.expires_at <= c.server_time + (!strcmp(b.kind, "weather") ? 1800 : 300) && (i == 0 || strcmp(c.blocks[0].kind, b.kind));
+      ok = cJSON_IsObject(item) && text(item, "kind", b.kind, sizeof(b.kind)) && (!strcmp(b.kind, "weather") || !strcmp(b.kind, "event") || (requested_version == 2 && !strcmp(b.kind, "clock"))) && text(item, "render_id", b.id, sizeof(b.id)) && hex64(b.id) && text(item, "sha256", b.sha256, sizeof(b.sha256)) && hex64(b.sha256) && number(item, "x", 0, 1023, &b.x) && number(item, "y", 0, 599, &b.y) && number(item, "width", 1, !strcmp(b.kind, "weather") ? 236 : 480, &b.width) && number(item, "height", 1, !strcmp(b.kind, "weather") ? 200 : !strcmp(b.kind, "clock") ? 128 : 112, &b.height) && b.x + b.width <= 1024 && b.y + b.height <= 600 && epoch_value(item, "expires_at", &b.expires_at) && b.expires_at <= c.server_time + (!strcmp(b.kind, "event") ? 300 : 1800);
+      for (int j = 0; j < i; ++j) if (!strcmp(c.blocks[j].kind, b.kind)) ok = false;
+      size_t bytes = (size_t)b.width * b.height * 2; total += bytes; if (bytes > largest) largest = bytes;
+      if (!strcmp(b.kind, "clock")) has_clock = true;
     }
+    if (total + largest > 512u * 1024u || (requested_version == 2 && (has_clock != c.backdrop || (has_clock && !c.clock_enabled)))) ok = false;
   }
   cJSON_Delete(root); if (!ok) return PHOTO_FAILED;
   *out = c; return PHOTO_OK;
