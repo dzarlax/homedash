@@ -30,6 +30,9 @@ jobs:
       - name: Build firmware
         run: pio run
 
+      - name: Check network stack budget
+        run: python tools/check_network_stack.py
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:

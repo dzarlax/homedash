@@ -23,7 +23,13 @@ void wavesahre_rgb_lcd_bl_off() {}
 
 static bridge_data_t s_data = {};
 static bridge_cal_data_t s_calendar = {};
-static char s_last_error[32] = "fixture";
+static char s_last_error[32] = "OK";
+static char s_sync_diagnostic[96] = "Sync:OK";
+void sim_set_connection_status(const char *data, const char *sync)
+{
+    snprintf(s_last_error, sizeof(s_last_error), "%s", data);
+    snprintf(s_sync_diagnostic, sizeof(s_sync_diagnostic), "%s", sync);
+}
 
 static void set_calendar_for_date(int year, int month, int day)
 {
@@ -217,6 +223,14 @@ bool bridge_copy_calendar_data(bridge_cal_data_t *out)
 {
     if (!out) return false;
     *out = s_calendar;
+    return true;
+}
+
+bool bridge_has_data(void) { return s_data.ts > 0; }
+bool web_sync_copy_diagnostic(char *out, size_t size)
+{
+    if (!out || !size) return false;
+    snprintf(out, size, "%s", s_sync_diagnostic);
     return true;
 }
 

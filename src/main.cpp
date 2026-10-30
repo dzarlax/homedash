@@ -458,38 +458,7 @@ static void network_task(void *param)
             else ota_manual_check();
         }
 
-        // Bridge polling
-        if (bridge_elapsed >= BRIDGE_UPDATE_INTERVAL_MS) {
-            bridge_fetch_and_update();
-            bridge_elapsed = 0;
-
-            // Mark app as valid after first successful bridge fetch (rollback protection)
-            bridge_data_t snapshot = {};
-            bridge_copy_data(&snapshot);
-            if (!app_validated && snapshot.ts > 0) {
-                esp_ota_mark_app_valid_cancel_rollback();
-                app_validated = true;
-                ESP_LOGI(TAG, "App marked valid (rollback cancelled)");
-            }
-
-            // Fetch today's calendar after first successful bridge update
-            if (cal_initial && snapshot.ts > 0 && wifi_time_is_valid()) {
-                time_t now;
-                time(&now);
-                struct tm t;
-                localtime_r(&now, &t);
-                bridge_fetch_calendar(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
-                cal_initial = false;
-            }
-        }
-
-        // Periodic OTA check
-        if (ota_elapsed >= OTA_CHECK_INTERVAL_MS) {
-            ota_managed_poll();
-            ota_elapsed = 0;
-        }
-
-        // New bounded device settings heartbeat; legacy Bridge polling remains independent.
+        // Bootstrap identity and preferences before requesting profile-scoped data.
         if (sync_elapsed >= 10000 && wifi_is_connected()) {
             web_sync_response_t sync_response = {};
             if (web_sync_poll(cfg.bridge_url, cfg.bridge_key, FW_VERSION,
@@ -549,6 +518,36 @@ static void network_task(void *param)
                 }
             }
             sync_elapsed = 0;
+        }
+
+        // Bridge polling
+        if (bridge_elapsed >= BRIDGE_UPDATE_INTERVAL_MS) {
+            bridge_fetch_and_update();
+            bridge_elapsed = 0;
+
+            // Mark app as valid after first successful bridge fetch (rollback protection)
+            bool has_data = bridge_has_data();
+            if (!app_validated && has_data) {
+                esp_ota_mark_app_valid_cancel_rollback();
+                app_validated = true;
+                ESP_LOGI(TAG, "App marked valid (rollback cancelled)");
+            }
+
+            // Fetch today's calendar after first successful bridge update
+            if (cal_initial && has_data && wifi_time_is_valid()) {
+                time_t now;
+                time(&now);
+                struct tm t;
+                localtime_r(&now, &t);
+                bridge_fetch_calendar(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+                cal_initial = false;
+            }
+        }
+
+        // Periodic OTA check
+        if (ota_elapsed >= OTA_CHECK_INTERVAL_MS) {
+            ota_managed_poll();
+            ota_elapsed = 0;
         }
 
         TickType_t started = xTaskGetTickCount();

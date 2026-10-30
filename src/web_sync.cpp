@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <atomic>
+#include <memory>
+#include <new>
+#include "esp_tls.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
@@ -16,7 +20,7 @@
 #include "nvs_config.h"
 #include "ota.h"
 #include "photo_frame.h"
-#include "lvgl_port.h"
+#include "lvgl_lock.h"
 #include "ui_dashboard.h"
 #include "web_settings_store.h"
 #include "web_identity.h"
@@ -26,11 +30,42 @@ namespace {
 constexpr size_t kMaxResponse = 8192;
 constexpr size_t kMaxRequest = 3072;
 constexpr uint32_t kMaxRevision = 0x7fffffff;
-struct response_buffer_t { char data[kMaxResponse + 1]; size_t used; bool overflow; };
+struct response_buffer_t {
+    char data[kMaxResponse + 1];
+    size_t used;
+    bool overflow;
+    int tls_error;
+    int tls_code;
+    int tls_flags;
+};
+// Only the network task writes. Publish the mutex before the UI can read it.
+static std::atomic<SemaphoreHandle_t> s_diagnostic_mutex{nullptr};
+static char s_diagnostic[96] = {};
+static void set_diagnostic(const char *message) {
+    auto mutex = s_diagnostic_mutex.load(std::memory_order_acquire);
+    if (!mutex) {
+        mutex = xSemaphoreCreateMutex();
+        if (!mutex) return;
+        s_diagnostic_mutex.store(mutex, std::memory_order_release);
+    }
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    snprintf(s_diagnostic, sizeof(s_diagnostic), "%s", message);
+    xSemaphoreGive(mutex);
+}
+static std::unique_ptr<response_buffer_t> allocate_response() {
+    std::unique_ptr<response_buffer_t> response(new (std::nothrow) response_buffer_t{});
+    if (!response) set_diagnostic("Sync:response OOM");
+    return response;
+}
 static char s_sync_error[48] = {};
 
 static esp_err_t receive_event(esp_http_client_event_t *event) {
     response_buffer_t *buffer = static_cast<response_buffer_t *>(event->user_data);
+    if (event->event_id == HTTP_EVENT_ERROR && event->data) {
+        buffer->tls_error = esp_tls_get_and_clear_last_error(
+            static_cast<esp_tls_error_handle_t>(event->data),
+            &buffer->tls_code, &buffer->tls_flags);
+    }
     if (event->event_id == HTTP_EVENT_ON_DATA && event->data_len > 0) {
         size_t size = static_cast<size_t>(event->data_len);
         if (size > kMaxResponse - buffer->used) {
@@ -118,23 +153,40 @@ static bool post_payload(const char *url, const char *key, const char *payload,
         static_cast<int>(sizeof(endpoint))) return false;
     config.url = endpoint;
     config.method = HTTP_METHOD_POST;
-    config.timeout_ms = 5000;
+    config.timeout_ms = 15000;
     config.crt_bundle_attach = esp_crt_bundle_attach;
     config.event_handler = receive_event;
     config.user_data = response;
     config.disable_auto_redirect = true;
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) return false;
+    if (!client) { set_diagnostic("Sync:client OOM"); return false; }
     esp_http_client_set_header(client, "X-API-Key", key);
     if (web_identity_set_http_header(client) != ESP_OK) {
+        set_diagnostic("Sync:identity unavailable");
         esp_http_client_cleanup(client);
         return false;
     }
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
     esp_http_client_set_post_field(client, payload, strlen(payload));
+    // Keep the last known result while an ordinary heartbeat is in flight.
+    char previous[96];
+    if (!web_sync_copy_diagnostic(previous, sizeof(previous))) set_diagnostic("Sync:connecting");
     esp_err_t err = esp_http_client_perform(client);
+    int socket_error = esp_http_client_get_errno(client);
     int status = esp_http_client_get_status_code(client);
+    char diagnostic[96] = {};
+    if (response->overflow) {
+        snprintf(diagnostic, sizeof(diagnostic), "Sync:response too large");
+    } else if (err != ESP_OK) {
+        snprintf(diagnostic, sizeof(diagnostic), "Sync:%s tls=%x/%x/%x e=%d",
+                 esp_err_to_name(err), static_cast<unsigned>(response->tls_error),
+                 static_cast<unsigned>(response->tls_code),
+                 static_cast<unsigned>(response->tls_flags), socket_error);
+    } else if (status != 200) {
+        snprintf(diagnostic, sizeof(diagnostic), "Sync:HTTP %d", status);
+    }
+    if (diagnostic[0]) set_diagnostic(diagnostic);
     if (status_out) *status_out = status;
     esp_http_client_cleanup(client);
     return err == ESP_OK && status == 200 && !response->overflow;
@@ -259,14 +311,15 @@ bool web_sync_poll(const char *url, const char *key, const char *firmware,
     memset(out, 0, sizeof(*out));
     cJSON *root = make_payload(firmware, boot_id, nullptr, nullptr, nullptr);
     char *payload = print_payload(root);
-    if (!payload) return false;
-    response_buffer_t response = {};
+    if (!payload) { set_diagnostic("Sync:payload unavailable"); return false; }
+    auto response = allocate_response();
+    if (!response) { free(payload); return false; }
     int status = 0;
-    bool ok = post_payload(url, key, payload, &response, &status);
+    bool ok = post_payload(url, key, payload, response.get(), &status);
     free(payload);
     if (!ok) return false;
-    cJSON *decoded = cJSON_ParseWithLength(response.data, response.used);
-    if (!decoded) return false;
+    cJSON *decoded = cJSON_ParseWithLength(response->data, response->used);
+    if (!decoded) { set_diagnostic("Sync:invalid JSON"); return false; }
     cJSON *revision = cJSON_GetObjectItemCaseSensitive(decoded, "revision");
     cJSON *device_id = cJSON_GetObjectItemCaseSensitive(decoded, "device_id");
     cJSON *bridge_id = cJSON_GetObjectItemCaseSensitive(decoded, "bridge_id");
@@ -297,6 +350,8 @@ bool web_sync_poll(const char *url, const char *key, const char *firmware,
     }
     cJSON_Delete(decoded);
     if (ok) s_sync_error[0] = 0;
+    else memset(out, 0, sizeof(*out));
+    set_diagnostic(ok ? "Sync:OK" : "Sync:invalid envelope");
     return ok;
 }
 
@@ -314,16 +369,18 @@ bool web_sync_probe_bridge(const char *url, const char *key,
         static_cast<int>(sizeof(endpoint))) return false;
     config.url = endpoint;
     config.method = HTTP_METHOD_GET;
-    config.timeout_ms = 5000;
+    config.timeout_ms = 15000;
     config.crt_bundle_attach = esp_crt_bundle_attach;
     config.event_handler = receive_event;
-    response_buffer_t response = {};
-    config.user_data = &response;
+    auto response = allocate_response();
+    if (!response) return false;
+    config.user_data = response.get();
     config.disable_auto_redirect = true;
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) return false;
+    if (!client) { set_diagnostic("Sync:client OOM"); return false; }
     esp_http_client_set_header(client, "X-API-Key", key);
     if (web_identity_set_http_header(client) != ESP_OK) {
+        set_diagnostic("Sync:identity unavailable");
         esp_http_client_cleanup(client);
         return false;
     }
@@ -331,9 +388,9 @@ bool web_sync_probe_bridge(const char *url, const char *key,
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
-    if (err != ESP_OK || status != 200 || response.overflow) return false;
-    cJSON *decoded = cJSON_ParseWithLength(response.data, response.used);
-    if (!decoded) return false;
+    if (err != ESP_OK || status != 200 || response->overflow) return false;
+    cJSON *decoded = cJSON_ParseWithLength(response->data, response->used);
+    if (!decoded) { set_diagnostic("Sync:invalid JSON"); return false; }
     cJSON *version = cJSON_GetObjectItemCaseSensitive(decoded, "version");
     cJSON *id = cJSON_GetObjectItemCaseSensitive(decoded, "bridge_id");
     bool valid = cJSON_IsNumber(version) && version->valuedouble == 1.0 &&
@@ -352,9 +409,10 @@ bool web_sync_ack(const char *url, const char *key, const char *firmware,
                   const char *boot_id) {
     cJSON *root = make_payload(firmware, boot_id, nullptr, nullptr, nullptr);
     char *payload = print_payload(root);
-    if (!payload) return false;
-    response_buffer_t response = {};
-    bool ok = post_payload(url, key, payload, &response, nullptr);
+    if (!payload) { set_diagnostic("Sync:payload unavailable"); return false; }
+    auto response = allocate_response();
+    if (!response) { free(payload); return false; }
+    bool ok = post_payload(url, key, payload, response.get(), nullptr);
     free(payload);
     return ok;
 }
@@ -376,9 +434,21 @@ bool web_sync_send_command_result(const char *url, const char *key,
     if (!id || !state) return false;
     cJSON *root = make_payload(firmware, boot_id, id, state, error);
     char *payload = print_payload(root);
-    if (!payload) return false;
-    response_buffer_t response = {};
-    bool ok = post_payload(url, key, payload, &response, nullptr);
+    if (!payload) { set_diagnostic("Sync:payload unavailable"); return false; }
+    auto response = allocate_response();
+    if (!response) { free(payload); return false; }
+    bool ok = post_payload(url, key, payload, response.get(), nullptr);
     free(payload);
     return ok;
+}
+
+// Response bodies, credentials and network identifiers never reach the UI.
+bool web_sync_copy_diagnostic(char *out, size_t size) {
+    if (!out || !size) return false;
+    auto mutex = s_diagnostic_mutex.load(std::memory_order_acquire);
+    if (!mutex) { snprintf(out, size, "Sync:waiting"); return false; }
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    snprintf(out, size, "%s", s_diagnostic);
+    xSemaphoreGive(mutex);
+    return true;
 }
