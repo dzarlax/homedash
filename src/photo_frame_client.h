@@ -10,7 +10,7 @@ struct photo_frame_entry {
 struct photo_manifest {
   char state[16];
   char generation[65];
-  int idle, interval, stale, count, overlay_context_version;
+  int idle, interval, stale, count, overlay_context_version, scene_context_version;
   photo_frame_entry frames[8];
 };
 enum photo_result { PHOTO_OK, PHOTO_NOT_FOUND, PHOTO_FAILED, PHOTO_CANCELLED };

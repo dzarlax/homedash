@@ -135,6 +135,7 @@ static cJSON *make_payload(const char *firmware, const char *boot_id,
     add_string(root, "ssid", ssid);
     cJSON *caps = cJSON_AddArrayToObject(root, "capabilities");
     static const char *capabilities[] = {
+        "photo_scene_unified",
         "preferences", "photo_start", "photo_overlay", "photo_overlay_adaptive", "restart", "ota_check", "ota_install", "reset", "network", "locale"
     };
     for (const char *cap : capabilities) cJSON_AddItemToArray(caps, cJSON_CreateString(cap));

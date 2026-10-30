@@ -5,6 +5,7 @@
 #include <cstring>
 #include <initializer_list>
 
+extern int photo_test_alloc_fail_after;
 static int64_t fake_seconds = 0;
 static bool pointer_down = false;
 static int pointer_x = 10, pointer_y = 10;
@@ -402,6 +403,121 @@ int main() {
   assert(buffers[0] && buffers[1]);
   busy = false; tick(nullptr); assert(!buffers[0] && !buffers[1]);
 
+  // The measured clock envelope must contain every displayed minute and date.
+  int widths[6]; measure_clock_widths(widths); std::printf("v3 clock widths: %d,%d,%d,%d,%d,%d\n", widths[0], widths[1], widths[2], widths[3], widths[4], widths[5]); char text[128]; lv_point_t size;
+  for (int lang = 0; lang < 3; ++lang) for (int twelve = 0; twelve < 2; ++twelve) {
+    assert(widths[lang * 2 + twelve] >= 144 && widths[lang * 2 + twelve] <= 480);
+    for (int minute = 0; minute < 1440; ++minute) {
+      format_time(text, sizeof(text), minute / 60, minute % 60, twelve);
+      lv_text_get_size(&size, text, &font_photo_clock_80, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+      assert(size.x + 34 <= widths[lang * 2 + twelve]);
+    }
+    for (int d = 1; d <= 31; ++d) for (int w = 0; w < 7; ++w) for (int m = 0; m < 12; ++m) {
+      format_date(text, sizeof(text), lang, d, w, m);
+      lv_text_get_size(&size, text, &font_montserrat_16_cyr, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+      assert(size.x + 34 <= widths[lang * 2 + twelve]);
+    }
+  }
+  // v3 cards and clock persist while three independent photos change.
+  web_photos_enabled = true; manual_requested = true; retry_after = 0; card_retry = 0; last_poll = fake_seconds;
+  current_manifest = {}; strcpy(current_manifest.state, "ready");
+  current_manifest.scene_context_version = 3; current_manifest.overlay_context_version = 2;
+  current_manifest.count = 3;
+  for (int i = 0; i < 3; ++i) memset(current_manifest.frames[i].id, 'a' + i, 64);
+  manifest_ready = true; protocol_negotiated = true; last_ready = fake_seconds; tick(nullptr);
+  assert(busy && job.kind == FRAME && !overlay); complete_frame(); tick(nullptr);
+  assert(overlay && busy && job.kind == CONTEXT && job.version == 3);
+  job.context = {}; job.context.version = 3; job.context.server_time = 1793361600;
+  job.context.count = 1; job.context.clock_enabled = true; strcpy(job.context.locale, "en");
+  strcpy(job.context.clock_format, "24h"); strcpy(job.context.timezone, clock_prefs.timezone);
+  strcpy(job.context.blocks[0].kind, "weather"); memset(job.context.blocks[0].id, 'c', 64);
+  job.context.blocks[0].width = 10; job.context.blocks[0].height = 10;
+  job.context.blocks[0].expires_at = 1793362500;
+  job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+  assert(busy && job.kind == CARD); memset(job.staging, 0, 400);
+  job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+  assert(cards[0].pixels && clock_panel);
+  auto *pixels = cards[0].pixels; auto *panel = cards[0].object; auto *clock = clock_panel;
+  for (int i = 0; i < 3; ++i) {
+    fake_seconds += 45; last_ready = fake_seconds; last_poll = fake_seconds; tick(nullptr);
+    assert(busy && job.kind == FRAME); complete_frame(); tick(nullptr);
+    assert(pending.ready && cards[0].pixels == pixels && cards[0].object == panel && clock_panel == clock);
+    // A card/context request can remain in flight at the slide deadline.
+    if (!busy) { context_poll = 0; tick(nullptr); }
+    assert(busy && job.kind == CONTEXT);
+    fake_seconds += 15; last_ready = fake_seconds; last_poll = fake_seconds; tick(nullptr);
+    assert(!pending.ready && cards[0].pixels == pixels && cards[0].object == panel && clock_panel == clock);
+    if (i == 0) { job.context = wanted; job.context.server_time = server_now(); job.result = PHOTO_OK; }
+    else job.result = PHOTO_FAILED;
+    job.complete = true; busy = false; tick(nullptr);
+    assert(cards[0].pixels == pixels && cards[0].object == panel && clock_panel == clock && (!busy || job.kind != CARD));
+  }
+  // Non-ready photo sources retain independent context polling after negotiation.
+  photo_manifest saved_manifest = current_manifest; saved_manifest.stale = 900; saved_manifest.idle = 300; saved_manifest.interval = 60;
+  for (const char *state : {"warming", "unavailable"}) {
+    assert(submit(MANIFEST, 0, nullptr));
+    job.manifest = saved_manifest; strcpy(job.manifest.state, state); job.manifest.count = 0;
+    job.result = PHOTO_OK; job.complete = true; busy = false;
+    context_poll = esp_timer_get_time() / 1000000; tick(nullptr);
+    assert(protocol_negotiated && !manifest_ready && !busy && cards[0].pixels == pixels && clock_panel == clock);
+    context_poll = 0; tick(nullptr); assert(busy && job.kind == CONTEXT && job.version == 3);
+    job.context = wanted; job.context.server_time = server_now(); job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+    assert(!busy && cards[0].pixels == pixels && clock_panel == clock);
+    assert(submit(MANIFEST, 0, nullptr)); job.manifest = saved_manifest;
+    job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+    assert(manifest_ready && cards[0].pixels == pixels && clock_panel == clock);
+  }
+  // Revoking the shown source frame leaves independent information intact.
+  current_manifest.frames[0] = current_manifest.frames[1]; current_manifest.count = 1;
+  assert(!shown_in_manifest()); last_poll = fake_seconds; last_ready = fake_seconds;
+  fake_seconds += 45; tick(nullptr); assert(busy && job.kind == FRAME);
+  assert(cards[0].pixels == pixels && cards[0].object == panel && clock_panel == clock);
+  complete_frame(); tick(nullptr); fake_seconds += 15; last_ready = fake_seconds; last_poll = fake_seconds; tick(nullptr);
+  assert(cards[0].pixels == pixels && cards[0].object == panel && clock_panel == clock);
+  if (busy) { job.result = PHOTO_FAILED; job.complete = true; busy = false; tick(nullptr); }
+  // OOM during replacement retains the existing unexpired card.
+  context_poll = 0; last_poll = fake_seconds; tick(nullptr); assert(busy && job.kind == CONTEXT);
+  job.context = wanted; job.context.server_time = server_now(); job.context.blocks[0].id[0] = 'f';
+  photo_test_alloc_fail_after = 0; job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+  assert(cards[0].pixels == pixels && cards[0].object == panel && !busy && card_retry > esp_timer_get_time() / 1000000);
+  photo_test_alloc_fail_after = -1;
+  // True TTL expires the card but leaves the local clock present.
+  cards[0].meta.expires_at = server_now() + 1; ++fake_seconds; tick(nullptr);
+  assert(!cards[0].pixels && clock_panel == clock);
+  context_poll = 0; last_poll = fake_seconds; tick(nullptr); assert(busy && job.kind == CONTEXT);
+  job.context = {}; job.context.version = 3; job.context.server_time = server_now();
+  job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+  assert(!cards[0].pixels && !cards[1].pixels && !clock_panel);
+  photo_frame_touch(true); photo_frame_touch(false);
+  // Maximum live alpha set plus the largest replacement is below the hard cap.
+  manual_requested = true; assert(allocate_buffers()); publish(0, current_manifest.frames[0].id);
+  wanted = {}; wanted.version = 3; wanted.count = 2; context_known = true;
+  server_anchor = 1793361600; monotonic_anchor = esp_timer_get_time();
+  strcpy(wanted.blocks[0].kind, "weather"); wanted.blocks[0].width = 236; wanted.blocks[0].height = 200;
+  strcpy(wanted.blocks[1].kind, "event"); wanted.blocks[1].width = 456; wanted.blocks[1].height = 112;
+  for (int i = 0; i < 2; ++i) {
+    wanted.blocks[i].expires_at = server_now() + 200; cards[i].meta = wanted.blocks[i];
+    cards[i].pixels = (uint8_t *)malloc((size_t)wanted.blocks[i].width * wanted.blocks[i].height * 4); assert(cards[i].pixels);
+  }
+  wanted.blocks[1].id[0] = 'f'; card_retry = 0; context_poll = esp_timer_get_time() / 1000000;
+  sim_pixel_peak = 0; schedule_info(); assert(busy && job.kind == CARD);
+  assert(sim_pixel_peak == 597376 && sim_pixel_peak <= 768u * 1024u);
+  std::printf("v3 alpha peak: %zu bytes\n", sim_pixel_peak);
+  // A network handoff cannot free worker-owned staging or accept its late result.
+  uint8_t *inflight = job.staging; unsigned old_epoch = job.generation;
+  photo_frame_update_network("other-bridge", "new-key"); tick(nullptr);
+  assert(busy && job.staging == inflight && epoch.load() != old_epoch && !context_known);
+  job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
+  assert(!cards[0].pixels && !cards[1].pixels && !context_known);
+  // A changed Bridge must negotiate a manifest before any v3 information request.
+  assert(!manifest_ready && !protocol_negotiated && busy && job.kind == MANIFEST);
+  job.result = PHOTO_FAILED; job.complete = true; busy = false; tick(nullptr);
+  assert(!manifest_ready && !protocol_negotiated && !busy && !context_known);
+  retry_after = 0; last_poll = 0; tick(nullptr); assert(busy && job.kind == MANIFEST);
+  complete_manifest(); job.manifest.scene_context_version = 3; tick(nullptr);
+  assert(manifest_ready && busy && (job.kind == FRAME || job.kind == CONTEXT));
+  if (busy) { job.result = PHOTO_CANCELLED; job.complete = true; busy = false; tick(nullptr); }
+  photo_frame_touch(true); photo_frame_touch(false);
   std::puts("PASS: idle, gestures, stale completion, reader, failure recovery, "
             "slide scheduling, disabled state, OTA acknowledgement and manual button");
 }

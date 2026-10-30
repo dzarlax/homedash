@@ -314,7 +314,16 @@ bool wifi_is_connected(void) { return sim_wifi_connected; }
 extern "C" {
 uint32_t esp_get_free_heap_size(void) { return 128u * 1024u; }
 uint32_t esp_get_free_internal_heap_size(void) { return 78u * 1024u; }
-void *heap_caps_malloc(size_t size, uint32_t) { return malloc(size); }
+#ifdef PHOTO_FRAME_TEST
+int photo_test_alloc_fail_after = -1;
+#endif
+void *heap_caps_malloc(size_t size, uint32_t) {
+#ifdef PHOTO_FRAME_TEST
+  if (photo_test_alloc_fail_after == 0) return nullptr;
+  if (photo_test_alloc_fail_after > 0) --photo_test_alloc_fail_after;
+#endif
+  return malloc(size);
+}
 #ifndef PHOTO_FRAME_TEST
 int64_t esp_timer_get_time(void)
 {
