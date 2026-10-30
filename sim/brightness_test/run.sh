@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/../.."
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+c++ -std=c++17 -Isrc src/brightness_controller.cpp sim/brightness_test/test.cpp -o "$tmp/controller"
+"$tmp/controller"
+c++ -std=c++17 -Isim/brightness_test/include -Isrc src/io_extension.cpp sim/brightness_test/driver_test.cpp -o "$tmp/driver"
+"$tmp/driver"
+
+c++ -std=c++17 -Isim/brightness_test/include -Isrc src/brightness_controller.cpp src/brightness_runtime.cpp sim/brightness_test/runtime_test.cpp -o "$tmp/runtime"
+"$tmp/runtime"

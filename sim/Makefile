@@ -218,3 +218,7 @@ test-action-executor:
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) action_executor_test.cpp $(SRC_DIR)/action_feedback.cpp $(SRC_DIR)/action_executor.cpp -o $(BUILD)/action_executor_test
 	$(BUILD)/action_executor_test
+
+.PHONY: test-brightness
+test-brightness:
+	sh brightness_test/run.sh

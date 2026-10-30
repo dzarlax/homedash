@@ -1,3 +1,4 @@
+#include "brightness_runtime.h"
 #include <stdio.h>
 #include <time.h>
 #include <string.h>
@@ -91,6 +92,15 @@ static void run_web_command(const web_command_t *command, const device_config_t 
         } else {
             succeeded = true;
         }
+    } else if (!strcmp(command->action, "backlight_preview") || !strcmp(command->action, "backlight_restore")) {
+        bool ready = false;
+        if (lvgl_port_lock(-1)) {
+            ready = brightness_runtime_ready();
+            if (ready) succeeded = !strcmp(command->action, "backlight_preview") ?
+                brightness_runtime_preview(command->percent) : brightness_runtime_restore();
+            lvgl_port_unlock();
+        }
+        if (!succeeded) error = ready ? "device_error" : "unsupported_action";
     } else if (!strcmp(command->action, "ota_check")) {
         bool available = false;
         succeeded = ota_check_available(&available);
@@ -98,10 +108,21 @@ static void run_web_command(const web_command_t *command, const device_config_t 
     } else if (!strcmp(command->action, "ota_install")) {
         bool available = false;
         if (!ota_check_available(&available)) error = "ota_check_failed";
-        else if (!available) error = "no_update_available";
-        else if (!ota_install_available()) error = "ota_install_failed";
-        else restart_now = true;
+        else if (!available) error = "no_update";
+        else if (command->target_version[0] && strcmp(command->target_version, ota_available_version())) error = "device_error";
+        else {
+            char target[32] = {};
+            snprintf(target, sizeof(target), "%s", ota_available_version());
+            if (!ota_install_available()) error = "device_error";
+            else {
+                // Success is confirmed after reboot only when this durable marker matches.
+                if (!web_settings_store_ota_written(command->id, target))
+                    web_sync_set_error("command_result_persistence_failed");
+                restart_now = true;
+            }
+        }
     } else {
+        // Brightness has no trustworthy calibrated baseline on this device.
         error = "unsupported_action";
     }
 
@@ -487,7 +508,7 @@ static void network_task(void *param)
     }
 
     device_config_t old_trial_config = {};
-    web_preferences_t old_trial_preferences = {};
+    static web_preferences_t old_trial_preferences = {};
     bool trial_had_config = false, trial_had_preferences = false, trial_committed = false;
     if (web_settings_store_network_trial_read(&old_trial_config, &trial_had_config,
             &old_trial_preferences, &trial_had_preferences, &trial_committed) && trial_committed) {
@@ -500,7 +521,7 @@ static void network_task(void *param)
         }
     }
 
-    web_preferences_t saved_prefs = {};
+    static web_preferences_t saved_prefs = {};
     bool has_saved_prefs = web_settings_store_load(&saved_prefs);
     if (has_saved_prefs) {
         if (lvgl_port_lock(-1)) {

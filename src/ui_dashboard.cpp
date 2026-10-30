@@ -1,3 +1,4 @@
+#include "brightness_runtime.h"
 #include "ui_dashboard.h"
 #include "photo_frame.h"
 #include "config.h"
@@ -200,6 +201,12 @@ static lv_obj_t *room_sensor_val_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 static lv_obj_t *room_sensor_name_lbl[MAX_ROOMS][MAX_ROOM_SENSORS] = {};
 static lv_obj_t *home_air_values[4] = {};
 static lv_obj_t *home_air_names[4] = {};
+static lv_obj_t *favorite_buttons[4] = {};
+static lv_obj_t *favorite_labels[4] = {};
+static lv_obj_t *favorite_feedback[4] = {};
+static bool favorite_available[4] = {}, favorite_on[4] = {};
+static lv_obj_t *home_air_card = NULL, *home_climate_card = NULL;
+static lv_obj_t *home_room_cards[MAX_ROOMS] = {};
 static lv_obj_t *home_climate_name = NULL;
 static lv_obj_t *home_climate_current = NULL;
 static lv_obj_t *home_climate_target = NULL;
@@ -369,19 +376,32 @@ static void get_today_date(int *y, int *m, int *d)
     if (d) *d = tinfo.tm_mday;
 }
 
-static bool clock_is_night(const struct tm &t) {
-    if (!ui_has_preferences || !ui_preferences.night_enabled) return false;
+static bool clock_is_night_for(const web_preferences_t &prefs, const struct tm &t) {
+    if (!prefs.night_enabled) return false;
     int now_min = t.tm_hour * 60 + t.tm_min;
-    int start = (ui_preferences.night_start[0] - '0') * 600 +
-                (ui_preferences.night_start[1] - '0') * 60 +
-                (ui_preferences.night_start[3] - '0') * 10 +
-                ui_preferences.night_start[4] - '0';
-    int end = (ui_preferences.night_end[0] - '0') * 600 +
-              (ui_preferences.night_end[1] - '0') * 60 +
-              (ui_preferences.night_end[3] - '0') * 10 +
-              ui_preferences.night_end[4] - '0';
+    int start = (prefs.night_start[0] - '0') * 600 +
+                (prefs.night_start[1] - '0') * 60 +
+                (prefs.night_start[3] - '0') * 10 +
+                prefs.night_start[4] - '0';
+    int end = (prefs.night_end[0] - '0') * 600 +
+              (prefs.night_end[1] - '0') * 60 +
+              (prefs.night_end[3] - '0') * 10 +
+              prefs.night_end[4] - '0';
     return start == end || (start < end ? now_min >= start && now_min < end
                                          : now_min >= start || now_min < end);
+}
+
+static bool clock_is_night(const struct tm &t) {
+    return ui_has_preferences && clock_is_night_for(ui_preferences, t);
+}
+bool ui_dashboard_apply_brightness(const web_preferences_t *prefs) {
+    if (!prefs || !prefs->backlight_percent) return true;
+    if (!brightness_runtime_ready()) return false;
+    time_t now; time(&now); struct tm t = {}; localtime_r(&now, &t);
+    bool night = prefs->night_dim && clock_is_night_for(*prefs, t);
+    bool wake = esp_timer_get_time() / 1000000 < wake_override_until;
+    uint8_t night_level = prefs->night_dim ? prefs->night_backlight_percent : prefs->backlight_percent;
+    return brightness_runtime_schedule(prefs->backlight_percent, night_level, night, wake);
 }
 
 static void set_screen_off(bool off) {
@@ -1656,9 +1676,10 @@ void ui_dashboard_update_time(void)
         int64_t now_seconds = esp_timer_get_time() / 1000000;
         bool idle_off = !ui_preferences.idle_photos &&
                         now_seconds - ui_last_touch >= ui_preferences.photo_idle_seconds;
-        bool sleep = (clock_is_night(tinfo) || idle_off) &&
+        bool sleep = ((clock_is_night(tinfo) && !ui_preferences.night_dim) || idle_off) &&
                      now_seconds >= wake_override_until;
         set_screen_off(sleep);
+        if (!sleep) ui_dashboard_apply_brightness(&ui_preferences);
     }
 
     // Update calendar ONLY when date changes (not every second!)
@@ -2089,6 +2110,19 @@ static void light_btn_cb(lv_event_t *e)
     }
 }
 
+static void favorite_btn_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (!ui_has_preferences || i < 0 || i >= ui_preferences.favorite_count || !favorite_available[i]) return;
+    const web_favorite_t &f = ui_preferences.favorites[i];
+    if (!strcmp(f.kind, "climate")) {
+        if (home_climate_card) lv_obj_scroll_to_view(home_climate_card, LV_ANIM_ON);
+    } else {
+        request_home_action(f.entity_id, favorite_on[i] ? "turn_off" : "turn_on", 0, NULL);
+        home_feedback_tick(NULL);
+    }
+}
+
 static void ota_btn_cb(lv_event_t *e)
 {
     (void)e;
@@ -2163,6 +2197,7 @@ static lv_color_t feedback_color(const action_record_t *record)
 }
 static void home_feedback_tick(lv_timer_t *)
 {
+    brightness_runtime_tick(); // local LVGL timer continues independently of network activity
     uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
     home_action_tick();
     if (home_temp_proposed && now >= home_temp_due_ms) {
@@ -2176,6 +2211,18 @@ static void home_feedback_tick(lv_timer_t *)
         lv_obj_set_style_text_color(room_light_feedback[r][l], feedback_color(record), 0);
         if (feedback_blocks(record)) lv_obj_add_state(room_light_btns[r][l], LV_STATE_DISABLED);
         else lv_obj_remove_state(room_light_btns[r][l], LV_STATE_DISABLED);
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (!favorite_buttons[i]) continue;
+        const action_record_t *f = i < ui_preferences.favorite_count ? home_action_find(ui_preferences.favorites[i].entity_id) : NULL;
+        const char *status = !favorite_available[i] ? ui_text("Нет данных") :
+            (i < ui_preferences.favorite_count && !strcmp(ui_preferences.favorites[i].kind, "climate") ?
+             ui_text("Открыть управление") : ui_text(favorite_on[i] ? "Включено" : "Выключено"));
+        if (f && feedback_text(f)[0]) status = feedback_text(f);
+        lv_label_set_text(favorite_feedback[i], status);
+        lv_obj_set_style_text_color(favorite_feedback[i], feedback_color(f), 0);
+        if (!favorite_available[i] || feedback_blocks(f)) lv_obj_add_state(favorite_buttons[i], LV_STATE_DISABLED);
+        else lv_obj_remove_state(favorite_buttons[i], LV_STATE_DISABLED);
     }
     const action_record_t *record = home_action_find(home_climate_entity);
     bool selecting = home_temp_proposed || (record && !strcmp(record->action, "set_temperature") && feedback_blocks(record));
@@ -2374,6 +2421,8 @@ static void create_settings_page(lv_obj_t *tile)
 static void create_page3(lv_obj_t *tile)
 {
     page3_root = tile;
+    lv_obj_set_scroll_dir(tile, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(tile, LV_SCROLLBAR_MODE_AUTO);
     // Title
     lv_obj_t *pg_title = lv_label_create(tile);
     lv_obj_set_style_text_color(pg_title, COLOR_HIGHLIGHT, 0);
@@ -2384,9 +2433,26 @@ static void create_page3(lv_obj_t *tile)
 
 
 
+    for (int i = 0; i < 4; ++i) {
+        lv_obj_t *btn = lv_btn_create(tile);
+        lv_obj_set_pos(btn, 5 + i * 253, 55); lv_obj_set_size(btn, 245, 76);
+        lv_obj_set_style_bg_color(btn, COLOR_LIGHT_OFF, 0); lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_set_style_opa(btn, LV_OPA_80, LV_STATE_DISABLED);
+        lv_obj_add_event_cb(btn, favorite_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        favorite_buttons[i] = btn;
+        favorite_labels[i] = lv_label_create(btn); lv_obj_set_size(favorite_labels[i], 215, 24);
+        lv_obj_set_style_text_font(favorite_labels[i], &font_montserrat_16_cyr, 0);
+        lv_obj_set_style_text_color(favorite_labels[i], lv_color_hex(0x1A1A2E), 0);
+        lv_label_set_long_mode(favorite_labels[i], LV_LABEL_LONG_SCROLL_CIRCULAR); lv_obj_set_pos(favorite_labels[i], 0, 0);
+        favorite_feedback[i] = lv_label_create(btn); lv_obj_set_size(favorite_feedback[i], 215, 26);
+        lv_obj_set_style_text_font(favorite_feedback[i], &font_montserrat_16_cyr, 0);
+        lv_label_set_long_mode(favorite_feedback[i], LV_LABEL_LONG_DOT); lv_obj_set_pos(favorite_feedback[i], 0, 28);
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+    }
     // Air overview: the two CO2 sensors remain explicitly named, rather than
     // collapsing household air into an ambiguous sensor count.
     lv_obj_t *air = make_card(tile, 5, 60, 400, 176);
+    home_air_card = air;
     lv_obj_t *air_title = lv_label_create(air);
     lv_obj_set_style_text_color(air_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(air_title, &font_montserrat_16_cyr, 0);
@@ -2413,6 +2479,7 @@ static void create_page3(lv_obj_t *tile)
     }
 
     lv_obj_t *climate = make_card(tile, 412, 60, 607, 176);
+    home_climate_card = climate;
     home_climate_name = lv_label_create(climate);
     lv_obj_set_style_text_color(home_climate_name, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(home_climate_name, &font_montserrat_16_cyr, 0);
@@ -2501,6 +2568,7 @@ static void create_page3(lv_obj_t *tile)
     for (int r = 0; r < MAX_ROOMS; r++) {
         const room_def_t *room = &ROOMS[r];
         lv_obj_t *panel = make_card(tile, positions[r][0], positions[r][1], pw, ph);
+        home_room_cards[r] = panel;
 
         // Room title
         lv_obj_t *lbl_title = lv_label_create(panel);
@@ -2670,6 +2738,37 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         }
     }
 
+    int shift = ui_has_preferences && ui_preferences.favorite_count ? 84 : 0;
+    if (home_air_card) lv_obj_set_y(home_air_card, 60 + shift);
+    if (home_climate_card) lv_obj_set_y(home_climate_card, 60 + shift);
+    for (int r = 0; r < MAX_ROOMS; ++r) if (home_room_cards[r]) {
+        lv_obj_set_y(home_room_cards[r], shift ? 330 + (r / 2) * 105 : 246 + (r / 2) * 148);
+        lv_obj_set_height(home_room_cards[r], shift ? 100 : 140);
+        for (int l = 0; l < MAX_ROOM_LIGHTS; ++l) {
+            if (room_light_btns[r][l]) lv_obj_set_y(room_light_btns[r][l], shift ? 40 : 48);
+            if (room_light_feedback[r][l]) { lv_obj_set_y(room_light_feedback[r][l], shift ? 80 : 90); lv_obj_set_height(room_light_feedback[r][l], shift ? 20 : 44); }
+        }
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (!favorite_buttons[i]) continue;
+        if (!ui_has_preferences || i >= ui_preferences.favorite_count) {
+            favorite_available[i] = false; lv_obj_add_flag(favorite_buttons[i], LV_OBJ_FLAG_HIDDEN); continue;
+        }
+        const web_favorite_t &f = ui_preferences.favorites[i];
+        const bridge_light_t *light = data->lights_valid ? find_light(data, f.entity_id) : NULL;
+        bool is_light = !strcmp(f.kind, "light");
+        const char *mode = data->climate_count > 0 ? data->climates[0].mode : "";
+        bool climate_found = data->climate_valid && data->climate_count > 0 &&
+            !strcmp(data->climates[0].entity_id, f.entity_id) &&
+            (!strcmp(mode, "off") || !strcmp(mode, "cool") || !strcmp(mode, "heat") ||
+             !strcmp(mode, "dry") || !strcmp(mode, "fan_only") || !strcmp(mode, "auto") || !strcmp(mode, "heat_cool"));
+        favorite_available[i] = is_light ? light != NULL : climate_found;
+        favorite_on[i] = is_light && light && light->on;
+        const char *name = f.label[0] ? f.label : (is_light && light && light->name[0] ? light->name : f.entity_id);
+        lv_label_set_text(favorite_labels[i], name);
+        lv_obj_set_style_bg_color(favorite_buttons[i], favorite_on[i] ? COLOR_LIGHT_ON : COLOR_LIGHT_OFF, 0);
+        lv_obj_clear_flag(favorite_buttons[i], LV_OBJ_FLAG_HIDDEN);
+    }
     // Keep established slots for known entities. Additional selected lights
     // fill empty slots using the IDs and friendly names returned by Bridge.
     bool used_lights[BRIDGE_MAX_LIGHTS] = {};
@@ -2745,6 +2844,8 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         lv_obj_set_style_text_color(home_air_values[i], color, 0);
     }
 
+    home_climate_known = false;
+    home_climate_entity[0] = 0;
     if (data->climate_valid && data->climate_count > 0) {
         const bridge_climate_t *climate = &data->climates[0];
         strncpy(home_climate_entity, climate->entity_id, sizeof(home_climate_entity) - 1);
@@ -2869,7 +2970,8 @@ bool ui_dashboard_reader_open(void) { return reader_overlay != NULL; }
 
 void ui_dashboard_apply_preferences(const web_preferences_t *prefs)
 {
-    if (!prefs || !web_preferences_valid(prefs)) return;
+    if (!prefs || !web_preferences_valid(prefs) ||
+        ((prefs->backlight_percent || prefs->night_backlight_percent || prefs->night_dim) && !brightness_runtime_ready())) return;
     ui_dashboard_hide_sensitive();
     ui_strings_set_locale(prefs->locale);
     ui_preferences = *prefs;
@@ -3050,11 +3152,21 @@ bool ui_dashboard_filter_wake_touch(bool pressed, lv_indev_data_t *data)
         wake_swallow_until_release = true;
         ui_last_touch = now_seconds;
         wake_override_until = now_seconds + 60;
+        if (ui_has_preferences) ui_dashboard_apply_brightness(&ui_preferences);
         set_screen_off(false);
         data->state = LV_INDEV_STATE_RELEASED;
         return true;
     }
-    if (pressed) ui_last_touch = now_seconds;
+    if (pressed) {
+        ui_last_touch = now_seconds;
+        if (ui_has_preferences && ui_preferences.night_dim && brightness_runtime_ready()) {
+            time_t now; time(&now); struct tm local = {}; localtime_r(&now, &local);
+            if (clock_is_night_for(ui_preferences, local)) {
+                wake_override_until = now_seconds + 60;
+                ui_dashboard_apply_brightness(&ui_preferences);
+            }
+        }
+    }
     return false;
 }
 

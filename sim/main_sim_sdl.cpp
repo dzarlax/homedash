@@ -237,6 +237,13 @@ int main()
             prefs.revision = 1;
             std::snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "https://homedash.example/settings/?device_id=0123456789abcdef0123456789abcdef");
             std::snprintf(prefs.locale, sizeof(prefs.locale), "%s", shot_locale);
+            if (std::getenv("HOMEDASH_SIM_FAVORITES")) {
+                prefs.favorite_count = 4;
+                prefs.favorites[0] = {"light.svet_u_divana", "light", "Диван"};
+                prefs.favorites[1] = {"light.office_light", "light", "Кабинет"};
+                prefs.favorites[2] = {"climate.gostinaia", "climate", "Кондиционер"};
+                prefs.favorites[3] = {"light.missing", "light", "Недоступно"};
+            }
             ui_dashboard_apply_preferences(&prefs);
             if (std::getenv("HOMEDASH_SIM_RECOVERY"))
                 ui_dashboard_update_recovery("HomeDash-Setup-DEMO", "DemoPassword1234", "http://192.168.4.1");

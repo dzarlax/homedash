@@ -30,6 +30,31 @@ struct stored_locale_t {
     char locale[8];
 };
 
+struct stored_favorites_t {
+    uint32_t version;
+    uint32_t revision;
+    char bridge_id[33];
+    uint8_t count;
+    web_favorite_t values[4];
+    uint8_t day, night;
+    bool night_dim;
+};
+static stored_favorites_t favorites_record(const web_preferences_t &p) {
+    stored_favorites_t r = {}; r.version = 1; r.revision = p.revision;
+    memcpy(r.bridge_id, p.bridge_id, sizeof(r.bridge_id)); r.count = p.favorite_count;
+    memcpy(r.values, p.favorites, sizeof(r.values)); r.day = p.backlight_percent; r.night = p.night_backlight_percent; r.night_dim = p.night_dim; return r;
+}
+static bool read_favorites(nvs_handle_t h, const char *key, web_preferences_t *p) {
+    stored_favorites_t r = {}; size_t n = sizeof(r);
+    esp_err_t err = nvs_get_blob(h, key, &r, &n);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return true; // legacy defaults
+    if (err != ESP_OK || n != sizeof(r) || r.version != 1 || r.revision != p->revision ||
+        memcmp(r.bridge_id, p->bridge_id, sizeof(r.bridge_id)) || r.count > 4) return false;
+    p->favorite_count = r.count; memcpy(p->favorites, r.values, sizeof(r.values));
+    p->backlight_percent = r.day; p->night_backlight_percent = r.night; p->night_dim = r.night_dim;
+    return true;
+}
+
 stored_locale_t locale_record(const web_preferences_t &p) {
     stored_locale_t record = {};
     record.version = 1;
@@ -82,10 +107,25 @@ bool web_settings_store_load(web_preferences_t *out) {
     }
     web_preferences_t p = from_v2(stored.value);
     read_locale(h, "locale", &p);
+    bool favorites_ok = read_favorites(h, "favorites", &p);
     nvs_close(h);
+    (void)favorites_ok; // Missing or stale extension uses legacy empty favorites.
     if (!web_preferences_valid(&p)) return false;
     *out = p;
     return true;
+}
+
+bool web_settings_store_favorites_confirmed(const web_preferences_t *prefs) {
+    if (!web_preferences_valid(prefs)) return false;
+    nvs_handle_t h;
+    if (nvs_open("webprefs", NVS_READONLY, &h) != ESP_OK) return false;
+    stored_favorites_t r = {}; size_t n = sizeof(r);
+    bool ok = nvs_get_blob(h, "favorites", &r, &n) == ESP_OK && n == sizeof(r) &&
+        r.version == 1 && r.revision == prefs->revision &&
+        !memcmp(r.bridge_id, prefs->bridge_id, sizeof(r.bridge_id)) && r.count == prefs->favorite_count &&
+        !memcmp(r.values, prefs->favorites, sizeof(r.values)) && r.day == prefs->backlight_percent &&
+        r.night == prefs->night_backlight_percent && r.night_dim == prefs->night_dim;
+    nvs_close(h); return ok;
 }
 
 bool web_settings_store_locale_confirmed(const web_preferences_t *prefs) {
@@ -106,6 +146,8 @@ bool web_settings_store_save(const web_preferences_t *prefs) {
     esp_err_t err = nvs_set_blob(h, "prefs", &stored, sizeof(stored));
     stored_locale_t locale = locale_record(*prefs);
     if (err == ESP_OK) err = nvs_set_blob(h, "locale", &locale, sizeof(locale));
+    stored_favorites_t favorites = favorites_record(*prefs);
+    if (err == ESP_OK) err = nvs_set_blob(h, "favorites", &favorites, sizeof(favorites));
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     s_persistence_uncertain = err != ESP_OK;
@@ -127,8 +169,39 @@ bool web_settings_store_command_begin(const char *id, const char *action,
     if (err == ESP_OK) err = nvs_set_str(h, "cmd_action", action);
     if (err == ESP_OK) err = nvs_set_str(h, "cmd_boot", boot_id);
     if (err == ESP_OK) err = nvs_set_str(h, "cmd_fw", firmware);
+    if (err == ESP_OK) err = erase_optional(h, "ota_target");
     if (err == ESP_OK) err = nvs_erase_key(h, "cmd_error");
     if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err == ESP_OK;
+}
+
+bool web_settings_store_ota_telemetry(char *id, size_t id_size, char *stage, size_t stage_size,
+                                      char *error, size_t error_size) {
+    if (!id || !id_size || !stage || stage_size < 8 || !error || error_size < 17) return false;
+    id[0] = stage[0] = error[0] = 0;
+    nvs_handle_t h;
+    if (nvs_open("webprefs", NVS_READONLY, &h) != ESP_OK) return false;
+    char action[24] = {}, target[32] = {}, state[16] = {}, reason[96] = {};
+    bool ok = read_string(h, "last_cmd", id, id_size) &&
+        read_string(h, "cmd_action", action, sizeof(action)) && !strcmp(action, "ota_install") &&
+        read_string(h, "cmd_state", state, sizeof(state));
+    if (ok && read_string(h, "ota_target", target, sizeof(target))) strcpy(stage, "writing");
+    if (ok && !strcmp(state, "failed") && read_string(h, "cmd_error", reason, sizeof(reason)) &&
+        (!strcmp(reason, "ota_check_failed") || !strcmp(reason, "no_update") || !strcmp(reason, "device_error"))) strcpy(error, reason);
+    nvs_close(h); return ok && (stage[0] || error[0]);
+}
+
+bool web_settings_store_ota_written(const char *id, const char *target) {
+    if (!web_command_id_valid(id) || !target || !target[0] || strlen(target) >= 32) return false;
+    nvs_handle_t h;
+    if (nvs_open("webprefs", NVS_READWRITE, &h) != ESP_OK) return false;
+    char last[65] = {}, action[24] = {}, state[16] = {};
+    bool matches = read_string(h, "last_cmd", last, sizeof(last)) && !strcmp(id, last) &&
+        read_string(h, "cmd_action", action, sizeof(action)) && !strcmp(action, "ota_install") &&
+        read_string(h, "cmd_state", state, sizeof(state)) && !strcmp(state, "accepted");
+    esp_err_t err = matches ? nvs_set_str(h, "ota_target", target) : ESP_ERR_NVS_NOT_FOUND;
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err == ESP_OK;
@@ -182,6 +255,7 @@ bool web_settings_store_clear_preferences(void) {
     if (nvs_open("webprefs", NVS_READWRITE, &h) != ESP_OK) return false;
     esp_err_t err = erase_optional(h, "prefs");
     if (err == ESP_OK) err = erase_optional(h, "locale");
+    if (err == ESP_OK) err = erase_optional(h, "favorites");
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     s_persistence_uncertain = err != ESP_OK;
@@ -193,22 +267,24 @@ bool web_settings_store_recover_on_boot(const char *boot_id, const char *firmwar
     if (!boot_id || !firmware) return false;
     nvs_handle_t h;
     if (nvs_open("webprefs", NVS_READONLY, &h) != ESP_OK) return false;
-    char id[65] = {}, state[16] = {}, action[24] = {}, original_boot[24] = {}, original_fw[32] = {};
+    char id[65] = {}, state[16] = {}, action[24] = {}, original_boot[24] = {}, original_fw[32] = {}, target[32] = {};
     bool accepted = read_string(h, "last_cmd", id, sizeof(id)) &&
                     read_string(h, "cmd_state", state, sizeof(state)) &&
                     read_string(h, "cmd_action", action, sizeof(action)) &&
                     read_string(h, "cmd_boot", original_boot, sizeof(original_boot)) &&
                     read_string(h, "cmd_fw", original_fw, sizeof(original_fw)) &&
                     !strcmp(state, "accepted") && strcmp(original_boot, boot_id);
+    bool target_known = read_string(h, "ota_target", target, sizeof(target));
     nvs_close(h);
     if (!accepted) return false;
     if (!strcmp(action, "reset") && !config_present) return false;
     if (!strcmp(action, "restart"))
         return web_settings_store_command_finish(id, "succeeded", nullptr);
     if (!strcmp(action, "ota_install")) {
-        if (strcmp(original_fw, firmware))
+        if (target_known && !strcmp(target, firmware) && strcmp(original_fw, firmware))
             return web_settings_store_command_finish(id, "succeeded", nullptr);
-        return web_settings_store_command_finish(id, "failed", "ota_version_not_changed");
+        // A reboot or a different version alone cannot establish the outcome.
+        return false;
     }
     if (!strcmp(action, "reset"))
         return web_settings_store_command_finish(id, "failed", "reset_not_completed");
@@ -254,6 +330,11 @@ bool web_settings_store_network_trial_begin(const device_config_t *old_config,
         stored_locale_t locale = locale_record(*old_preferences);
         err = nvs_set_blob(h, "trial_locale", &locale, sizeof(locale));
     }
+    if (err == ESP_OK) err = erase_optional(h, "trial_favs");
+    if (had_preferences && err == ESP_OK) {
+        stored_favorites_t favorites = favorites_record(*old_preferences);
+        err = nvs_set_blob(h, "trial_favs", &favorites, sizeof(favorites));
+    }
     if (err == ESP_OK) err = nvs_set_blob(h, "net_trial", &trial, sizeof(trial));
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
@@ -281,6 +362,7 @@ bool web_settings_store_network_trial_read(device_config_t *old_config,
     if (trial.had_preferences) {
         *old_preferences = from_v2(trial.old_preferences.value);
         read_locale(h, "trial_locale", old_preferences);
+        if (!read_favorites(h, "trial_favs", old_preferences)) { nvs_close(h); return false; }
         if (trial.old_preferences.version != kStoreVersion ||
             !web_preferences_valid(old_preferences)) { nvs_close(h); return false; }
     }
@@ -310,6 +392,7 @@ bool web_settings_store_network_trial_clear(void) {
     if (nvs_open("webprefs", NVS_READWRITE, &h) != ESP_OK) return false;
     esp_err_t err = erase_optional(h, "net_trial");
     if (err == ESP_OK) err = erase_optional(h, "trial_locale");
+    if (err == ESP_OK) err = erase_optional(h, "trial_favs");
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err == ESP_OK;

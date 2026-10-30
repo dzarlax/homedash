@@ -4,10 +4,13 @@
 
 bool web_settings_store_load(web_preferences_t *out);
 // True only for a durable locale record matching these preferences.
+bool web_settings_store_favorites_confirmed(const web_preferences_t *prefs);
 bool web_settings_store_locale_confirmed(const web_preferences_t *prefs);
 bool web_settings_store_save(const web_preferences_t *prefs);
 bool web_settings_store_command_begin(const char *id, const char *action,
                                       const char *boot_id, const char *firmware);
+bool web_settings_store_ota_telemetry(char *id, size_t id_size, char *stage, size_t stage_size, char *error, size_t error_size);
+bool web_settings_store_ota_written(const char *id, const char *target);
 bool web_settings_store_command_finish(const char *id, const char *state,
                                        const char *error);
 bool web_settings_store_command_result(char *id, size_t id_size,

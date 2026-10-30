@@ -7,6 +7,9 @@ struct entry_t { const char *ru; const char *en; const char *sr; };
 // Keep the Russian key as the stable source string so existing call sites are
 // easy to compare with the former Russian-only UI.
 static const entry_t STRINGS[] = {
+    {"Включено", "On", "Uključeno"},
+    {"Выключено", "Off", "Isključeno"},
+    {"Открыть управление", "Open controls", "Otvori kontrole"},
     {"Выбрано %.0f C", "Selected %.0f C", "Izabrano %.0f C"},
     {"Нет доступа. Отклонено", "No access. Rejected", "Nema pristupa. Odbijeno"},
     {"Не поддерживается", "Unsupported", "Nije podržano"},

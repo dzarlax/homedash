@@ -29,4 +29,6 @@ void IO_EXTENSION_Init();
 void IO_EXTENSION_Output(uint8_t pin, uint8_t value);
 uint8_t IO_EXTENSION_Input(uint8_t pin);
 void IO_EXTENSION_Pwm_Output(uint8_t Value);
+// Nonfatal raw PWM write. This does not imply calibrated brightness support.
+esp_err_t IO_EXTENSION_Pwm_Try_Output(uint8_t value);
 uint16_t IO_EXTENSION_Adc_Input();

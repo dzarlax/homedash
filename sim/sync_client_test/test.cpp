@@ -1,3 +1,4 @@
+#include "brightness_runtime.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -30,11 +31,14 @@ struct mock_http {
 };
 static mock_http client;
 static std::string body;
+static std::string expected_key = "private-test-key";
 static int status = 200, requests = 0, cleanups = 0, applies = 0;
 static bool transport_error = false, client_oom = false, sync_allowed = true;
 static bool expect_stable_status = false;
 static bool has_saved = false;
 static bool locale_confirmed = true;
+static bool brightness_ready = false, save_failure = false, brightness_write_failure = false;
+static int brightness_rollbacks = 0;
 static bool expect_locale_field = false;
 static web_preferences_t saved = {};
 
@@ -53,12 +57,12 @@ esp_err_t esp_http_client_perform(esp_http_client_handle_t h) {
         char text[96]; web_sync_copy_diagnostic(text, sizeof(text));
         assert(!strcmp(text, "Sync:OK"));
     }
-    assert(h->headers["X-Device-ID"] == device_id && h->headers["X-API-Key"] == "private-test-key");
+    assert(h->headers["X-Device-ID"] == device_id && h->headers["X-API-Key"] == expected_key);
     if (h->config.method == HTTP_METHOD_POST) {
         cJSON *p = cJSON_Parse(h->payload.c_str()); assert(p);
         assert(!strcmp(cJSON_GetObjectItem(p,"device_id")->valuestring, device_id));
         assert(!strcmp(cJSON_GetObjectItem(p,"boot_id")->valuestring,"boot-test"));
-        assert(cJSON_GetObjectItem(p,"applied_revision")->valueint == (has_saved ? static_cast<int>(saved.revision) : 0));
+        assert(cJSON_GetObjectItem(p,"applied_revision")->valueint == (has_saved && (brightness_ready || !(saved.backlight_percent || saved.night_backlight_percent || saved.night_dim)) ? static_cast<int>(saved.revision) : 0));
         cJSON *applied_locale = cJSON_GetObjectItem(p,"applied_locale");
         assert((applied_locale != nullptr) == expect_locale_field);
         if (applied_locale) assert(!strcmp(applied_locale->valuestring, has_saved && locale_confirmed ? saved.locale : ""));
@@ -104,8 +108,20 @@ bool web_identity_get(char *out,size_t n) { if(n<33)return false; memcpy(out,dev
 bool web_identity_matches(const char *id) { return id && !strcmp(id,device_id); }
 esp_err_t web_identity_set_http_header(esp_http_client_handle_t h) { return esp_http_client_set_header(h,"X-Device-ID",device_id); }
 bool web_settings_store_load(web_preferences_t *out) { if(!has_saved)return false; *out=saved; return true; }
+bool brightness_runtime_ready() { return brightness_ready; }
+const char *brightness_runtime_error() { return ""; }
+void brightness_runtime_mark_write_failed() {}
+bool brightness_runtime_checkpoint(brightness_checkpoint_t *) { return brightness_ready; }
+bool brightness_runtime_rollback(const brightness_checkpoint_t *) { ++brightness_rollbacks; return true; }
+bool ui_dashboard_apply_brightness(const web_preferences_t *) { return brightness_ready && !brightness_write_failure; }
+static bool ota_telemetry = false;
+bool web_settings_store_ota_telemetry(char *id, size_t, char *stage, size_t, char *error, size_t) {
+    if (!ota_telemetry) return false;
+    strcpy(id,"ota-test"); strcpy(stage,"writing"); strcpy(error,"ota_check_failed"); return true;
+}
+bool web_settings_store_favorites_confirmed(const web_preferences_t *) { return has_saved; }
 bool web_settings_store_locale_confirmed(const web_preferences_t *p) { return locale_confirmed && has_saved && p && !strcmp(p->locale, saved.locale); }
-bool web_settings_store_save(const web_preferences_t *p) { saved=*p;has_saved=true;return true; }
+bool web_settings_store_save(const web_preferences_t *p) { if (save_failure) return false; saved=*p;has_saved=true;return true; }
 bool web_settings_store_sync_allowed(void) { return sync_allowed; }
 bool web_settings_store_command_result(char *,size_t,char *,size_t,char *,size_t) { return false; }
 bool lvgl_port_lock(int) { return true; }
@@ -136,6 +152,25 @@ int main() {
     body=response(); assert(poll(&out) && out.has_preferences);
     assert(diagnostic()=="Sync:OK" && web_sync_apply_preferences(&out) && applies==1);
     assert(!strcmp(saved.bridge_id,bridge_id));
+    body=response(); body.replace(body.find("\"command\":null"), 14, "\"command\":{\"id\":\"ota-test\",\"action\":\"ota_install\",\"expires_at\":\"later\",\"target_version\":\"1.0.30\"}");
+    assert(poll(&out) && !strcmp(out.command.target_version, "1.0.30"));
+    body=response(); body.insert(body.find("\"name\":\"Hall\""), "\"backlight_percent\":50,");
+    assert(poll(&out) && !web_sync_apply_preferences(&out));
+    web_preferences_t before_brightness = saved;
+    brightness_ready = true; brightness_write_failure = true;
+    assert(!web_sync_apply_preferences(&out) && brightness_rollbacks == 1);
+    brightness_write_failure = false; save_failure = true;
+    assert(!web_sync_apply_preferences(&out) && brightness_rollbacks == 2);
+    save_failure = false; assert(web_sync_apply_preferences(&out));
+    brightness_ready = false; saved = before_brightness; applies = 1;
+    body=response(); body.insert(body.find("\"screen\":"), "\"home\":{\"favorites\":[{\"entity_id\":\"light.test\",\"kind\":\"light\"}]},");
+    assert(poll(&out) && out.preferences.favorite_count == 1);
+    assert(!strcmp(out.preferences.favorites[0].entity_id, "light.test"));
+    body=response(); body.insert(body.find("\"screen\":"), "\"home\":{\"favorites\":[{\"entity_id\":\"light.test\",\"kind\":\"light\"},{\"entity_id\":\"light.test\",\"kind\":\"light\"}]},");
+    assert(!poll(&out));
+    body=response(); body.insert(body.find("\"screen\":"), "\"home\":{\"favorites\":[{\"entity_id\":\"light.a\",\"kind\":\"light\"},{\"entity_id\":\"light.b\",\"kind\":\"light\"},{\"entity_id\":\"light.c\",\"kind\":\"light\"},{\"entity_id\":\"light.d\",\"kind\":\"light\"},{\"entity_id\":\"light.e\",\"kind\":\"light\"}]},");
+    assert(!poll(&out));
+    body=response(); assert(poll(&out));
     expect_stable_status=true; assert(poll(&out)); expect_stable_status=false;
     body=response("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"); assert(!poll(&out));
     assert(diagnostic()=="Sync:invalid envelope" && applies==1);
@@ -159,6 +194,16 @@ int main() {
     body=response(); assert(web_sync_ack("https://bridge.test","private-test-key","1.0.22","boot-test"));
     assert(web_sync_send_command_result("https://bridge.test","private-test-key","1.0.22","boot-test","command-test","failed","test_error"));
     assert(cleanups==requests && applies==1);
+    ota_telemetry=true; body=response(); assert(poll(&out));
+    assert(client.payload.find("\"ota_attempt_id\"") != std::string::npos);
+    status=400; assert(!poll(&out)); status=200;
+    assert(web_sync_send_command_result("https://bridge.test","private-test-key","1.0.22","boot-test","ota-test","failed","device_error"));
+    assert(client.payload.find("\"ota_attempt_id\"") == std::string::npos && client.payload.find("\"ota_stage\"") == std::string::npos && client.payload.find("\"ota_error\"") == std::string::npos);
+    assert(client.payload.find("\"command_result\"") != std::string::npos && client.payload.find("ota-test") != std::string::npos);
+    expected_key="another-private-key";
+    assert(web_sync_poll("https://bridge.test",expected_key.c_str(),"1.0.22","boot-test",&out));
+    assert(client.payload.find("\"ota_attempt_id\"") != std::string::npos);
+    expected_key="private-test-key"; ota_telemetry=false;
     for (const char *locale : {"en", "sr-Latn", "ru"}) {
         body=response();
         auto pos = body.find("\"screen\":{");

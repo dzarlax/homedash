@@ -114,6 +114,16 @@ static void test_locale_compatibility() {
         assert(web_settings_store_load(&loaded) && !strcmp(loaded.locale, locale));
         assert(web_settings_store_locale_confirmed(&loaded));
     }
+    p.favorite_count = 1;
+    p.favorites[0] = {"light.office", "light", "Desk"};
+    p.backlight_percent = 70; p.night_backlight_percent = 20; p.night_dim = true;
+    assert(web_preferences_valid(&p)); assert(web_settings_store_save(&p));
+    assert(web_settings_store_load(&loaded) && loaded.favorite_count == 1 && !strcmp(loaded.favorites[0].label, "Desk"));
+    assert(web_settings_store_favorites_confirmed(&loaded));
+    assert(loaded.backlight_percent == 70 && loaded.night_backlight_percent == 20 && loaded.night_dim);
+    p.favorites[1] = p.favorites[0]; p.favorite_count = 2;
+    assert(!web_preferences_valid(&p)); p.favorite_count = 0; memset(p.favorites, 0, sizeof(p.favorites));
+    p.backlight_percent = p.night_backlight_percent = 0; p.night_dim = false;
     strcpy(p.locale, "sr-Cyrl");
     assert(!web_preferences_valid(&p));
     strcpy(p.locale, "en");
@@ -125,10 +135,11 @@ static void test_locale_compatibility() {
     legacy_blob old = {};
     memcpy(&old, old_blob.data(), sizeof(old));
     assert(old.version == 2 && old.value.revision == 7 && !strcmp(old.value.name, "Hall"));
-    // Legacy firmware leaves the old sidecar behind when it saves another revision.
+    // Legacy firmware leaves old sidecars behind when it saves another revision.
     old.value.revision = 8;
     db["webprefs"]["prefs"] = bytes(reinterpret_cast<unsigned char *>(&old), reinterpret_cast<unsigned char *>(&old) + sizeof(old));
     assert(web_settings_store_load(&loaded) && !strcmp(loaded.locale, "ru"));
+    assert(loaded.favorite_count == 0 && !web_settings_store_favorites_confirmed(&loaded));
     assert(!web_settings_store_locale_confirmed(&loaded));
     old.value.revision = 7;
     strcpy(old.value.bridge_id, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
@@ -229,6 +240,8 @@ int main() {
     device_config_t loaded = {};
     assert(nvs_config_load(&loaded) && !strcmp(loaded.bridge_key, "old-key"));
     web_preferences_t old_preferences = preferences(10);
+    old_preferences.favorite_count = 1; old_preferences.favorites[0] = {"light.office", "light", "Desk"};
+    old_preferences.backlight_percent = 70; old_preferences.night_backlight_percent = 20; old_preferences.night_dim = true;
     assert(web_settings_store_save(&old_preferences));
 
     // Ambiguous prefs save plus failed rollback must block all sync acknowledgements.
@@ -260,6 +273,8 @@ int main() {
     assert(!strcmp(loaded.wifi_ssid, "old-network") && !strcmp(loaded.bridge_key, "old-key"));
     web_preferences_t loaded_prefs = {};
     assert(web_settings_store_load(&loaded_prefs) && loaded_prefs.revision == 10);
+    assert(loaded_prefs.favorite_count == 1 && !strcmp(loaded_prefs.favorites[0].label,"Desk") &&
+        loaded_prefs.backlight_percent == 70 && loaded_prefs.night_backlight_percent == 20 && loaded_prefs.night_dim);
 
     // Power interruption after both values were written but before the committed marker.
     assert(web_settings_store_network_trial_begin(&old_config, true, &old_preferences, true));
@@ -269,6 +284,8 @@ int main() {
     assert(web_settings_store_network_trial_recover_pending());
     assert(nvs_config_load(&loaded) && !strcmp(loaded.wifi_ssid, "old-network"));
     assert(web_settings_store_load(&loaded_prefs) && loaded_prefs.revision == 10);
+    assert(loaded_prefs.favorite_count == 1 && !strcmp(loaded_prefs.favorites[0].label,"Desk") &&
+        loaded_prefs.backlight_percent == 70 && loaded_prefs.night_backlight_percent == 20 && loaded_prefs.night_dim);
 
     // A fully persisted/validated trial survives reboot and can then ACK the old Bridge.
     assert(web_settings_store_network_trial_begin(&old_config, true, &old_preferences, true));
@@ -298,9 +315,18 @@ int main() {
     assert(web_settings_store_command_result(id, sizeof(id), state, sizeof(state), error, sizeof(error)));
     assert(!strcmp(id, "restart-1") && !strcmp(state, "succeeded"));
     assert(web_settings_store_command_begin("ota-1", "ota_install", "boot-b", "1.0.21"));
-    assert(web_settings_store_recover_on_boot("boot-c", "1.0.21", true));
+    assert(!web_settings_store_recover_on_boot("boot-c", "1.0.21", true));
     assert(web_settings_store_command_result(id, sizeof(id), state, sizeof(state), error, sizeof(error)));
-    assert(!strcmp(state, "failed") && !strcmp(error, "ota_version_not_changed"));
+    assert(!strcmp(state, "accepted"));
+    char ota_stage[16] = {}, ota_error[24] = {};
+    assert(!web_settings_store_ota_telemetry(id, sizeof(id), ota_stage, sizeof(ota_stage), ota_error, sizeof(ota_error)));
+    assert(!web_settings_store_ota_written("different", "1.0.22"));
+    assert(web_settings_store_ota_written("ota-1", "1.0.22"));
+    assert(web_settings_store_ota_telemetry(id, sizeof(id), ota_stage, sizeof(ota_stage), ota_error, sizeof(ota_error)) && !strcmp(id, "ota-1") && !strcmp(ota_stage,"writing"));
+    assert(!web_settings_store_recover_on_boot("boot-c", "1.0.23", true));
+    assert(web_settings_store_recover_on_boot("boot-c", "1.0.22", true));
+    assert(web_settings_store_command_result(id, sizeof(id), state, sizeof(state), error, sizeof(error)));
+    assert(!strcmp(state, "succeeded"));
     assert(web_settings_store_command_begin("reset-1", "reset", "boot-c", "1.0.21"));
     assert(!web_settings_store_recover_on_boot("boot-d", "1.0.21", false));
     assert(web_settings_store_complete_reset_after_recovery());

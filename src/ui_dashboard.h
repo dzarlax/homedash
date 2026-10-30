@@ -16,6 +16,7 @@ void ui_dashboard_update_ha(const bridge_data_t *data);
 void ui_dashboard_update_time(void);
 
 bool ui_dashboard_reader_open(void);
+bool ui_dashboard_apply_brightness(const web_preferences_t *prefs);
 void ui_dashboard_apply_preferences(const web_preferences_t *prefs);
 void ui_dashboard_reset_preferences(void);
 void ui_dashboard_update_recovery(const char *ssid, const char *password, const char *url);
