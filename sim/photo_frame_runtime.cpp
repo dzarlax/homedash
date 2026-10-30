@@ -64,6 +64,7 @@ photo_result photo_fetch_manifest(const char *, const char *, photo_manifest *m,
   m->interval = 60;
   m->stale = 900;
   if (std::getenv("HOMEDASH_SIM_ADAPTIVE_JSON")) m->overlay_context_version = 2;
+  if (std::getenv("HOMEDASH_SIM_UNIFIED_JSON")) { m->overlay_context_version = 2; m->scene_context_version = 3; }
   m->count = 2;
   memset(m->frames[0].id, 'a', 64);
   memset(m->frames[1].id, 'b', 64);
@@ -98,14 +99,15 @@ photo_result photo_fetch_context(const char *, const char *, photo_context *out,
   const char *format = std::getenv("HOMEDASH_SIM_PHOTO_CLOCK_FORMAT");
   snprintf(out->locale, sizeof(out->locale), "%s", locale ? locale : "en");
   strcpy(out->timezone, "Europe/Belgrade"); snprintf(out->clock_format, sizeof(out->clock_format), "%s", format ? format : "24h");
-  if (version == 2) {
-    const char *path = std::getenv("HOMEDASH_SIM_ADAPTIVE_JSON");
+  if (version == 2 || version == 3) {
+    const char *path = std::getenv(version == 3 ? "HOMEDASH_SIM_UNIFIED_JSON" : "HOMEDASH_SIM_ADAPTIVE_JSON");
     FILE *file = path ? std::fopen(path, "rb") : nullptr; if (!file) return PHOTO_FAILED;
     char json[4096]; size_t len = std::fread(json, 1, sizeof(json)-1, file); std::fclose(file); json[len] = 0;
     cJSON *root = cJSON_Parse(json); if (!root) return PHOTO_FAILED;
-    out->version = 2; snprintf(out->frame_id, sizeof(out->frame_id), "%s", frame_id);
+    out->version = version; snprintf(out->frame_id, sizeof(out->frame_id), "%s", frame_id);
     const char *kinds[] = {"weather", "event", "clock"};
-    for (const char *kind : kinds) {
+    for (int k = 0; k < (version == 3 ? 2 : 3); ++k) {
+      const char *kind = kinds[k];
       cJSON *entry = cJSON_GetObjectItemCaseSensitive(root, kind);
       if (!entry) { cJSON_Delete(root); return PHOTO_FAILED; }
       if (!strcmp(kind, "clock")) {
@@ -121,6 +123,7 @@ photo_result photo_fetch_context(const char *, const char *, photo_context *out,
       b.width = cJSON_GetObjectItemCaseSensitive(entry, "width")->valueint; b.height = cJSON_GetObjectItemCaseSensitive(entry, "height")->valueint;
       b.expires_at = out->server_time + 300;
     }
+    if (version == 3) { strcpy(out->tone, "light"); out->backdrop = true; }
     cJSON_Delete(root); return PHOTO_OK;
   }
   out->count = 2;
@@ -130,12 +133,12 @@ photo_result photo_fetch_context(const char *, const char *, photo_context *out,
   out->blocks[1].x = 506; out->blocks[1].y = 450; out->blocks[1].width = 480; out->blocks[1].height = 112; out->blocks[1].expires_at = out->server_time + 300;
   return PHOTO_OK;
 }
-photo_result photo_fetch_overlay(const char *, const char *, const photo_overlay_block *block, uint8_t *data, photo_cancel_fn cancel, void *arg, photo_diagnostic *, int) {
+photo_result photo_fetch_overlay(const char *, const char *, const photo_overlay_block *block, uint8_t *data, photo_cancel_fn cancel, void *arg, photo_diagnostic *, int version) {
   if (cancel(arg)) return PHOTO_CANCELLED;
   const char *path = std::getenv(!strcmp(block->kind, "weather") ? "HOMEDASH_SIM_WEATHER_RGB565" : !strcmp(block->kind, "event") ? "HOMEDASH_SIM_EVENT_RGB565" : "HOMEDASH_SIM_CLOCK_RGB565");
   if (path) {
     FILE *file = std::fopen(path, "rb"); if (!file) return PHOTO_FAILED;
-    size_t bytes = (size_t)block->width * block->height * 2;
+    size_t bytes = (size_t)block->width * block->height * (version == 3 ? 4 : 2);
     size_t got = std::fread(data, 1, bytes, file); int extra = std::fgetc(file); std::fclose(file);
     return got == bytes && extra == EOF ? PHOTO_OK : PHOTO_FAILED;
   }

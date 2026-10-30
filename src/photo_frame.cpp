@@ -59,7 +59,7 @@ static bool web_photos_enabled = true;
 static bool web_timing_enabled = false;
 static char shown_id[65] = {};
 static photo_manifest current_manifest = {};
-static bool manifest_ready = false;
+static bool manifest_ready = false, protocol_negotiated = false;
 static bool shown_in_manifest() {
   if (!manifest_ready || !shown_id[0]) return false;
   for (int i = 0; i < current_manifest.count; ++i)
@@ -68,13 +68,58 @@ static bool shown_in_manifest() {
 }
 struct card_state { photo_overlay_block meta; uint8_t *pixels; lv_image_dsc_t desc; lv_obj_t *object; };
 static card_state cards[3] = {};
+#ifdef SIMULATOR
+static size_t sim_pixel_peak = 0;
+#endif
 static photo_context wanted = {};
+struct pending_photo { bool ready; unsigned generation; int buffer; char id[65]; };
+static pending_photo pending = {};
+static void discard_pending() { pending = {}; }
+static bool frame_in_manifest(const char *id) {
+  if (!manifest_ready) return false;
+  for (int i = 0; i < current_manifest.count; ++i) if (!strcmp(id, current_manifest.frames[i].id)) return true;
+  return false;
+}
 static int64_t server_anchor = 0, monotonic_anchor = 0, context_poll = 0, card_retry = 0;
 static bool context_known = false;
 static char confirmed_timezone[40] = {}, confirmed_posix_timezone[48] = {};
-static lv_obj_t *clock_label = nullptr, *date_label = nullptr;
+static lv_obj_t *clock_label = nullptr, *date_label = nullptr, *clock_panel = nullptr;
 static lv_obj_t *clock_shadow[4] = {}, *date_shadow[4] = {};
 static int last_minute = -1;
+static const char *months[][12] = {{"января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"},{"January","February","March","April","May","June","July","August","September","October","November","December"},{"januar","februar","mart","april","maj","jun","jul","avgust","septembar","oktobar","novembar","decembar"}};
+static const char *days[][7] = {{"воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"},{"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"},{"nedelja","ponedeljak","utorak","sreda","četvrtak","petak","subota"}};
+static int language_index(const char *locale) { return !strcmp(locale,"en") ? 1 : !strcmp(locale,"sr-Latn") ? 2 : 0; }
+static void format_date(char *buf, size_t cap, int language, int day, int weekday, int month) {
+  snprintf(buf, cap, "%s, %d %s", days[language][weekday], day, months[language][month]);
+}
+static void format_time(char *buf, size_t cap, int hour, int minute, bool twelve) {
+  if (twelve) snprintf(buf, cap, "%d:%02d %s", hour % 12 ? hour % 12 : 12, minute, hour >= 12 ? "PM" : "AM");
+  else snprintf(buf, cap, "%02d:%02d", hour, minute);
+}
+static void measure_clock_widths(int widths[6]) {
+  static int cached[6] = {};
+  if (cached[0]) { memcpy(widths, cached, sizeof(cached)); return; }
+  char buf[128]; lv_point_t size;
+  for (int lang = 0; lang < 3; ++lang) {
+    int date_width = 0;
+    for (int day = 1; day <= 31; ++day) for (int weekday = 0; weekday < 7; ++weekday) for (int month = 0; month < 12; ++month) {
+      format_date(buf, sizeof(buf), lang, day, weekday, month);
+      lv_text_get_size(&size, buf, &font_montserrat_16_cyr, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+      if (size.x > date_width) date_width = size.x;
+    }
+    for (int twelve = 0; twelve < 2; ++twelve) {
+      int width = date_width;
+      for (int minute = 0; minute < 1440; ++minute) {
+        format_time(buf, sizeof(buf), minute / 60, minute % 60, twelve);
+        lv_text_get_size(&size, buf, &font_photo_clock_80, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        if (size.x > width) width = size.x;
+      }
+      width += 34;
+      widths[lang * 2 + twelve] = width < 144 ? 144 : width > 480 ? 480 : width;
+    }
+  }
+  memcpy(cached, widths, sizeof(cached));
+}
 static int64_t server_now() { return server_anchor + (esp_timer_get_time() - monotonic_anchor) / 1000000; }
 static void clear_card(int i) {
   if (cards[i].object) lv_obj_delete(cards[i].object);
@@ -91,10 +136,14 @@ static void clear_context() {
     if (date_shadow[i]) lv_obj_delete(date_shadow[i]);
     clock_shadow[i] = date_shadow[i] = nullptr;
   }
+  if (clock_panel) lv_obj_delete(clock_panel);
+  clock_panel = nullptr;
   clock_label = date_label = nullptr; last_minute = -1; context_known = false; wanted = {};
 }
 static void render_clock() {
+  if (wanted.version == 3 && !wanted.clock_enabled && clock_panel) { lv_obj_delete(clock_panel); clock_panel = nullptr; }
   if (!overlay || !context_known || !wanted.clock_enabled || !ui_dashboard_timezone_matches(wanted.timezone, confirmed_posix_timezone) || strcmp(confirmed_timezone, wanted.timezone)) {
+    if (clock_panel) lv_obj_add_flag(clock_panel, LV_OBJ_FLAG_HIDDEN);
     if (clock_label) lv_obj_add_flag(clock_label, LV_OBJ_FLAG_HIDDEN);
     if (date_label) lv_obj_add_flag(date_label, LV_OBJ_FLAG_HIDDEN);
     for (int i = 0; i < 4; ++i) {
@@ -110,6 +159,7 @@ static void render_clock() {
 #endif
   struct tm t = {};
   if (wall < 1577836800 || !localtime_r(&wall, &t)) {
+    if (clock_panel) lv_obj_add_flag(clock_panel, LV_OBJ_FLAG_HIDDEN);
     if (clock_label) lv_obj_add_flag(clock_label, LV_OBJ_FLAG_HIDDEN);
     if (date_label) lv_obj_add_flag(date_label, LV_OBJ_FLAG_HIDDEN);
     for (int i = 0; i < 4; ++i) {
@@ -117,6 +167,23 @@ static void render_clock() {
       if (date_shadow[i]) lv_obj_add_flag(date_shadow[i], LV_OBJ_FLAG_HIDDEN);
     }
     return;
+  }
+  if (wanted.version == 3 && !clock_panel) {
+    clock_panel = lv_obj_create(overlay); lv_obj_remove_style_all(clock_panel);
+    lv_obj_set_pos(clock_panel, 24, 448); lv_obj_set_height(clock_panel, 128);
+    lv_obj_set_style_bg_color(clock_panel, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(clock_panel, 69, 0);
+    lv_obj_set_style_border_color(clock_panel, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_border_opa(clock_panel, 82, 0);
+    lv_obj_set_style_border_width(clock_panel, 1, 0);
+    lv_obj_set_style_radius(clock_panel, 16, 0);
+    lv_obj_clear_flag(clock_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(clock_panel, LV_OBJ_FLAG_CLICKABLE);
+  }
+  if (clock_panel) {
+    int widths[6]; measure_clock_widths(widths);
+    lv_obj_set_width(clock_panel, widths[language_index(wanted.locale) * 2 + (!strcmp(wanted.clock_format, "12h") ? 1 : 0)]);
+    lv_obj_clear_flag(clock_panel, LV_OBJ_FLAG_HIDDEN);
   }
   if (!clock_label) {
     static const int dx[4] = {-1, 1, 0, 0}, dy[4] = {0, 0, -1, 1};
@@ -135,6 +202,10 @@ static void render_clock() {
     lv_obj_set_pos(clock_label, 38, 475); lv_obj_set_pos(date_label, 40, 558);
     last_minute = -1;
   }
+  int clock_y = wanted.version == 3 ? 463 : 475, date_y = wanted.version == 3 ? 546 : 558;
+  static const int dx[4] = {-1, 1, 0, 0}, dy[4] = {0, 0, -1, 1};
+  lv_obj_set_pos(clock_label, 38, clock_y); lv_obj_set_pos(date_label, 40, date_y);
+  for (int i = 0; i < 4; ++i) { lv_obj_set_pos(clock_shadow[i], 38 + dx[i], clock_y + dy[i]); lv_obj_set_pos(date_shadow[i], 40 + dx[i], date_y + dy[i]); }
   bool dark = wanted.version == 2 && !strcmp(wanted.tone, "dark");
   lv_obj_set_style_text_color(clock_label, lv_color_hex(dark ? 0x111111 : 0xffffff), 0);
   lv_obj_set_style_text_color(date_label, lv_color_hex(dark ? 0x111111 : 0xffffff), 0);
@@ -147,13 +218,10 @@ static void render_clock() {
   int minute = t.tm_yday * 1440 + t.tm_hour * 60 + t.tm_min;
   if (last_minute == minute) return;
   last_minute = minute; char buf[128];
-  if (!strcmp(wanted.clock_format, "12h")) snprintf(buf, sizeof(buf), "%d:%02d %s", t.tm_hour % 12 ? t.tm_hour % 12 : 12, t.tm_min, t.tm_hour >= 12 ? "PM" : "AM");
-  else snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
+  format_time(buf, sizeof(buf), t.tm_hour, t.tm_min, !strcmp(wanted.clock_format, "12h"));
   lv_label_set_text(clock_label, buf); for (auto *label : clock_shadow) lv_label_set_text(label, buf);
-  static const char *months[][12] = {{"января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"},{"January","February","March","April","May","June","July","August","September","October","November","December"},{"januar","februar","mart","april","maj","jun","jul","avgust","septembar","oktobar","novembar","decembar"}};
-  int language = !strcmp(wanted.locale,"en") ? 1 : !strcmp(wanted.locale,"sr-Latn") ? 2 : 0;
-  static const char *days[][7] = {{"воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"},{"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"},{"nedelja","ponedeljak","utorak","sreda","četvrtak","petak","subota"}};
-  snprintf(buf, sizeof(buf), "%s, %d %s", days[language][t.tm_wday], t.tm_mday, months[language][t.tm_mon]); lv_label_set_text(date_label, buf); for (auto *label : date_shadow) lv_label_set_text(label, buf);
+  format_date(buf, sizeof(buf), language_index(wanted.locale), t.tm_mday, t.tm_wday, t.tm_mon);
+  lv_label_set_text(date_label, buf); for (auto *label : date_shadow) lv_label_set_text(label, buf);
 }
 
 // UI-owned override; cleared by the next physical touch or OTA handoff.
@@ -173,6 +241,7 @@ static bool cancelled(void *p) {
   return paused.load() || epoch.load() != *static_cast<unsigned *>(p);
 }
 static void detach() {
+  discard_pending();
   clear_context();
   context_poll = 0;
   if (overlay) {
@@ -208,7 +277,7 @@ static bool allocate_buffers() {
   return true;
 }
 static void publish(int index, const char *id) {
-  if (strcmp(shown_id, id)) { clear_context(); context_poll = 0; card_retry = 0; }
+  if (strcmp(shown_id, id) && current_manifest.scene_context_version != 3) { clear_context(); context_poll = 0; card_retry = 0; }
   if (!overlay) {
     ui_dashboard_hide_sensitive();
     overlay = lv_obj_create(lv_screen_active());
@@ -265,7 +334,7 @@ static void worker_task(void *) {
     xSemaphoreGive(mutex);
   }
 }
-static bool submit(job_kind kind, int index, const photo_frame_entry *entry, const photo_overlay_block *card = nullptr, uint8_t *staging = nullptr) {
+static bool submit(job_kind kind, int index, const photo_frame_entry *entry, const photo_overlay_block *card = nullptr, uint8_t *staging = nullptr, const char *bound = nullptr) {
   TaskHandle_t target = worker.load(std::memory_order_acquire);
   if (!mutex || !target || paused.load() || busy.load())
     return false;
@@ -279,8 +348,8 @@ static bool submit(job_kind kind, int index, const photo_frame_entry *entry, con
   job.generation = epoch.load();
   job.request_start_us = esp_timer_get_time();
   job.buffer = index;
-  job.version = current_manifest.overlay_context_version == 2 ? 2 : 1;
-  if (kind == CONTEXT || kind == CARD) strncpy(job.bound_frame, shown_id, 64);
+  job.version = current_manifest.scene_context_version == 3 ? 3 : current_manifest.overlay_context_version == 2 ? 2 : 1;
+  if (kind == CONTEXT || kind == CARD) strncpy(job.bound_frame, bound ? bound : shown_id, 64);
   if (entry)
     job.frame = *entry;
   if (card) job.card = *card;
@@ -297,12 +366,34 @@ static void retry() {
   if (retry_step < 3)
     retry_step++;
 }
+static void schedule_info() {
+  if (overlay && !network_update_pending && ((current_manifest.scene_context_version == 3 && protocol_negotiated) || shown_in_manifest()) && !busy.load() && (context_poll == 0 || esp_timer_get_time() / 1000000 - context_poll >= 60)) {
+    if (submit(CONTEXT, 0, nullptr)) context_poll = esp_timer_get_time() / 1000000;
+  }
+  if (overlay && !network_update_pending && ((current_manifest.scene_context_version == 3 && protocol_negotiated) || shown_in_manifest()) && context_known && !busy.load() && esp_timer_get_time() / 1000000 >= card_retry) {
+    for (int i = 0; i < wanted.count; ++i) {
+      photo_overlay_block &b = wanted.blocks[i]; int n = slot(b.kind);
+      if (b.expires_at <= server_now() || (cards[n].pixels && !strcmp(cards[n].meta.id, b.id) && !strcmp(cards[n].meta.sha256, b.sha256) && cards[n].meta.width == b.width && cards[n].meta.height == b.height)) continue;
+      size_t bytes = (size_t)b.width * b.height * (current_manifest.scene_context_version == 3 ? 4 : 2);
+      size_t live = 0;
+      for (int j = 0; j < 3; ++j) if (cards[j].pixels)
+        live += (size_t)cards[j].meta.width * cards[j].meta.height * (current_manifest.scene_context_version == 3 ? 4 : 2);
+      uint8_t *staging = live + bytes <= 768u * 1024u ? (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : nullptr;
+      if (!staging) { card_retry = esp_timer_get_time() / 1000000 + 60; break; }
+#ifdef SIMULATOR
+      if (live + bytes > sim_pixel_peak) sim_pixel_peak = live + bytes;
+#endif
+      if (!submit(CARD, 0, nullptr, &b, staging)) free(staging);
+      break;
+    }
+  }
+}
 static void tick(lv_timer_t *) {
   if (!mutex || paused.load())
     return;
   xSemaphoreTake(mutex, portMAX_DELAY);
   if (network_update_pending) {
-    clear_context(); context_poll = 0; manifest_ready = false;
+    clear_context(); context_poll = 0; manifest_ready = false; protocol_negotiated = false;
     if (!busy.load()) {
       strncpy(bridge_url, pending_bridge_url, sizeof(bridge_url) - 1);
       strncpy(bridge_key, pending_bridge_key, sizeof(bridge_key) - 1);
@@ -335,9 +426,10 @@ static void tick(lv_timer_t *) {
   int64_t t = now();
   bool eligible = !physical_down && !ui_dashboard_reader_open() &&
                   (manual_requested || t - last_touch >= idle_seconds);
+  if (pending.ready && (pending.generation != epoch.load() || !frame_in_manifest(pending.id))) discard_pending();
   if (completed && result.generation == epoch.load()) {
-    if (result.kind == CONTEXT && overlay && shown_in_manifest() && !strcmp(result.bound_frame, shown_id)) {
-      if (result.result == PHOTO_NOT_FOUND) clear_context();
+    if (result.kind == CONTEXT && overlay && (result.version == 3 || (shown_in_manifest() && !strcmp(result.bound_frame, shown_id)))) {
+      if (result.result == PHOTO_NOT_FOUND && result.version != 3) clear_context();
       else if (result.result == PHOTO_OK && overlay) {
         // A delayed response cannot move the estimated server clock backwards.
         int64_t anchor = result.context.server_time + (esp_timer_get_time() - result.request_start_us) / 1000000;
@@ -358,22 +450,28 @@ static void tick(lv_timer_t *) {
         }
         for (int i = 0; i < 3; ++i) if (!present[i]) clear_card(i);
       }
-    } else if (result.kind == CARD && overlay && shown_in_manifest() && !strcmp(result.bound_frame, shown_id)) {
+    } else if (result.kind == CARD && overlay && (result.version == 3 || (shown_in_manifest() && !strcmp(result.bound_frame, shown_id)))) {
       if (result.result != PHOTO_OK) card_retry = esp_timer_get_time() / 1000000 + 60;
       int n = slot(result.card.kind);
       if (result.result == PHOTO_OK && overlay && context_known && result.card.expires_at > server_now()) {
         bool current = false;
-        for (int i = 0; i < wanted.count; ++i) if (!strcmp(wanted.blocks[i].id, result.card.id)) current = true;
+        for (int i = 0; i < wanted.count; ++i) if (!strcmp(wanted.blocks[i].id, result.card.id) && !strcmp(wanted.blocks[i].sha256, result.card.sha256) && wanted.blocks[i].width == result.card.width && wanted.blocks[i].height == result.card.height && wanted.blocks[i].expires_at > server_now()) current = true;
         if (current) {
           clear_card(n); cards[n].meta = result.card; cards[n].pixels = result.staging; result.staging = nullptr;
-          lv_image_dsc_t &d = cards[n].desc; d.header.magic = LV_IMAGE_HEADER_MAGIC; d.header.cf = LV_COLOR_FORMAT_RGB565;
-          d.header.w = result.card.width; d.header.h = result.card.height; d.header.stride = result.card.width * 2;
-          d.data_size = (size_t)result.card.width * result.card.height * 2; d.data = cards[n].pixels;
+          lv_image_dsc_t &d = cards[n].desc; d.header.magic = LV_IMAGE_HEADER_MAGIC; d.header.cf = result.version == 3 ? LV_COLOR_FORMAT_ARGB8888 : LV_COLOR_FORMAT_RGB565;
+          int pixel_bytes = result.version == 3 ? 4 : 2;
+          d.header.w = result.card.width; d.header.h = result.card.height; d.header.stride = result.card.width * pixel_bytes;
+          d.data_size = (size_t)result.card.width * result.card.height * pixel_bytes; d.data = cards[n].pixels;
           cards[n].object = lv_obj_create(overlay); lv_obj_remove_style_all(cards[n].object);
           lv_obj_set_size(cards[n].object, result.card.width, result.card.height);
-          // Two ARGB corner strips per card fit within the 320 KiB pixel budget
-          // even if both cards and a maximum replacement are live together.
-          if (result.version == 1) {
+          if (result.version == 3) {
+            lv_obj_set_style_bg_color(cards[n].object, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_bg_opa(cards[n].object, 69, 0);
+            lv_obj_set_style_border_color(cards[n].object, lv_color_hex(0xffffff), 0);
+            lv_obj_set_style_border_opa(cards[n].object, 82, 0);
+            lv_obj_set_style_border_width(cards[n].object, 1, 0);
+            lv_obj_set_style_radius(cards[n].object, 16, 0);
+          } else if (result.version == 1) {
             lv_obj_set_style_radius(cards[n].object, 3, 0);
             lv_obj_set_style_clip_corner(cards[n].object, true, 0);
           }
@@ -398,6 +496,11 @@ static void tick(lv_timer_t *) {
         interval_seconds = m.interval;
       }
       stale_seconds = m.stale;
+      if (!strcmp(m.state, "ready") || m.scene_context_version == 3 || current_manifest.scene_context_version == 3) {
+        if (current_manifest.overlay_context_version != m.overlay_context_version || current_manifest.scene_context_version != m.scene_context_version) { discard_pending(); clear_context(); context_poll = 0; }
+        current_manifest = m;
+      }
+      protocol_negotiated = true;
       eligible = !physical_down && !ui_dashboard_reader_open() &&
                  (manual_requested || t - last_touch >= idle_seconds);
       if (!strcmp(m.state, "disabled") || !strcmp(m.state, "empty")) {
@@ -411,16 +514,17 @@ static void tick(lv_timer_t *) {
         last_ready = t;
         retry_step = 0;
         retry_after = 0;
-        if (current_manifest.overlay_context_version != m.overlay_context_version) { clear_context(); context_poll = 0; }
-        current_manifest = m;
         manifest_ready = true;
-        if (overlay && !shown_in_manifest()) { clear_context(); context_poll = 0; }
+        if (overlay && !shown_in_manifest() && m.scene_context_version != 3) { clear_context(); context_poll = 0; }
       } else {
         manifest_ready = false;
         retry();
       }
     } else if (result.kind == FRAME && result.result == PHOTO_OK && eligible) {
-      publish(result.buffer, result.frame.id);
+      if (result.version == 3) {
+        pending.ready = true; pending.generation = result.generation; pending.buffer = result.buffer;
+        strncpy(pending.id, result.frame.id, 64);
+      } else publish(result.buffer, result.frame.id);
       retry_step = 0;
       retry_after = 0;
     } else if (result.result == PHOTO_NOT_FOUND && result.kind == FRAME) {
@@ -435,19 +539,7 @@ static void tick(lv_timer_t *) {
     for (int i = 0; i < 3; ++i) if (cards[i].pixels && cards[i].meta.expires_at <= server_now()) clear_card(i);
     render_clock();
   }
-  if (overlay && shown_in_manifest() && !busy.load() && (context_poll == 0 || esp_timer_get_time() / 1000000 - context_poll >= 60)) {
-    if (submit(CONTEXT, 0, nullptr)) context_poll = esp_timer_get_time() / 1000000;
-  }
-  if (overlay && shown_in_manifest() && context_known && !busy.load() && esp_timer_get_time() / 1000000 >= card_retry) {
-    for (int i = 0; i < wanted.count; ++i) {
-      photo_overlay_block &b = wanted.blocks[i]; int n = slot(b.kind);
-      if (b.expires_at <= server_now() || (cards[n].pixels && !strcmp(cards[n].meta.id, b.id) && !strcmp(cards[n].meta.sha256, b.sha256) && cards[n].meta.width == b.width && cards[n].meta.height == b.height)) continue;
-      size_t bytes = (size_t)b.width * b.height * 2;
-      uint8_t *staging = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      if (staging && !submit(CARD, 0, nullptr, &b, staging)) free(staging);
-      break;
-    }
-  }
+  if (current_manifest.scene_context_version != 3) schedule_info();
   if (last_ready && t - last_ready >= stale_seconds) {
     const bool was_visible = overlay != nullptr;
     detach();
@@ -465,7 +557,7 @@ static void tick(lv_timer_t *) {
     if (submit(MANIFEST, 0, nullptr))
       last_poll = t;
   }
-  if (eligible && manifest_ready && !busy.load() && t >= retry_after &&
+  if (current_manifest.scene_context_version != 3 && eligible && manifest_ready && !busy.load() && t >= retry_after &&
       current_manifest.count > 0 &&
       (!overlay || t - last_slide >= interval_seconds)) {
     int next_frame = 0;
@@ -483,6 +575,20 @@ static void tick(lv_timer_t *) {
     if (strcmp(shown_id, entry->id) && allocate_buffers())
       submit(FRAME, displayed == 0 ? 1 : 0, entry);
   }
+  if (current_manifest.scene_context_version == 3 && eligible && manifest_ready && !network_update_pending) {
+    if (pending.ready && pending.generation == epoch.load() && frame_in_manifest(pending.id) && (!overlay || t - last_slide >= interval_seconds)) {
+      publish(pending.buffer, pending.id); discard_pending();
+    }
+    int lead = interval_seconds / 2 < 15 ? interval_seconds / 2 : 15;
+    if (!pending.ready && !busy.load() && t >= retry_after && current_manifest.count > 0 &&
+        (!overlay || ((!shown_in_manifest() || current_manifest.count > 1) && t - last_slide >= interval_seconds - lead))) {
+      int next = 0;
+      for (int i = 0; i < current_manifest.count; ++i) if (!strcmp(shown_id, current_manifest.frames[i].id)) { next = (i + 1) % current_manifest.count; break; }
+      if (allocate_buffers()) submit(FRAME, displayed == 0 ? 1 : 0, &current_manifest.frames[next]);
+    }
+  }
+  if (current_manifest.scene_context_version == 3) schedule_info();
+
 }
 } // namespace
 void photo_frame_ui_init() {

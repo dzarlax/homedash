@@ -251,6 +251,13 @@ a 512 KiB aggregate pixel budget including replacement staging; no third full
 photo buffer is allocated. Older Bridges continue to use v1 context. Hardware
 memory and long-running Wi-Fi acceptance require a separately authorized release.
 
+Firmware **v1.0.29** negotiates persistent v3 information
+with a compatible Bridge. Weather and event content use straight-alpha BGRA
+images over native translucent panels; the clock is drawn locally. The panels
+remain visible across photo changes and are independent of the photo source.
+V1 and v2 remain available for older Bridges. Hardware memory and long-running
+Wi-Fi acceptance remain separate from server and simulator checks.
+
 ### Simulator and checks
 
 The desktop simulator can exercise the photo frame using generated color bars and
