@@ -176,6 +176,7 @@ static void restore_runtime_preferences(void)
         photo_frame_apply_web_preferences(prefs.photos_enabled, prefs.photo_idle_seconds,
                                           prefs.photo_interval_seconds);
         wifi_set_timezone(prefs.posix_timezone);
+        photo_frame_confirm_timezone(prefs.timezone, prefs.posix_timezone);
     } else {
         if (lvgl_port_lock(-1)) {
             ui_dashboard_reset_preferences();
@@ -520,7 +521,7 @@ static void network_task(void *param)
 
     // WiFi init
     wifi_init(cfg.wifi_ssid, cfg.wifi_pass, POSIX_TZ, NTP_SERVER);
-    if (has_saved_prefs) wifi_set_timezone(saved_prefs.posix_timezone);
+    if (has_saved_prefs) { wifi_set_timezone(saved_prefs.posix_timezone); photo_frame_confirm_timezone(saved_prefs.timezone, saved_prefs.posix_timezone); }
 
     vTaskDelay(pdMS_TO_TICKS(1000));
     if (s_network_handoff_pending) {
@@ -607,7 +608,7 @@ static void network_task(void *param)
                 }
                 if (applied) {
                     web_preferences_t live = {};
-                    if (web_settings_store_load(&live)) wifi_set_timezone(live.posix_timezone);
+                    if (web_settings_store_load(&live)) { wifi_set_timezone(live.posix_timezone); photo_frame_confirm_timezone(live.timezone, live.posix_timezone); }
                 }
                 }
             }

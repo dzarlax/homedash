@@ -21,3 +21,9 @@ for size in 16 24; do
     --lv-fallback "lv_font_montserrat_${size}" \
     -o "src/fonts/font_montserrat_${size}_cyr.c"
 done
+# Photo clock uses a deliberately small glyph set to avoid a transformed LVGL
+# layer and its runtime framebuffer allocation.
+"$font_conv" --font "$font" --range 0x20-0x3A,0x41,0x4D,0x50 \
+  --size 80 --bpp 4 --no-compress --no-prefilter --format lvgl \
+  --lv-include lvgl.h --lv-font-name font_photo_clock_80 \
+  -o src/fonts/font_photo_clock_80.c

@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 void photo_frame_ui_init(void);
+void photo_frame_confirm_timezone(const char *timezone, const char *posix_timezone);
 void photo_frame_network_init(const char *url, const char *key);
 void photo_frame_update_network(const char *url, const char *key);
 void photo_frame_apply_web_preferences(bool enabled, int idle_seconds,

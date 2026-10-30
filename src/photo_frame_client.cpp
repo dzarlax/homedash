@@ -12,6 +12,7 @@ namespace {
 struct response_headers {
   bool encoded = false;
   bool ranged = false;
+  bool octet_stream = false;
 };
 esp_err_t on_event(esp_http_client_event_t *e) {
   response_headers *h = static_cast<response_headers *>(e->user_data);
@@ -19,6 +20,8 @@ esp_err_t on_event(esp_http_client_event_t *e) {
     if (!strcasecmp(e->header_key, "Content-Encoding") &&
         strcasecmp(e->header_value, "identity"))
       h->encoded = true;
+    if (!strcasecmp(e->header_key, "Content-Type") && !strcasecmp(e->header_value, "application/octet-stream"))
+      h->octet_stream = true;
     if (!strcasecmp(e->header_key, "Content-Range"))
       h->ranged = true;
   }
@@ -99,6 +102,18 @@ bool hex64(const char *s) {
   for (int i = 0; i < 64; i++)
     if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f')))
       return false;
+  return true;
+}
+bool unique_object_keys(const cJSON *node) {
+  if (cJSON_IsObject(node)) {
+    for (const cJSON *a = node->child; a; a = a->next) {
+      if (!a->string) return false;
+      for (const cJSON *b = a->next; b; b = b->next)
+        if (b->string && !strcmp(a->string, b->string)) return false;
+    }
+  }
+  for (const cJSON *child = node ? node->child : nullptr; child; child = child->next)
+    if (!unique_object_keys(child)) return false;
   return true;
 }
 bool number(cJSON *root, const char *name, int min, int max, int *out) {
@@ -218,14 +233,14 @@ photo_result photo_fetch_manifest(const char *base, const char *key,
   *out = m;
   return PHOTO_OK;
 }
-photo_result photo_fetch_pixels(const char *base, const char *key,
-                                const photo_frame_entry *entry, uint8_t *buffer,
+static photo_result fetch_image(const char *base, const char *key,
+                                const photo_frame_entry *entry, uint8_t *buffer, size_t bytes, const char *route,
                                 photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic) {
   if (diagnostic) *diagnostic = {};
   if (!hex64(entry->id) || !hex64(entry->sha256))
     return PHOTO_FAILED;
   char url[256];
-  if (snprintf(url, sizeof(url), "%s/api/photo-frame/v1/frames/%s", base,
+  if (snprintf(url, sizeof(url), "%s/api/photo-frame/v1/%s/%s", base, route,
                entry->id) >= (int)sizeof(url))
     return PHOTO_FAILED;
   request r(diagnostic);
@@ -236,8 +251,8 @@ photo_result photo_fetch_pixels(const char *base, const char *key,
   int status = esp_http_client_get_status_code(r.client);
   if (status == 404)
     return PHOTO_NOT_FOUND;
-  if (status != 200 || esp_http_client_is_chunked_response(r.client) ||
-      esp_http_client_get_content_length(r.client) != PHOTO_FRAME_BYTES)
+  if (status != 200 || (!strcmp(route, "overlays") && !r.headers.octet_stream) || esp_http_client_is_chunked_response(r.client) ||
+      esp_http_client_get_content_length(r.client) != (int64_t)bytes)
     return PHOTO_FAILED;
   mbedtls_sha256_context hash;
   mbedtls_sha256_init(&hash);
@@ -245,12 +260,12 @@ photo_result photo_fetch_pixels(const char *base, const char *key,
   r.diagnostic.stage = "read";
   size_t used = 0;
   photo_result result = PHOTO_FAILED;
-  while (used < PHOTO_FRAME_BYTES) {
+  while (used < bytes) {
     result = r.check(cancel, arg);
     if (result != PHOTO_OK)
       goto done;
     result = PHOTO_FAILED;
-    int remain = PHOTO_FRAME_BYTES - used;
+    int remain = bytes - used;
     int remaining_ms = (int)((r.deadline - esp_timer_get_time()) / 1000);
     if (remaining_ms < 1)
       remaining_ms = 1;
@@ -291,4 +306,65 @@ done:
     r.diagnostic.stage = "ok";
   mbedtls_sha256_free(&hash);
   return result;
+}
+
+photo_result photo_fetch_pixels(const char *base, const char *key, const photo_frame_entry *entry, uint8_t *buffer, photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic) {
+  return fetch_image(base, key, entry, buffer, PHOTO_FRAME_BYTES, "frames", cancel, arg, diagnostic);
+}
+photo_result photo_fetch_overlay(const char *base, const char *key, const photo_overlay_block *block, uint8_t *buffer, photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic) {
+  if (!block || !buffer || block->width < 1 || block->height < 1 || (size_t)block->width * block->height * 2 > 107520) return PHOTO_FAILED;
+  photo_frame_entry entry = {};
+  memcpy(entry.id, block->id, sizeof(entry.id)); memcpy(entry.sha256, block->sha256, sizeof(entry.sha256));
+  return fetch_image(base, key, &entry, buffer, (size_t)block->width * block->height * 2, "overlays", cancel, arg, diagnostic);
+}
+
+photo_result photo_fetch_context(const char *base, const char *key, photo_context *out,
+                                 photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic) {
+  if (diagnostic) *diagnostic = {};
+  char url[256];
+  if (!out || snprintf(url, sizeof(url), "%s/api/photo-frame/v1/context", base) >= (int)sizeof(url)) return PHOTO_FAILED;
+  request r(diagnostic);
+  photo_result opened = r.open(url, key, cancel, arg);
+  if (opened != PHOTO_OK) return opened;
+  int status = esp_http_client_get_status_code(r.client);
+  if (status == 404) return PHOTO_NOT_FOUND;
+  int64_t length = esp_http_client_get_content_length(r.client);
+  if (status != 200 || esp_http_client_is_chunked_response(r.client) || length < 1 || length > 4096) return PHOTO_FAILED;
+  char body[4097]; size_t used = 0;
+  while (used < (size_t)length) {
+    photo_result check = r.check(cancel, arg); if (check != PHOTO_OK) return check;
+    int remaining_ms = (int)((r.deadline - esp_timer_get_time()) / 1000);
+    esp_http_client_set_timeout_ms(r.client, remaining_ms < 2000 ? (remaining_ms > 0 ? remaining_ms : 1) : 2000);
+    int n = esp_http_client_read(r.client, body + used, (int)(length - used));
+    if (n == -ESP_ERR_HTTP_EAGAIN) continue;
+    if (n <= 0) return PHOTO_FAILED;
+    used += n;
+  }
+  if (r.check(cancel, arg) != PHOTO_OK) return r.check(cancel, arg);
+  if (!esp_http_client_is_complete_data_received(r.client)) return PHOTO_FAILED;
+  body[used] = 0;
+  const char *end = nullptr;
+  cJSON *root = cJSON_ParseWithLengthOpts(body, used + 1, &end, true);
+  if (!root) return PHOTO_FAILED;
+  photo_context c = {}; int version = 0;
+  auto epoch_value = [](cJSON *obj, const char *key, int64_t *value) {
+    cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (!cJSON_IsNumber(v) || v->valuedouble < 1 || v->valuedouble > 4102444800.0 || v->valuedouble != (double)(int64_t)v->valuedouble) return false;
+    *value = (int64_t)v->valuedouble; return true;
+  };
+  cJSON *clock = cJSON_GetObjectItemCaseSensitive(root, "clock");
+  cJSON *enabled = cJSON_GetObjectItemCaseSensitive(clock, "enabled");
+  bool ok = cJSON_IsObject(root) && unique_object_keys(root) && number(root, "version", 1, 1, &version) && text(root, "revision", c.revision, sizeof(c.revision)) && hex64(c.revision) && epoch_value(root, "server_time", &c.server_time) && cJSON_IsObject(clock) && cJSON_IsBool(enabled) && text(clock, "locale", c.locale, sizeof(c.locale)) && (!strcmp(c.locale, "ru") || !strcmp(c.locale, "en") || !strcmp(c.locale, "sr-Latn")) && text(clock, "timezone", c.timezone, sizeof(c.timezone)) && c.timezone[0] && text(clock, "clock_format", c.clock_format, sizeof(c.clock_format)) && (!strcmp(c.clock_format, "12h") || !strcmp(c.clock_format, "24h"));
+  c.clock_enabled = cJSON_IsTrue(enabled);
+  cJSON *blocks = cJSON_GetObjectItemCaseSensitive(root, "blocks");
+  if (!cJSON_IsArray(blocks)) ok = false;
+  else {
+    c.count = cJSON_GetArraySize(blocks); if (c.count > 2) ok = false;
+    for (int i = 0; ok && i < c.count; ++i) {
+      photo_overlay_block &b = c.blocks[i]; cJSON *item = cJSON_GetArrayItem(blocks, i);
+      ok = cJSON_IsObject(item) && text(item, "kind", b.kind, sizeof(b.kind)) && (!strcmp(b.kind, "weather") || !strcmp(b.kind, "event")) && text(item, "render_id", b.id, sizeof(b.id)) && hex64(b.id) && text(item, "sha256", b.sha256, sizeof(b.sha256)) && hex64(b.sha256) && number(item, "x", 0, 1023, &b.x) && number(item, "y", 0, 599, &b.y) && number(item, "width", 1, !strcmp(b.kind, "weather") ? 236 : 480, &b.width) && number(item, "height", 1, !strcmp(b.kind, "weather") ? 200 : 112, &b.height) && b.x + b.width <= 1024 && b.y + b.height <= 600 && epoch_value(item, "expires_at", &b.expires_at) && b.expires_at <= c.server_time + (!strcmp(b.kind, "weather") ? 1800 : 300) && (i == 0 || strcmp(c.blocks[0].kind, b.kind));
+    }
+  }
+  cJSON_Delete(root); if (!ok) return PHOTO_FAILED;
+  *out = c; return PHOTO_OK;
 }

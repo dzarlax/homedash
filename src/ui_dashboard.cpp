@@ -83,7 +83,6 @@ static lv_obj_t *reader_meta_label = NULL;
 static const char *reader_text_fallback_key = NULL;
 static const char *reader_meta_format_key = NULL;
 static char reader_meta_value[64] = {};
-static lv_obj_t *home_photo_status = NULL;
 static lv_obj_t *settings_web_link = NULL;
 static lv_obj_t *settings_qr = NULL;
 static lv_obj_t *settings_ap_name = NULL;
@@ -118,7 +117,6 @@ static bool wake_swallow_until_release = false;
 // the copy out of that stack without concurrent access.
 static bridge_data_t ui_bridge_snapshot = {};
 static bridge_cal_data_t ui_calendar_snapshot = {};
-static char ui_photo_status_snapshot[192] = {};
 static char ui_recovery_ssid[64] = {};
 static char ui_recovery_password[64] = {};
 static char ui_recovery_url[192] = {};
@@ -2097,11 +2095,7 @@ static void ota_btn_cb(lv_event_t *e)
     request_ota_check();
 }
 
-static void photo_frame_btn_cb(lv_event_t *e)
-{
-    (void)e;
-    photo_frame_start_now();
-}
+
 
 static void climate_power_btn_cb(lv_event_t *e)
 {
@@ -2388,27 +2382,7 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_set_width(pg_title, 180);
     lv_obj_set_pos(pg_title, 15, 8);
 
-    home_photo_status = lv_label_create(tile);
-    lv_obj_set_style_text_color(home_photo_status, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(home_photo_status, &font_montserrat_16_cyr, 0);
-    lv_obj_set_pos(home_photo_status, 215, 18);
-    lv_obj_set_width(home_photo_status, 480);
-    lv_label_set_long_mode(home_photo_status, LV_LABEL_LONG_DOT);
-    lv_label_set_text(home_photo_status, "");
 
-    lv_obj_t *btn_photo = lv_btn_create(tile);
-    lv_obj_set_size(btn_photo, 170, 30);
-    lv_obj_set_pos(btn_photo, 710, 6);
-    lv_obj_set_style_bg_color(btn_photo, COLOR_ACCENT, 0);
-    lv_obj_set_style_radius(btn_photo, 15, 0);
-    lv_obj_set_style_shadow_width(btn_photo, 0, 0);
-    lv_obj_add_event_cb(btn_photo, photo_frame_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *photo_lbl = lv_label_create(btn_photo);
-    lv_obj_set_style_text_color(photo_lbl, COLOR_TEXT, 0);
-    lv_obj_set_style_text_font(photo_lbl, &font_montserrat_16_cyr, 0);
-    lv_obj_set_width(photo_lbl, 154);
-    set_static_ui_label(photo_lbl, "Фоторамка");
-    lv_obj_center(photo_lbl);
 
     // Air overview: the two CO2 sensors remain explicitly named, rather than
     // collapsing household air into an ambiguous sensor count.
@@ -2965,7 +2939,6 @@ void ui_dashboard_apply_preferences(const web_preferences_t *prefs)
     ui_dashboard_update_weather(&ui_bridge_snapshot.weather);
     if (ui_calendar_snapshot.valid) ui_dashboard_update_ha_calendar(&ui_calendar_snapshot);
     ui_dashboard_update_ha(&ui_bridge_snapshot);
-    if (ui_photo_status_snapshot[0]) ui_dashboard_update_photo_status(ui_photo_status_snapshot);
     ui_dashboard_update_time();
     refresh_reader_locale();
 }
@@ -3003,7 +2976,6 @@ void ui_dashboard_reset_preferences(void)
     ui_dashboard_update_weather(&ui_bridge_snapshot.weather);
     if (ui_calendar_snapshot.valid) ui_dashboard_update_ha_calendar(&ui_calendar_snapshot);
     ui_dashboard_update_ha(&ui_bridge_snapshot);
-    if (ui_photo_status_snapshot[0]) ui_dashboard_update_photo_status(ui_photo_status_snapshot);
     ui_dashboard_update_time();
     refresh_reader_locale();
 }
@@ -3086,31 +3058,6 @@ bool ui_dashboard_filter_wake_touch(bool pressed, lv_indev_data_t *data)
     return false;
 }
 
-void ui_dashboard_update_photo_status(const char *status)
-{
-    if (!home_photo_status || !status) return;
-    unbind_static_ui_label(home_photo_status);
-    if (!strncmp(status, "Авто:", strlen("Авто:"))) {
-        ui_photo_status_snapshot[0] = 0;
-        lv_label_set_text(home_photo_status, "");
-        return;
-    }
-    if (status != ui_photo_status_snapshot)
-        snprintf(ui_photo_status_snapshot, sizeof(ui_photo_status_snapshot), "%s", status);
-    const char *translated = ui_text(status);
-    if (translated != status && strcmp(translated, status) != 0) {
-        lv_label_set_text(home_photo_status, translated);
-        return;
-    }
-    const char *prefix = nullptr;
-    size_t prefix_len = 0;
-    if (!strncmp(status, "Фото: ", strlen("Фото: "))) { prefix = "Фото:"; prefix_len = strlen("Фото: "); }
-    else if (!strncmp(status, "Список фото: ", strlen("Список фото: "))) { prefix = "Список фото:"; prefix_len = strlen("Список фото: "); }
-    if (prefix) {
-        char localized[192];
-        snprintf(localized, sizeof(localized), "%s %s", ui_text(prefix), status + prefix_len);
-        lv_label_set_text(home_photo_status, localized);
-    } else {
-        lv_label_set_text(home_photo_status, status);
-    }
+bool ui_dashboard_timezone_matches(const char *timezone, const char *posix_timezone) {
+    return timezone && posix_timezone && ui_has_preferences && !strcmp(timezone, ui_preferences.timezone) && !strcmp(posix_timezone, ui_preferences.posix_timezone);
 }

@@ -27,3 +27,18 @@ photo_result photo_fetch_manifest(const char *url, const char *key,
 photo_result photo_fetch_pixels(const char *url, const char *key,
                                 const photo_frame_entry *entry, uint8_t *buffer,
                                 photo_cancel_fn cancel, void *arg, photo_diagnostic *diagnostic = nullptr);
+
+struct photo_overlay_block {
+  char kind[8], id[65], sha256[65];
+  int x, y, width, height;
+  int64_t expires_at;
+};
+struct photo_context {
+  char revision[65], locale[8], timezone[40], clock_format[4];
+  int64_t server_time;
+  bool clock_enabled;
+  int count;
+  photo_overlay_block blocks[2];
+};
+photo_result photo_fetch_context(const char *, const char *, photo_context *, photo_cancel_fn, void *, photo_diagnostic * = nullptr);
+photo_result photo_fetch_overlay(const char *, const char *, const photo_overlay_block *, uint8_t *, photo_cancel_fn, void *, photo_diagnostic * = nullptr);

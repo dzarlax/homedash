@@ -46,6 +46,7 @@ $sources = @(
     (Join-Path $RepoRoot "src\weather_icons.cpp"),
     (Join-Path $RepoRoot "src\fonts\font_montserrat_16_cyr.c"),
     (Join-Path $RepoRoot "src\fonts\font_montserrat_24_cyr.c"),
+    (Join-Path $RepoRoot "src\fonts\font_photo_clock_80.c"),
     (Join-Path $LvglSrc "lv_init.c")
 ) + $lvglSources
 

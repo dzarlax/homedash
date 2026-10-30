@@ -10,7 +10,7 @@ The active UI is a 4-page LVGL tileview:
 
 1. Weather, Home Assistant calendar, and transport arrivals.
 2. Health metrics, Todoist tasks, and news.
-3. Home Assistant light controls, room air sensors, and photo-frame quick action.
+3. Home Assistant light controls and room air sensors.
 4. Bridge web-panel QR/link, explicit local recovery controls, and manual OTA update.
 
 AgentDeck was removed in May 2026. Do not reintroduce AgentDeck, its WebSocket client, mDNS dependency, or `agentdeck` source files unless the user explicitly asks for that feature again.
