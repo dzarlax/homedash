@@ -64,6 +64,22 @@ int main()
     assert(std::strcmp(lv_label_get_text(home_air_names[2]), "PM2.5") == 0);
     assert(std::strcmp(lv_label_get_text(home_air_values[3]), "44 %") == 0);
 
+    web_preferences_t locale_prefs = {};
+    web_preferences_defaults(&locale_prefs);
+    locale_prefs.revision = 1;
+    std::snprintf(locale_prefs.settings_url, sizeof(locale_prefs.settings_url), "%s", "http://homedash.local");
+    std::snprintf(locale_prefs.locale, sizeof(locale_prefs.locale), "%s", "en");
+    ui_dashboard_apply_preferences(&locale_prefs);
+    assert(std::strcmp(lv_label_get_text(home_air_names[0]), "Living room CO2") == 0);
+    assert(std::strcmp(lv_label_get_text(home_air_names[1]), "Study CO2") == 0);
+    std::snprintf(locale_prefs.locale, sizeof(locale_prefs.locale), "%s", "sr-Latn");
+    ui_dashboard_apply_preferences(&locale_prefs);
+    assert(std::strcmp(lv_label_get_text(home_air_names[0]), "CO2 u dnevnoj sobi") == 0);
+    assert(std::strcmp(lv_label_get_text(home_air_names[1]), "CO2 u radnoj sobi") == 0);
+    std::snprintf(locale_prefs.locale, sizeof(locale_prefs.locale), "%s", "ru");
+    ui_dashboard_apply_preferences(&locale_prefs);
+    assert(std::strcmp(lv_label_get_text(home_air_names[0]), "Гостиная CO2") == 0);
+
     for (int i = 7; i < BRIDGE_MAX_LIGHTS; i++) {
         char id[48], name[40];
         std::snprintf(id, sizeof(id), "light.extra_%d", i);
@@ -97,6 +113,16 @@ int main()
     assert(std::strcmp(lv_label_get_text(home_air_names[1]), "Влажность кухни") == 0);
     assert(std::strcmp(lv_label_get_text(home_air_values[1]), "51 %") == 0);
     assert(std::strcmp(lv_label_get_text(home_air_values[2]), "---") == 0);
+    std::snprintf(locale_prefs.locale, sizeof(locale_prefs.locale), "%s", "en");
+    ui_dashboard_apply_preferences(&locale_prefs);
+    assert(std::strcmp(lv_label_get_text(home_air_names[0]), "Garage air sensor") == 0);
+    assert(std::strcmp(lv_label_get_text(home_air_names[1]), "Влажность кухни") == 0);
+    std::snprintf(locale_prefs.locale, sizeof(locale_prefs.locale), "%s", "sr-Latn");
+    ui_dashboard_apply_preferences(&locale_prefs);
+    assert(std::strcmp(lv_label_get_text(home_air_names[0]), "Garage air sensor") == 0);
+    assert(std::strcmp(lv_label_get_text(home_air_names[1]), "Влажность кухни") == 0);
+    std::snprintf(locale_prefs.locale, sizeof(locale_prefs.locale), "%s", "ru");
+    ui_dashboard_apply_preferences(&locale_prefs);
 
     data.light_count = 0;
     data.sensor_count = 0;

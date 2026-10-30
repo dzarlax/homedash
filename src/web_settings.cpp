@@ -66,9 +66,14 @@ static bool unsigned_field(cJSON *obj, const char *key, int min, int max,
 }
 }
 
+bool web_locale_valid(const char *locale) {
+    return locale && (!strcmp(locale, "ru") || !strcmp(locale, "en") || !strcmp(locale, "sr-Latn"));
+}
+
 void web_preferences_defaults(web_preferences_t *p) {
     if (!p) return;
     memset(p, 0, sizeof(*p));
+    strcpy(p->locale, "ru");
     strcpy(p->name, "HomeDash");
     strcpy(p->city, "Belgrade");
     strcpy(p->timezone, "Europe/Belgrade");
@@ -85,7 +90,8 @@ void web_preferences_defaults(web_preferences_t *p) {
 }
 
 bool web_preferences_valid(const web_preferences_t *p) {
-    if (!p || !terminated(p->name, sizeof(p->name)) ||
+    if (!p || !terminated(p->locale, sizeof(p->locale)) || !web_locale_valid(p->locale) ||
+        !terminated(p->name, sizeof(p->name)) ||
         !bridge_id_valid(p->bridge_id, sizeof(p->bridge_id)) ||
         !terminated(p->city, sizeof(p->city)) ||
         !terminated(p->timezone, sizeof(p->timezone)) ||
@@ -131,7 +137,8 @@ bool web_preferences_parse(const char *json, size_t length, uint32_t revision,
     cJSON *visible = cJSON_GetObjectItemCaseSensitive(root, "visible");
     bool ok = cJSON_IsObject(screen) && cJSON_IsObject(photos) && cJSON_IsObject(visible);
     if (ok) {
-        ok = copy_json_string(screen, "name", p.name, sizeof(p.name), true) &&
+        ok = copy_json_string(screen, "locale", p.locale, sizeof(p.locale)) &&
+             copy_json_string(screen, "name", p.name, sizeof(p.name), true) &&
              copy_json_string(screen, "city", p.city, sizeof(p.city), true) &&
              copy_json_string(screen, "timezone", p.timezone, sizeof(p.timezone), true) &&
              copy_json_string(screen, "night_start", p.night_start, sizeof(p.night_start)) &&

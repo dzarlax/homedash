@@ -3,6 +3,8 @@
 #include "nvs_config.h"
 
 bool web_settings_store_load(web_preferences_t *out);
+// True only for a durable locale record matching these preferences.
+bool web_settings_store_locale_confirmed(const web_preferences_t *prefs);
 bool web_settings_store_save(const web_preferences_t *prefs);
 bool web_settings_store_command_begin(const char *id, const char *action,
                                       const char *boot_id, const char *firmware);

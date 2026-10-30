@@ -29,7 +29,7 @@ LVGL_SRCS = $(shell find $(LVGL_DIR)/src -name '*.c' | grep -v 'lv_demo\|lv_exam
 LVGL_OBJS = $(patsubst $(LVGL_DIR)/%.c,$(BUILD)/lvgl/%.o,$(LVGL_SRCS))
 
 # App C++ sources
-CXX_SRCS = main_sim_sdl.cpp stubs.cpp photo_frame_runtime.cpp $(SRC_DIR)/web_settings.cpp $(SRC_DIR)/photo_frame.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/weather_icons.cpp
+CXX_SRCS = main_sim_sdl.cpp stubs.cpp photo_frame_runtime.cpp $(SRC_DIR)/web_settings.cpp $(SRC_DIR)/photo_frame.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/ui_strings.cpp $(SRC_DIR)/weather_icons.cpp
 CXX_OBJS = $(patsubst %.cpp,$(BUILD)/%.o,$(notdir $(CXX_SRCS)))
 
 # Font + cJSON C sources
@@ -69,6 +69,10 @@ $(BUILD)/ui_dashboard.o: $(SRC_DIR)/ui_dashboard.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
+$(BUILD)/ui_strings.o: $(SRC_DIR)/ui_strings.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
 $(BUILD)/weather_icons.o: $(SRC_DIR)/weather_icons.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
@@ -98,7 +102,7 @@ $(BUILD)/calendar_scroll_test.o: calendar_scroll_test.cpp $(SRC_DIR)/ui_dashboar
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/calendar_scroll_test: $(BUILD)/calendar_scroll_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/calendar_scroll_test: $(BUILD)/calendar_scroll_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-calendar: $(BUILD)/calendar_scroll_test
@@ -110,7 +114,7 @@ $(BUILD)/network_status_test.o: network_status_test.cpp $(SRC_DIR)/ui_dashboard.
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/network_status_test: $(BUILD)/network_status_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/network_status_test: $(BUILD)/network_status_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-network: $(BUILD)/network_status_test
@@ -126,7 +130,7 @@ $(BUILD)/light_sensor_mapping_test.o: light_sensor_mapping_test.cpp $(SRC_DIR)/u
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/light_sensor_mapping_test: $(BUILD)/light_sensor_mapping_test.o $(LVGL_OBJS) $(BUILD)/stubs_home_test.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/light_sensor_mapping_test: $(BUILD)/light_sensor_mapping_test.o $(LVGL_OBJS) $(BUILD)/stubs_home_test.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-home: $(BUILD)/light_sensor_mapping_test
@@ -142,7 +146,7 @@ $(BUILD)/photo_frame_test.o: photo_frame_test.cpp $(SRC_DIR)/photo_frame.cpp $(S
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -DPHOTO_FRAME_TEST -c $< -o $@
 
-$(BUILD)/photo_frame_test: $(BUILD)/photo_frame_test.o $(LVGL_OBJS) $(BUILD)/stubs_photo_test.o $(BUILD)/web_settings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/photo_frame_test: $(BUILD)/photo_frame_test.o $(LVGL_OBJS) $(BUILD)/stubs_photo_test.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-photo-frame: $(BUILD)/photo_frame_test
@@ -165,3 +169,9 @@ test-settings:
 	./settings_test/run.sh
 
 .PHONY: test-settings
+
+test-localization: $(TARGET)
+	HOMEDASH_SIM_LOCALE_TEST=1 SDL_VIDEODRIVER=dummy ./$(TARGET)
+	HOMEDASH_SIM_LOCALE_TEST=1 HOMEDASH_SIM_PHOTO_FRAME=1 HOMEDASH_SIM_PHOTO_MODE_TEST=1 SDL_VIDEODRIVER=dummy ./$(TARGET)
+
+.PHONY: test-localization

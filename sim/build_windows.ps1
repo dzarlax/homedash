@@ -40,6 +40,7 @@ $sources = @(
     (Join-Path $PSScriptRoot "photo_frame_runtime.cpp"),
     (Join-Path $RepoRoot "src\photo_frame.cpp"),
     (Join-Path $RepoRoot "src\ui_dashboard.cpp"),
+    (Join-Path $RepoRoot "src\ui_strings.cpp"),
     (Join-Path $RepoRoot "src\weather_icons.cpp"),
     (Join-Path $RepoRoot "src\fonts\font_montserrat_16_cyr.c"),
     (Join-Path $RepoRoot "src\fonts\font_montserrat_24_cyr.c"),

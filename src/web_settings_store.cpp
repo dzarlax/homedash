@@ -8,7 +8,7 @@ namespace {
 constexpr uint32_t kStoreVersion = 2;
 struct stored_preferences_t {
     uint32_t version;
-    web_preferences_t value;
+    web_preferences_v2_t value;
 };
 struct network_trial_t {
     uint32_t version;
@@ -20,6 +20,47 @@ struct network_trial_t {
 };
 constexpr uint32_t kNetworkTrialVersion = 1;
 static const char *TAG = "web_settings";
+// A failed commit may have written only part of a multi-key update. Do not
+// acknowledge durable state while the running UI has rolled back.
+static bool s_persistence_uncertain = false;
+struct stored_locale_t {
+    uint32_t version;
+    uint32_t revision;
+    char bridge_id[33];
+    char locale[8];
+};
+
+stored_locale_t locale_record(const web_preferences_t &p) {
+    stored_locale_t record = {};
+    record.version = 1;
+    record.revision = p.revision;
+    memcpy(record.bridge_id, p.bridge_id, sizeof(record.bridge_id));
+    memcpy(record.locale, p.locale, sizeof(record.locale));
+    return record;
+}
+
+bool read_locale(nvs_handle_t h, const char *key, web_preferences_t *p) {
+    stored_locale_t record = {};
+    size_t size = sizeof(record);
+    if (nvs_get_blob(h, key, &record, &size) != ESP_OK || size != sizeof(record) ||
+        record.version != 1 || record.revision != p->revision ||
+        memcmp(record.bridge_id, p->bridge_id, sizeof(record.bridge_id)) ||
+        !memchr(record.locale, 0, sizeof(record.locale)) || !web_locale_valid(record.locale)) return false;
+    memcpy(p->locale, record.locale, sizeof(p->locale));
+    return true;
+}
+
+web_preferences_t from_v2(const web_preferences_v2_t &value) {
+    web_preferences_t p = {};
+    static_cast<web_preferences_v2_t &>(p) = value;
+    strcpy(p.locale, "ru");
+    return p;
+}
+
+esp_err_t erase_optional(nvs_handle_t h, const char *key) {
+    esp_err_t err = nvs_erase_key(h, key);
+    return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
+}
 
 bool read_string(nvs_handle_t h, const char *key, char *out, size_t size) {
     size_t n = size;
@@ -35,11 +76,26 @@ bool web_settings_store_load(web_preferences_t *out) {
     stored_preferences_t stored = {};
     size_t n = sizeof(stored);
     esp_err_t err = nvs_get_blob(h, "prefs", &stored, &n);
+    if (err != ESP_OK || n != sizeof(stored) || stored.version != kStoreVersion) {
+        nvs_close(h);
+        return false;
+    }
+    web_preferences_t p = from_v2(stored.value);
+    read_locale(h, "locale", &p);
     nvs_close(h);
-    if (err != ESP_OK || n != sizeof(stored) || stored.version != kStoreVersion ||
-        !web_preferences_valid(&stored.value)) return false;
-    *out = stored.value;
+    if (!web_preferences_valid(&p)) return false;
+    *out = p;
     return true;
+}
+
+bool web_settings_store_locale_confirmed(const web_preferences_t *prefs) {
+    if (!web_preferences_valid(prefs)) return false;
+    nvs_handle_t h;
+    if (nvs_open("webprefs", NVS_READONLY, &h) != ESP_OK) return false;
+    web_preferences_t p = *prefs;
+    bool ok = read_locale(h, "locale", &p) && !strcmp(p.locale, prefs->locale);
+    nvs_close(h);
+    return ok;
 }
 
 bool web_settings_store_save(const web_preferences_t *prefs) {
@@ -48,8 +104,11 @@ bool web_settings_store_save(const web_preferences_t *prefs) {
     nvs_handle_t h;
     if (nvs_open("webprefs", NVS_READWRITE, &h) != ESP_OK) return false;
     esp_err_t err = nvs_set_blob(h, "prefs", &stored, sizeof(stored));
+    stored_locale_t locale = locale_record(*prefs);
+    if (err == ESP_OK) err = nvs_set_blob(h, "locale", &locale, sizeof(locale));
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
+    s_persistence_uncertain = err != ESP_OK;
     if (err != ESP_OK) ESP_LOGW(TAG, "Could not persist preferences (%s)", esp_err_to_name(err));
     return err == ESP_OK;
 }
@@ -121,10 +180,11 @@ bool web_settings_store_command_id(char *id, size_t size) {
 bool web_settings_store_clear_preferences(void) {
     nvs_handle_t h;
     if (nvs_open("webprefs", NVS_READWRITE, &h) != ESP_OK) return false;
-    esp_err_t err = nvs_erase_key(h, "prefs");
-    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    esp_err_t err = erase_optional(h, "prefs");
+    if (err == ESP_OK) err = erase_optional(h, "locale");
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
+    s_persistence_uncertain = err != ESP_OK;
     return err == ESP_OK;
 }
 
@@ -189,7 +249,12 @@ bool web_settings_store_network_trial_begin(const device_config_t *old_config,
         trial.old_preferences.version = kStoreVersion;
         trial.old_preferences.value = *old_preferences;
     }
-    esp_err_t err = nvs_set_blob(h, "net_trial", &trial, sizeof(trial));
+    esp_err_t err = erase_optional(h, "trial_locale");
+    if (had_preferences && err == ESP_OK) {
+        stored_locale_t locale = locale_record(*old_preferences);
+        err = nvs_set_blob(h, "trial_locale", &locale, sizeof(locale));
+    }
+    if (err == ESP_OK) err = nvs_set_blob(h, "net_trial", &trial, sizeof(trial));
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err == ESP_OK;
@@ -207,18 +272,19 @@ bool web_settings_store_network_trial_read(device_config_t *old_config,
     network_trial_t trial = {};
     size_t n = sizeof(trial);
     esp_err_t err = nvs_get_blob(h, "net_trial", &trial, &n);
-    nvs_close(h);
-    if (err != ESP_OK || n != sizeof(trial) || trial.version != kNetworkTrialVersion) return false;
+    if (err != ESP_OK || n != sizeof(trial) || trial.version != kNetworkTrialVersion) { nvs_close(h); return false; }
     *old_config = trial.old_config;
     *had_config = trial.had_config;
     *had_preferences = trial.had_preferences;
     *committed = trial.committed;
     memset(old_preferences, 0, sizeof(*old_preferences));
     if (trial.had_preferences) {
+        *old_preferences = from_v2(trial.old_preferences.value);
+        read_locale(h, "trial_locale", old_preferences);
         if (trial.old_preferences.version != kStoreVersion ||
-            !web_preferences_valid(&trial.old_preferences.value)) return false;
-        *old_preferences = trial.old_preferences.value;
+            !web_preferences_valid(old_preferences)) { nvs_close(h); return false; }
     }
+    nvs_close(h);
     return true;
 }
 
@@ -242,8 +308,8 @@ bool web_settings_store_network_trial_mark_committed(void) {
 bool web_settings_store_network_trial_clear(void) {
     nvs_handle_t h;
     if (nvs_open("webprefs", NVS_READWRITE, &h) != ESP_OK) return false;
-    esp_err_t err = nvs_erase_key(h, "net_trial");
-    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    esp_err_t err = erase_optional(h, "net_trial");
+    if (err == ESP_OK) err = erase_optional(h, "trial_locale");
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err == ESP_OK;
@@ -276,6 +342,7 @@ bool web_settings_store_network_trial_recover_pending(void) {
 }
 
 bool web_settings_store_sync_allowed(void) {
+    if (s_persistence_uncertain) return false;
     nvs_handle_t h;
     esp_err_t open_err = nvs_open("webprefs", NVS_READONLY, &h);
     if (open_err == ESP_ERR_NVS_NOT_FOUND) return true;

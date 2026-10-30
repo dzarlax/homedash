@@ -58,6 +58,16 @@ static std::unique_ptr<response_buffer_t> allocate_response() {
     return response;
 }
 static char s_sync_error[48] = {};
+// Old Bridges reject unknown heartbeat fields. Learn support from a validated
+// response, scope it to the peer, and relearn after an HTTP 400 on rollback.
+static bool s_locale_report_supported = false;
+static char s_locale_peer[128] = {};
+static void select_locale_peer(const char *url) {
+    if (!url || strcmp(s_locale_peer, url)) {
+        s_locale_report_supported = false;
+        snprintf(s_locale_peer, sizeof(s_locale_peer), "%s", url ? url : "");
+    }
+}
 
 static esp_err_t receive_event(esp_http_client_event_t *event) {
     response_buffer_t *buffer = static_cast<response_buffer_t *>(event->user_data);
@@ -101,6 +111,8 @@ static cJSON *make_payload(const char *firmware, const char *boot_id,
     if (ota_available_version()[0]) add_string(root, "available_version", ota_available_version());
     web_preferences_t applied = {};
     add_string(root, "bridge_id", web_settings_store_load(&applied) ? applied.bridge_id : "");
+    if (s_locale_report_supported)
+        add_string(root, "applied_locale", web_settings_store_locale_confirmed(&applied) ? applied.locale : "");
     cJSON_AddNumberToObject(root, "applied_revision",
                             applied.revision);
     cJSON_AddNumberToObject(root, "uptime_seconds", esp_timer_get_time() / 1000000);
@@ -123,7 +135,7 @@ static cJSON *make_payload(const char *firmware, const char *boot_id,
     add_string(root, "ssid", ssid);
     cJSON *caps = cJSON_AddArrayToObject(root, "capabilities");
     static const char *capabilities[] = {
-        "preferences", "photo_start", "restart", "ota_check", "ota_install", "reset", "network"
+        "preferences", "photo_start", "restart", "ota_check", "ota_install", "reset", "network", "locale"
     };
     for (const char *cap : capabilities) cJSON_AddItemToArray(caps, cJSON_CreateString(cap));
     if (result_id && result_state) {
@@ -187,6 +199,7 @@ static bool post_payload(const char *url, const char *key, const char *payload,
         snprintf(diagnostic, sizeof(diagnostic), "Sync:HTTP %d", status);
     }
     if (diagnostic[0]) set_diagnostic(diagnostic);
+    if (err == ESP_OK && status == 400) s_locale_report_supported = false;
     if (status_out) *status_out = status;
     esp_http_client_cleanup(client);
     return err == ESP_OK && status == 200 && !response->overflow;
@@ -224,7 +237,8 @@ static bool apply_received_preferences(const web_preferences_t *next) {
     web_preferences_t current = {};
     bool has_current = web_settings_store_load(&current);
     if (has_current && next->revision == current.revision &&
-        !strcmp(next->bridge_id, current.bridge_id)) return true;
+        !strcmp(next->bridge_id, current.bridge_id) &&
+        !strcmp(next->locale, current.locale) && web_settings_store_locale_confirmed(&current)) return true;
     if (!web_preferences_revision_allowed(&current, has_current, next->revision,
                                          next->bridge_id)) return false;
     if (!lvgl_port_lock(-1)) return false;
@@ -309,6 +323,7 @@ bool web_sync_poll(const char *url, const char *key, const char *firmware,
                    const char *boot_id, web_sync_response_t *out) {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
+    select_locale_peer(url);
     cJSON *root = make_payload(firmware, boot_id, nullptr, nullptr, nullptr);
     char *payload = print_payload(root);
     if (!payload) { set_diagnostic("Sync:payload unavailable"); return false; }
@@ -347,6 +362,10 @@ bool web_sync_poll(const char *url, const char *key, const char *firmware,
             web_sync_set_error("stale_revision");
             ok = false;
         }
+    }
+    if (ok) {
+        cJSON *screen = cJSON_GetObjectItemCaseSensitive(prefs, "screen");
+        s_locale_report_supported = cJSON_HasObjectItem(screen, "locale");
     }
     cJSON_Delete(decoded);
     if (ok) s_sync_error[0] = 0;
@@ -407,6 +426,7 @@ bool web_sync_probe_bridge(const char *url, const char *key,
 
 bool web_sync_ack(const char *url, const char *key, const char *firmware,
                   const char *boot_id) {
+    select_locale_peer(url);
     cJSON *root = make_payload(firmware, boot_id, nullptr, nullptr, nullptr);
     char *payload = print_payload(root);
     if (!payload) { set_diagnostic("Sync:payload unavailable"); return false; }
@@ -432,6 +452,7 @@ bool web_sync_send_command_result(const char *url, const char *key,
                                   const char *id, const char *state,
                                   const char *error) {
     if (!id || !state) return false;
+    select_locale_peer(url);
     cJSON *root = make_payload(firmware, boot_id, id, state, error);
     char *payload = print_payload(root);
     if (!payload) { set_diagnostic("Sync:payload unavailable"); return false; }
