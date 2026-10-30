@@ -18,3 +18,11 @@ void ui_dashboard_apply_preferences(const web_preferences_t *prefs);
 void ui_dashboard_reset_preferences(void);
 void ui_dashboard_update_recovery(const char *ssid, const char *password, const char *url);
 bool ui_dashboard_filter_wake_touch(bool pressed, lv_indev_data_t *data);
+#if defined(SIMULATOR)
+void ui_dashboard_sim_set_page(int page);
+bool ui_dashboard_sim_fixed_labels_fit(void);
+int ui_dashboard_sim_current_page(void);
+void ui_dashboard_sim_open_reader(void);
+void ui_dashboard_sim_close_reader(void);
+int32_t ui_dashboard_sim_reader_scroll_y(void);
+#endif

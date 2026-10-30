@@ -34,6 +34,8 @@ static int status = 200, requests = 0, cleanups = 0, applies = 0;
 static bool transport_error = false, client_oom = false, sync_allowed = true;
 static bool expect_stable_status = false;
 static bool has_saved = false;
+static bool locale_confirmed = true;
+static bool expect_locale_field = false;
 static web_preferences_t saved = {};
 
 const char *esp_err_to_name(esp_err_t e) { return e == ESP_OK ? "ESP_OK" : "ESP_ERR_HTTP_CONNECT"; }
@@ -57,6 +59,15 @@ esp_err_t esp_http_client_perform(esp_http_client_handle_t h) {
         assert(!strcmp(cJSON_GetObjectItem(p,"device_id")->valuestring, device_id));
         assert(!strcmp(cJSON_GetObjectItem(p,"boot_id")->valuestring,"boot-test"));
         assert(cJSON_GetObjectItem(p,"applied_revision")->valueint == (has_saved ? static_cast<int>(saved.revision) : 0));
+        cJSON *applied_locale = cJSON_GetObjectItem(p,"applied_locale");
+        assert((applied_locale != nullptr) == expect_locale_field);
+        if (applied_locale) assert(!strcmp(applied_locale->valuestring, has_saved && locale_confirmed ? saved.locale : ""));
+        bool locale_cap = false;
+        cJSON *cap = nullptr;
+        cJSON_ArrayForEach(cap, cJSON_GetObjectItem(p,"capabilities")) {
+            if (cJSON_IsString(cap) && !strcmp(cap->valuestring,"locale")) locale_cap = true;
+        }
+        assert(locale_cap);
         cJSON_Delete(p);
     }
     esp_http_client_event_t e = {}; e.user_data=h->config.user_data;
@@ -93,6 +104,7 @@ bool web_identity_get(char *out,size_t n) { if(n<33)return false; memcpy(out,dev
 bool web_identity_matches(const char *id) { return id && !strcmp(id,device_id); }
 esp_err_t web_identity_set_http_header(esp_http_client_handle_t h) { return esp_http_client_set_header(h,"X-Device-ID",device_id); }
 bool web_settings_store_load(web_preferences_t *out) { if(!has_saved)return false; *out=saved; return true; }
+bool web_settings_store_locale_confirmed(const web_preferences_t *p) { return locale_confirmed && has_saved && p && !strcmp(p->locale, saved.locale); }
 bool web_settings_store_save(const web_preferences_t *p) { saved=*p;has_saved=true;return true; }
 bool web_settings_store_sync_allowed(void) { return sync_allowed; }
 bool web_settings_store_command_result(char *,size_t,char *,size_t,char *,size_t) { return false; }
@@ -147,5 +159,27 @@ int main() {
     body=response(); assert(web_sync_ack("https://bridge.test","private-test-key","1.0.22","boot-test"));
     assert(web_sync_send_command_result("https://bridge.test","private-test-key","1.0.22","boot-test","command-test","failed","test_error"));
     assert(cleanups==requests && applies==1);
+    for (const char *locale : {"en", "sr-Latn", "ru"}) {
+        body=response();
+        auto pos = body.find("\"screen\":{");
+        assert(pos != std::string::npos);
+        body.insert(pos + strlen("\"screen\":{"), std::string("\"locale\":\"") + locale + "\",");
+        assert(poll(&out) && web_sync_apply_preferences(&out));
+        assert(!strcmp(saved.locale,locale));
+        expect_locale_field = true;
+    }
+    // A live server rollback first rejects the extension; next heartbeat must
+    // omit it, allowing an old strict Bridge to return Russian preferences.
+    status = 400; assert(!poll(&out)); status = 200;
+    expect_locale_field = false;
+    body=response(); assert(poll(&out) && web_sync_apply_preferences(&out));
+    // Missing sidecar must trigger a save even when revision and RU are equal.
+    locale_confirmed = false;
+    int old_applies = applies;
+    body=response(); assert(poll(&out) && web_sync_apply_preferences(&out) && applies == old_applies+1);
+    locale_confirmed = true;
+    body=response(); auto pos = body.find("\"screen\":{");
+    body.insert(pos + strlen("\"screen\":{"), "\"locale\":\"sr-Cyrl\",");
+    assert(!poll(&out));
     puts("sync client: cold bootstrap, identity, revisions, bounds, TLS diagnostics and OOM passed");
 }

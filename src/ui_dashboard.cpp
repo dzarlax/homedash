@@ -5,6 +5,7 @@
 #include "bridge.h"
 #include "web_sync.h"
 #include "weather_icons.h"
+#include "ui_strings.h"
 #include "lvgl.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -33,6 +34,7 @@ static lv_obj_t *lbl_topbar_temp = NULL;
 static lv_obj_t *lbl_bottom      = NULL;
 static lv_obj_t *lbl_connection_status = NULL;
 static lv_obj_t *calendar        = NULL;
+static lv_obj_t *calendar_header = NULL;
 
 // Weather card elements
 static lv_obj_t *weather_canvas     = NULL;
@@ -69,6 +71,12 @@ static lv_obj_t *week_day_buttons[7] = {};
 static lv_obj_t *week_day_labels[7] = {};
 static lv_calendar_date_t week_dates[7] = {};
 static lv_obj_t *reader_overlay = NULL;
+static lv_obj_t *reader_body = NULL;
+static lv_obj_t *reader_text_label = NULL;
+static lv_obj_t *reader_meta_label = NULL;
+static const char *reader_text_fallback_key = NULL;
+static const char *reader_meta_format_key = NULL;
+static char reader_meta_value[64] = {};
 static lv_obj_t *home_photo_status = NULL;
 static lv_obj_t *home_settings_link = NULL;
 static lv_obj_t *page1_schedule_panel = NULL;
@@ -88,6 +96,12 @@ static bool wake_swallow_until_release = false;
 // LVGL task stack. All LVGL timers run serially, so one static snapshot keeps
 // the copy out of that stack without concurrent access.
 static bridge_data_t ui_bridge_snapshot = {};
+static bridge_cal_data_t ui_calendar_snapshot = {};
+static char ui_photo_status_snapshot[192] = {};
+static char ui_recovery_ssid[64] = {};
+static char ui_recovery_password[64] = {};
+static char ui_recovery_url[192] = {};
+static bool ui_recovery_active = false;
 
 // Page 2: Health + Tasks + News (redesigned)
 // Readiness arc
@@ -180,6 +194,7 @@ static char home_climate_entity[48] = {};
 static int last_cal_year = 0;
 static int last_cal_mon  = 0;
 static int last_cal_day  = 0;
+static int last_cal_event_count = -2;
 
 // Currently selected date for schedule display
 static int sel_year  = 0;
@@ -193,9 +208,92 @@ static lv_calendar_date_t calendar_highlighted_dates[1] = {};
 // Track last weather code to avoid unnecessary redraws
 static int last_weather_code = -1;
 
-static const char *DOW_NAMES[] = {"Bc", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"};
-static const char *MONTH_NAMES[] = {"Янв", "Фев", "Мар", "Апр", "Май", "Июн",
-                                     "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"};
+static const char *weekday_name(int tm_wday) { return ui_day_name((tm_wday + 6) % 7); }
+static void refresh_calendar_header(lv_obj_t *header);
+
+#define MAX_STATIC_UI_LABELS 128
+struct static_ui_label_t { lv_obj_t *label; const char *key; };
+static static_ui_label_t static_ui_labels[MAX_STATIC_UI_LABELS] = {};
+
+static void static_ui_label_delete_cb(lv_event_t *event)
+{
+    lv_obj_t *label = (lv_obj_t *)lv_event_get_target(event);
+    for (auto &binding : static_ui_labels) {
+        if (binding.label == label) {
+            binding = {};
+            break;
+        }
+    }
+}
+
+static void bind_static_ui_label(lv_obj_t *label, const char *russian_key)
+{
+    if (!label || !russian_key) return;
+    static_ui_label_t *slot = nullptr;
+    for (auto &binding : static_ui_labels) {
+        if (binding.label == label) { slot = &binding; break; }
+        if (!binding.label && !slot) slot = &binding;
+    }
+    if (!slot) return;
+    const bool is_new = slot->label == nullptr;
+    slot->label = label;
+    slot->key = russian_key;
+    if (is_new) lv_obj_add_event_cb(label, static_ui_label_delete_cb, LV_EVENT_DELETE, nullptr);
+}
+
+static void unbind_static_ui_label(lv_obj_t *label)
+{
+    for (auto &binding : static_ui_labels) {
+        if (binding.label == label) {
+            binding = {};
+            return;
+        }
+    }
+}
+
+static void set_static_ui_label(lv_obj_t *label, const char *russian_key)
+{
+    if (!label) return;
+    bind_static_ui_label(label, russian_key);
+    lv_label_set_text(label, ui_text(russian_key));
+}
+
+static void refresh_static_ui_labels(void)
+{
+    for (const auto &binding : static_ui_labels) {
+        if (binding.label && binding.key) lv_label_set_text(binding.label, ui_text(binding.key));
+    }
+}
+
+static void set_calendar_day_names(void)
+{
+    static const char *days_ru[] = {"Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"};
+    static const char *days_en[] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
+    static const char *days_sr[] = {"Po", "Ut", "Sr", "Če", "Pe", "Su", "Ne"};
+    if (!calendar) return;
+    const char **names = !strcmp(ui_strings_locale(), "en") ? days_en :
+                         !strcmp(ui_strings_locale(), "sr-Latn") ? days_sr : days_ru;
+    lv_calendar_set_day_names(calendar, names);
+    refresh_calendar_header(calendar_header);
+}
+
+static void refresh_calendar_header(lv_obj_t *header)
+{
+    if (!header) return;
+    lv_obj_t *calendar_obj = lv_obj_get_parent(header);
+    const lv_calendar_date_t *date = lv_calendar_get_showed_date(calendar_obj);
+    lv_obj_t *label = lv_obj_get_child(header, 1);
+    if (!date || !label || date->month < 1 || date->month > 12) return;
+    char text[48];
+    snprintf(text, sizeof(text), "%d %s", date->year, ui_month_name_full(date->month - 1));
+    lv_obj_set_style_text_font(label, &font_montserrat_16_cyr, 0);
+    lv_label_set_text(label, text);
+}
+
+static void calendar_header_locale_cb(lv_event_t *event)
+{
+    refresh_calendar_header((lv_obj_t *)lv_event_get_current_target(event));
+}
 
 #define COLOR_BG        lv_color_hex(0xF4F1EA)
 #define COLOR_PANEL     lv_color_hex(0xE8EDE6)
@@ -342,12 +440,13 @@ static void update_schedule_title(int y, int m, int d)
 {
     if (!lbl_sched_title) return;
     if (is_today(y, m, d)) {
-        lv_label_set_text(lbl_sched_title, "Расписание");
+        set_static_ui_label(lbl_sched_title, "Расписание");
         if (btn_today) lv_obj_add_flag(btn_today, LV_OBJ_FLAG_HIDDEN);
     } else {
+        unbind_static_ui_label(lbl_sched_title);
         char buf[48];
-        const char *mon = (m >= 1 && m <= 12) ? MONTH_NAMES[m - 1] : "???";
-        snprintf(buf, sizeof(buf), "Расписание: %s %d", mon, d);
+        const char *mon = (m >= 1 && m <= 12) ? ui_month_name(m - 1) : "???";
+        snprintf(buf, sizeof(buf), "%s: %s %d", ui_text("Расписание"), mon, d);
         lv_label_set_text(lbl_sched_title, buf);
         if (btn_today) lv_obj_clear_flag(btn_today, LV_OBJ_FLAG_HIDDEN);
     }
@@ -358,20 +457,20 @@ static void update_day_context(int y, int m, int d, int event_count)
     if (!lbl_day_context || !lbl_day_summary || m < 1 || m > 12) return;
 
     if (event_count < 0) {
-        lv_label_set_text(lbl_day_context, "Расписание");
-        lv_label_set_text(lbl_day_summary, event_count == -2 ? "Нет данных календаря" : "Загружаю расписание");
+        lv_label_set_text(lbl_day_context, ui_text("Расписание"));
+        lv_label_set_text(lbl_day_summary, event_count == -2 ? ui_text("Нет данных календаря") : ui_text("Загружаю расписание"));
         return;
     }
 
     if (event_count == 0) {
-        lv_label_set_text(lbl_day_context, "Свободный день");
+        lv_label_set_text(lbl_day_context, ui_text("Свободный день"));
     } else {
         char summary[40];
         snprintf(summary, sizeof(summary), "%d %s", event_count,
-                 event_count == 1 ? "событие" : (event_count < 5 ? "события" : "событий"));
+                 event_count == 1 ? ui_text("событие") : (event_count < 5 ? ui_text("события") : ui_text("событий")));
         lv_label_set_text(lbl_day_context, summary);
     }
-    lv_label_set_text(lbl_day_summary, is_today(y, m, d) ? "Сегодня" : "Выбранный день");
+    lv_label_set_text(lbl_day_summary, is_today(y, m, d) ? ui_text("Сегодня") : ui_text("Выбранный день"));
 }
 
 static void calendar_click_cb(lv_event_t *e)
@@ -454,7 +553,7 @@ static void refresh_week_strip(void)
         week_dates[i].day = date_tm.tm_mday;
         if (week_day_labels[i]) {
             char buf[24];
-            snprintf(buf, sizeof(buf), "%s\n%d", DOW_NAMES[date_tm.tm_wday], week_dates[i].day);
+            snprintf(buf, sizeof(buf), "%s\n%d", weekday_name(date_tm.tm_wday), week_dates[i].day);
             lv_label_set_text(week_day_labels[i], buf);
         }
     }
@@ -531,7 +630,8 @@ static void create_bottom_nav(lv_obj_t *page, int active_index)
         lv_obj_t *label = lv_label_create(btn);
         lv_obj_set_style_text_color(label, selected ? COLOR_HIGHLIGHT : COLOR_TEXT_DIM, 0);
         lv_obj_set_style_text_font(label, &font_montserrat_16_cyr, 0);
-        lv_label_set_text(label, names[i]);
+        lv_obj_set_width(label, 250);
+        set_static_ui_label(label, names[i]);
         lv_obj_center(label);
         lv_obj_add_event_cb(btn, nav_click_cb, LV_EVENT_CLICKED, nav_tiles[i]);
     }
@@ -555,10 +655,33 @@ static void reader_close_cb(lv_event_t *e)
     }
 }
 
-static void open_reader(const char *section, const char *title, const char *text, const char *meta)
+static void refresh_reader_locale(void)
+{
+    if (!reader_overlay) return;
+    const int32_t scroll_y = reader_body ? lv_obj_get_scroll_y(reader_body) : 0;
+    if (reader_text_label && reader_text_fallback_key)
+        lv_label_set_text(reader_text_label, ui_text(reader_text_fallback_key));
+    if (reader_meta_label && reader_meta_format_key) {
+        char meta[96];
+        snprintf(meta, sizeof(meta), ui_text(reader_meta_format_key), reader_meta_value);
+        lv_label_set_text(reader_meta_label, meta);
+    }
+    if (reader_body) {
+        lv_obj_update_layout(reader_body);
+        lv_obj_scroll_to_y(reader_body, scroll_y, LV_ANIM_OFF);
+    }
+}
+
+static void open_reader(const char *section_key, const char *title, const char *text,
+                        const char *meta_format_key, const char *meta_value,
+                        const char *text_fallback_key = nullptr)
 {
     if (!title || !title[0]) return;
     if (reader_overlay) lv_obj_delete(reader_overlay);
+    reader_body = reader_text_label = reader_meta_label = nullptr;
+    reader_text_fallback_key = text_fallback_key;
+    reader_meta_format_key = meta_format_key;
+    snprintf(reader_meta_value, sizeof(reader_meta_value), "%s", meta_value ? meta_value : "");
 
     reader_overlay = lv_obj_create(lv_scr_act());
     lv_obj_remove_style_all(reader_overlay);
@@ -571,7 +694,7 @@ static void open_reader(const char *section, const char *title, const char *text
     lv_obj_t *heading = lv_label_create(reader_overlay);
     lv_obj_set_style_text_color(heading, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(heading, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(heading, section);
+    set_static_ui_label(heading, section_key);
     lv_obj_set_pos(heading, 28, 22);
 
     lv_obj_t *close = lv_btn_create(reader_overlay);
@@ -584,20 +707,20 @@ static void open_reader(const char *section, const char *title, const char *text
     lv_obj_t *close_label = lv_label_create(close);
     lv_obj_set_style_text_color(close_label, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(close_label, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(close_label, "Назад");
+    set_static_ui_label(close_label, "Назад");
     lv_obj_center(close_label);
 
-    lv_obj_t *body = lv_obj_create(reader_overlay);
-    lv_obj_remove_style_all(body);
-    lv_obj_set_size(body, 968, 478);
-    lv_obj_set_pos(body, 28, 86);
-    lv_obj_set_scroll_dir(body, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_style_pad_right(body, 18, 0);
-    lv_obj_set_style_bg_color(body, COLOR_TEXT_DIM, LV_PART_SCROLLBAR);
-    lv_obj_set_style_width(body, 4, LV_PART_SCROLLBAR);
+    reader_body = lv_obj_create(reader_overlay);
+    lv_obj_remove_style_all(reader_body);
+    lv_obj_set_size(reader_body, 968, 478);
+    lv_obj_set_pos(reader_body, 28, 86);
+    lv_obj_set_scroll_dir(reader_body, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(reader_body, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_pad_right(reader_body, 18, 0);
+    lv_obj_set_style_bg_color(reader_body, COLOR_TEXT_DIM, LV_PART_SCROLLBAR);
+    lv_obj_set_style_width(reader_body, 4, LV_PART_SCROLLBAR);
 
-    lv_obj_t *title_label = lv_label_create(body);
+    lv_obj_t *title_label = lv_label_create(reader_body);
     lv_obj_set_width(title_label, 925);
     lv_obj_set_style_text_color(title_label, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(title_label, &font_montserrat_24_cyr, 0);
@@ -607,26 +730,29 @@ static void open_reader(const char *section, const char *title, const char *text
     lv_obj_update_layout(title_label);
 
     int y = lv_obj_get_height(title_label) + 18;
-    if (text && text[0]) {
-        lv_obj_t *text_label = lv_label_create(body);
-        lv_obj_set_width(text_label, 925);
-        lv_obj_set_style_text_color(text_label, COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(text_label, &font_montserrat_16_cyr, 0);
-        lv_label_set_long_mode(text_label, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(text_label, text);
-        lv_obj_set_pos(text_label, 0, y);
-        lv_obj_update_layout(text_label);
-        y += lv_obj_get_height(text_label) + 18;
+    const char *visible_text = text_fallback_key ? ui_text(text_fallback_key) : text;
+    if (visible_text && visible_text[0]) {
+        reader_text_label = lv_label_create(reader_body);
+        lv_obj_set_width(reader_text_label, 925);
+        lv_obj_set_style_text_color(reader_text_label, COLOR_TEXT, 0);
+        lv_obj_set_style_text_font(reader_text_label, &font_montserrat_16_cyr, 0);
+        lv_label_set_long_mode(reader_text_label, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(reader_text_label, visible_text);
+        lv_obj_set_pos(reader_text_label, 0, y);
+        lv_obj_update_layout(reader_text_label);
+        y += lv_obj_get_height(reader_text_label) + 18;
     }
 
-    if (meta && meta[0]) {
-        lv_obj_t *meta_label = lv_label_create(body);
-        lv_obj_set_width(meta_label, 925);
-        lv_obj_set_style_text_color(meta_label, COLOR_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(meta_label, &font_montserrat_16_cyr, 0);
-        lv_label_set_long_mode(meta_label, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(meta_label, meta);
-        lv_obj_set_pos(meta_label, 0, y);
+    if (meta_format_key && meta_value && meta_value[0]) {
+        reader_meta_label = lv_label_create(reader_body);
+        lv_obj_set_width(reader_meta_label, 925);
+        lv_obj_set_style_text_color(reader_meta_label, COLOR_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(reader_meta_label, &font_montserrat_16_cyr, 0);
+        lv_label_set_long_mode(reader_meta_label, LV_LABEL_LONG_WRAP);
+        char meta[96];
+        snprintf(meta, sizeof(meta), ui_text(meta_format_key), meta_value);
+        lv_label_set_text(reader_meta_label, meta);
+        lv_obj_set_pos(reader_meta_label, 0, y);
     }
 }
 
@@ -636,15 +762,44 @@ static void content_click_cb(lv_event_t *e)
     if (id >= 100) {
         int index = id - 100;
         if (index < MAX_NEWS_LINES) {
-            const char *summary = news_summaries[index][0] ? news_summaries[index] : "Суммаризация недоступна.";
-            open_reader("Новости", news_titles[index], summary, news_categories[index]);
+            const char *summary = news_summaries[index][0] ? news_summaries[index] : nullptr;
+            open_reader("Новости", news_titles[index], summary, nullptr, nullptr,
+                        summary ? nullptr : "Суммаризация недоступна.");
         }
     } else if (id >= 0 && id < MAX_TASK_LINES) {
-        char meta[40] = {};
-        if (task_due[id][0]) snprintf(meta, sizeof(meta), "Срок: %s", task_due[id]);
-        open_reader("Задачи", task_titles[id], NULL, meta);
+        open_reader("Задачи", task_titles[id], nullptr,
+                    task_due[id][0] ? "Срок: %s" : nullptr,
+                    task_due[id][0] ? task_due[id] : nullptr);
     }
 }
+
+#if defined(SIMULATOR)
+void ui_dashboard_sim_open_reader(void)
+{
+    static char long_text[1800];
+    if (!long_text[0]) {
+        for (size_t i = 0; i + 2 < sizeof(long_text); i += 2) {
+            long_text[i] = 'x';
+            long_text[i + 1] = ' ';
+        }
+        long_text[sizeof(long_text) - 1] = '\0';
+    }
+    open_reader("Задачи", "Today", long_text, "Срок: %s", "2030-01-01");
+    if (reader_body) lv_obj_scroll_to_y(reader_body, 80, LV_ANIM_OFF);
+}
+
+void ui_dashboard_sim_close_reader(void)
+{
+    if (reader_overlay) lv_obj_delete(reader_overlay);
+    reader_overlay = reader_body = reader_text_label = reader_meta_label = nullptr;
+    reader_text_fallback_key = reader_meta_format_key = nullptr;
+}
+
+int32_t ui_dashboard_sim_reader_scroll_y(void)
+{
+    return reader_body ? lv_obj_get_scroll_y(reader_body) : -1;
+}
+#endif
 
 static lv_obj_t *day_label(lv_obj_t *parent, int x, int y, int w, const char *text,
                            const lv_font_t *font, lv_color_t color)
@@ -656,6 +811,14 @@ static lv_obj_t *day_label(lv_obj_t *parent, int x, int y, int w, const char *te
     lv_obj_set_style_text_color(label, color, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(label, text);
+    return label;
+}
+
+static lv_obj_t *day_static_label(lv_obj_t *parent, int x, int y, int w, const char *key,
+                                  const lv_font_t *font, lv_color_t color)
+{
+    lv_obj_t *label = day_label(parent, x, y, w, ui_text(key), font, color);
+    set_static_ui_label(label, key);
     return label;
 }
 
@@ -671,13 +834,13 @@ static void create_day_planner(lv_obj_t *page)
     lv_obj_set_style_bg_opa(surface, LV_OPA_COVER, 0);
     lv_obj_clear_flag(surface, LV_OBJ_FLAG_SCROLLABLE);
 
-    lbl_datetime = day_label(surface, 28, 18, 600, "План на день", &font_montserrat_24_cyr, COLOR_TEXT);
-    day_label(surface, 28, 54, 240, "НЕДЕЛЯ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_datetime = day_static_label(surface, 28, 18, 600, "План на день", &font_montserrat_24_cyr, COLOR_TEXT);
+    day_static_label(surface, 28, 54, 240, "НЕДЕЛЯ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
     lv_obj_t *day_context = make_card(surface, 670, 18, 326, 118);
-    day_label(day_context, 18, 14, 290, "РАСПИСАНИЕ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    day_static_label(day_context, 18, 14, 290, "РАСПИСАНИЕ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
     lbl_day_context = day_label(day_context, 18, 42, 290, "", &font_montserrat_24_cyr, COLOR_TEXT);
-    lbl_day_summary = day_label(day_context, 18, 78, 290, "Загружаю расписание", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_day_summary = day_static_label(day_context, 18, 78, 290, "Загружаю расписание", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
     int y, m, d;
     get_today_date(&y, &m, &d);
@@ -708,7 +871,7 @@ static void create_day_planner(lv_obj_t *page)
         lv_obj_set_style_bg_opa(day, LV_OPA_COVER, 0);
         lv_obj_add_flag(day, LV_OBJ_FLAG_CLICKABLE);
         char buf[24];
-        snprintf(buf, sizeof(buf), "%s\n%d", DOW_NAMES[date_tm.tm_wday], week_dates[i].day);
+        snprintf(buf, sizeof(buf), "%s\n%d", weekday_name(date_tm.tm_wday), week_dates[i].day);
         lv_obj_t *label = day_label(day, 0, 7, 78, buf, &font_montserrat_16_cyr,
                                     i == 0 ? COLOR_HIGHLIGHT : COLOR_TEXT_DIM);
         lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
@@ -726,18 +889,18 @@ static void create_day_planner(lv_obj_t *page)
         lv_obj_add_event_cb(day, week_day_click_cb, LV_EVENT_CLICKED, &week_dates[i]);
     }
 
-    lbl_connection_status = day_label(surface, 28, 519, 968, "Подключение…",
+    lbl_connection_status = day_static_label(surface, 28, 519, 968, "Подключение…",
                                       &font_montserrat_16_cyr, COLOR_TEXT_DIM);
     lv_label_set_long_mode(lbl_connection_status, LV_LABEL_LONG_DOT);
     lv_obj_set_height(lbl_connection_status, 19);
 
     lv_obj_t *plan = make_card(surface, 28, 154, 622, 360);
     page1_schedule_panel = plan;
-    lbl_sched_title = day_label(plan, 18, 15, 300, "Сегодня", &font_montserrat_24_cyr, COLOR_TEXT);
+    lbl_sched_title = day_static_label(plan, 18, 15, 300, "Сегодня", &font_montserrat_24_cyr, COLOR_TEXT);
     hero_event_card = make_card(plan, 16, 56, 590, 105);
     lv_obj_set_style_bg_color(hero_event_card, COLOR_PANEL, 0);
-    lbl_hero_status = day_label(hero_event_card, 14, 10, 540, "Следующее", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_hero_title = day_label(hero_event_card, 14, 35, 540, "Нет событий", &font_montserrat_24_cyr, COLOR_TEXT);
+    lbl_hero_status = day_static_label(hero_event_card, 14, 10, 540, "Следующее", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_hero_title = day_static_label(hero_event_card, 14, 35, 540, "Нет событий", &font_montserrat_24_cyr, COLOR_TEXT);
     lbl_hero_time = day_label(hero_event_card, 14, 72, 540, "", &font_montserrat_16_cyr, COLOR_HIGHLIGHT);
     events_scroll = lv_obj_create(plan);
     lv_obj_remove_style_all(events_scroll);
@@ -755,13 +918,13 @@ static void create_day_planner(lv_obj_t *page)
         lbl_events[i] = day_label(events_scroll, 0, 0, 580, "", &font_montserrat_16_cyr, COLOR_TEXT);
         if (i >= 3) lv_obj_add_flag(lbl_events[i], LV_OBJ_FLAG_HIDDEN);
     }
-    lbl_no_events = day_label(events_scroll, 0, 0, 580, "Нет событий", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_no_events = day_static_label(events_scroll, 0, 0, 580, "Нет событий", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
 
     lv_obj_t *right = make_card(surface, 670, 154, 326, 360);
     page1_overview_panel = right;
     lbl_topbar_temp = day_label(right, 18, 15, 290, WEATHER_CITY, &font_montserrat_24_cyr, COLOR_TEXT);
-    lbl_weather_detail = day_label(right, 18, 52, 290, "Нет данных о погоде", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    day_label(right, 18, 104, 290, "ТРАНСПОРТ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_weather_detail = day_static_label(right, 18, 52, 290, "Нет данных о погоде", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    day_static_label(right, 18, 104, 290, "ТРАНСПОРТ", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
     lbl_transport_out = lv_spangroup_create(right);
     lv_obj_set_pos(lbl_transport_out, 18, 132);
     lv_obj_set_width(lbl_transport_out, 290);
@@ -770,9 +933,9 @@ static void create_day_planner(lv_obj_t *page)
     lv_obj_set_pos(lbl_transport_in, 18, 164);
     lv_obj_set_width(lbl_transport_in, 290);
     lv_obj_set_style_text_font(lbl_transport_in, &font_montserrat_16_cyr, 0);
-    day_label(right, 18, 226, 290, "ВОЗДУХ ДОМА", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_air_primary = day_label(right, 18, 254, 290, "Гостиная: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
-    lbl_air_detail = day_label(right, 18, 284, 290, "Кабинет: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    day_static_label(right, 18, 226, 290, "ВОЗДУХ ДОМА", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_air_primary = day_static_label(right, 18, 254, 290, "Гостиная: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
+    lbl_air_detail = day_static_label(right, 18, 284, 290, "Кабинет: нет данных CO2", &font_montserrat_16_cyr, COLOR_TEXT_DIM);
     update_week_selection();
 }
 
@@ -868,9 +1031,12 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_color(calendar, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(calendar, &font_montserrat_16_cyr, 0);
     lv_obj_set_style_border_width(calendar, 0, 0);
+    set_calendar_day_names();
 
-    lv_obj_t *cal_header = lv_calendar_header_arrow_create(calendar);
-    lv_obj_set_style_text_color(cal_header, COLOR_TEXT, 0);
+    calendar_header = lv_calendar_header_arrow_create(calendar);
+    lv_obj_set_style_text_color(calendar_header, COLOR_TEXT, 0);
+    lv_obj_add_event_cb(calendar_header, calendar_header_locale_cb, LV_EVENT_VALUE_CHANGED, nullptr);
+    refresh_calendar_header(calendar_header);
 
     lv_obj_t *cal_btnm = lv_calendar_get_btnmatrix(calendar);
     lv_obj_set_style_bg_opa(cal_btnm, LV_OPA_TRANSP, 0);
@@ -917,10 +1083,10 @@ void ui_dashboard_create(void)
     lbl_sched_title = lv_label_create(right_panel);
     lv_obj_set_style_text_color(lbl_sched_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(lbl_sched_title, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(lbl_sched_title, "Расписание");
+    set_static_ui_label(lbl_sched_title, "Расписание");
     lv_obj_set_pos(lbl_sched_title, 20, 10);
 
-    // "Сегодня" button
+    // ui_text("Сегодня") button
     btn_today = lv_btn_create(right_panel);
     lv_obj_set_size(btn_today, 70, 28);
     lv_obj_set_pos(btn_today, 505, 8);
@@ -933,7 +1099,7 @@ void ui_dashboard_create(void)
     lv_obj_t *btn_lbl = lv_label_create(btn_today);
     lv_obj_set_style_text_color(btn_lbl, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(btn_lbl, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(btn_lbl, "Сегодня");
+    set_static_ui_label(btn_lbl, "Сегодня");
     lv_obj_center(btn_lbl);
 
     // Hero event: the active or next calendar item is the primary glance target.
@@ -951,7 +1117,7 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_color(lbl_hero_status, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_hero_status, &font_montserrat_16_cyr, 0);
     lv_obj_set_width(lbl_hero_status, 535);
-    lv_label_set_text(lbl_hero_status, "Следующее");
+    set_static_ui_label(lbl_hero_status, "Следующее");
     lv_obj_set_pos(lbl_hero_status, 12, 10);
 
     lbl_hero_title = lv_label_create(hero_event_card);
@@ -959,7 +1125,7 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_font(lbl_hero_title, &font_montserrat_24_cyr, 0);
     lv_obj_set_width(lbl_hero_title, 535);
     lv_label_set_long_mode(lbl_hero_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_label_set_text(lbl_hero_title, "Нет событий");
+    set_static_ui_label(lbl_hero_title, "Нет событий");
     lv_obj_set_pos(lbl_hero_title, 12, 38);
 
     lbl_hero_time = lv_label_create(hero_event_card);
@@ -998,7 +1164,7 @@ void ui_dashboard_create(void)
     lbl_no_events = lv_label_create(events_scroll);
     lv_obj_set_style_text_color(lbl_no_events, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_no_events, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_no_events, "Нет событий");
+    set_static_ui_label(lbl_no_events, "Нет событий");
 
     // "Now" time indicator line
     now_line = lv_obj_create(events_scroll);
@@ -1045,7 +1211,7 @@ void ui_dashboard_create(void)
     lv_obj_set_style_text_font(lbl_bottom, &font_montserrat_16_cyr, 0);
     lv_obj_set_width(lbl_bottom, 994);
     lv_label_set_long_mode(lbl_bottom, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_label_set_text(lbl_bottom, "WiFi: ---");
+    set_static_ui_label(lbl_bottom, "WiFi: ---");
     lv_obj_set_pos(lbl_bottom, 10, 2);
 
     // ===== PAGE 2: Health + Tasks + News =====
@@ -1073,24 +1239,34 @@ void ui_dashboard_create(void)
 // Map WMO weather code to text (moved from weather.cpp)
 static const char *weather_code_to_text(int code)
 {
-    if (code == 0)                        return "Clear";
-    if (code >= 1 && code <= 3)           return "Cloudy";
-    if (code == 45 || code == 48)         return "Fog";
-    if (code >= 51 && code <= 55)         return "Drizzle";
-    if (code >= 56 && code <= 57)         return "Frzng Drz";
-    if (code >= 61 && code <= 65)         return "Rain";
-    if (code >= 66 && code <= 67)         return "Frzng Rain";
-    if (code >= 71 && code <= 75)         return "Snow";
-    if (code == 77)                       return "Snow Grn";
-    if (code >= 80 && code <= 82)         return "Showers";
-    if (code >= 85 && code <= 86)         return "Snow Shw";
-    if (code >= 95 && code <= 99)         return "Storm";
-    return "???";
+    const int language = !strcmp(ui_strings_locale(), "en") ? 1 :
+                         !strcmp(ui_strings_locale(), "sr-Latn") ? 2 : 0;
+    static const char *labels[3][12] = {
+        {"Ясно", "Облачно", "Туман", "Морось", "Ледяная морось", "Дождь", "Ледяной дождь", "Снег", "Снежная крупа", "Ливни", "Снегопад", "Гроза"},
+        {"Clear", "Cloudy", "Fog", "Drizzle", "Freezing drizzle", "Rain", "Freezing rain", "Snow", "Snow grains", "Showers", "Snow showers", "Storm"},
+        {"Vedro", "Oblačno", "Magla", "Rosulja", "Ledena rosulja", "Kiša", "Ledena kiša", "Sneg", "Susnežica", "Pljuskovi", "Snežni pljuskovi", "Oluja"},
+    };
+    int index = -1;
+    if (code == 0) index = 0;
+    else if (code >= 1 && code <= 3) index = 1;
+    else if (code == 45 || code == 48) index = 2;
+    else if (code >= 51 && code <= 55) index = 3;
+    else if (code >= 56 && code <= 57) index = 4;
+    else if (code >= 61 && code <= 65) index = 5;
+    else if (code >= 66 && code <= 67) index = 6;
+    else if (code >= 71 && code <= 75) index = 7;
+    else if (code == 77) index = 8;
+    else if (code >= 80 && code <= 82) index = 9;
+    else if (code >= 85 && code <= 86) index = 10;
+    else if (code >= 95 && code <= 99) index = 11;
+    return index >= 0 ? labels[language][index] : "???";
 }
 
 void ui_dashboard_update_weather(const bridge_weather_t *data)
 {
-    if (!data || !data->valid) return;
+    if (!data) return;
+    if (data != &ui_bridge_snapshot.weather) ui_bridge_snapshot.weather = *data;
+    if (!data->valid) return;
 
     // Update weather icon (only redraw if code changed)
     if (weather_canvas && canvas_buf && data->weather_code != last_weather_code) {
@@ -1099,6 +1275,7 @@ void ui_dashboard_update_weather(const bridge_weather_t *data)
     }
 
     if (lbl_topbar_temp) {
+        unbind_static_ui_label(lbl_topbar_temp);
         char buf[128];
         const char *city = ui_has_preferences ? ui_preferences.city : WEATHER_CITY;
         if (ui_has_preferences)
@@ -1112,11 +1289,12 @@ void ui_dashboard_update_weather(const bridge_weather_t *data)
 
     if (lbl_weather_detail) {
         char buf[96];
-        snprintf(buf, sizeof(buf), "%.0f%% %.0fкм/ч %.0f/%.0fC",
-                 data->humidity,
-                 data->wind_speed,
+        const char *units = !strcmp(ui_strings_locale(), "ru") ? "км/ч" : "km/h";
+        snprintf(buf, sizeof(buf), "%.0f%% %.0f%s %.0f/%.0fC",
+                 data->humidity, data->wind_speed, units,
                  data->daily[1].temp_max,
                  data->daily[1].temp_min);
+        unbind_static_ui_label(lbl_weather_detail);
         lv_label_set_text(lbl_weather_detail, buf);
     }
 }
@@ -1124,9 +1302,11 @@ void ui_dashboard_update_weather(const bridge_weather_t *data)
 void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
 {
     if (!data || !data->valid) {
+        ui_calendar_snapshot.valid = false;
+        last_cal_event_count = -2;
         update_day_context(sel_year, sel_month, sel_day, -2);
-        if (lbl_hero_status) lv_label_set_text(lbl_hero_status, "Календарь");
-        if (lbl_hero_title) lv_label_set_text(lbl_hero_title, "Нет данных");
+        if (lbl_hero_status) set_static_ui_label(lbl_hero_status, "Календарь");
+        if (lbl_hero_title) set_static_ui_label(lbl_hero_title, "Нет данных");
         char error[64] = {};
         if (lbl_hero_time && bridge_copy_last_error(error, sizeof(error))) lv_label_set_text(lbl_hero_time, error);
         if (lbl_no_events) lv_obj_add_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
@@ -1136,8 +1316,10 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         if (now_line) lv_obj_add_flag(now_line, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    ui_calendar_snapshot = *data;
 
     // Update the schedule title to reflect fetched date
+    last_cal_event_count = data->count;
     if (data->year > 0) {
         sel_year  = data->year;
         sel_month = data->month;
@@ -1215,29 +1397,29 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         const bridge_cal_event_t *ev = &data->events[hero_idx];
         char time_buf[96];
         if (ev->all_day) {
-            snprintf(time_buf, sizeof(time_buf), "Весь день");
+            snprintf(time_buf, sizeof(time_buf), "%s", ui_text("Весь день"));
         } else {
             int start_min = ev->start_hour * 60 + ev->start_min;
             int end_min = ev->end_hour * 60 + ev->end_min;
             if (selected_today && hero_active) {
-                snprintf(time_buf, sizeof(time_buf), "%02d:%02d-%02d:%02d  до %02d:%02d",
+                snprintf(time_buf, sizeof(time_buf), ui_text("%02d:%02d-%02d:%02d  до %02d:%02d"),
                          ev->start_hour, ev->start_min,
                          ev->end_hour, ev->end_min,
                          ev->end_hour, ev->end_min);
             } else if (selected_today && start_min > now_min) {
                 int diff = start_min - now_min;
                 if (diff < 60) {
-                    snprintf(time_buf, sizeof(time_buf), "%02d:%02d-%02d:%02d  через %d мин",
+                    snprintf(time_buf, sizeof(time_buf), ui_text("%02d:%02d-%02d:%02d  через %d мин"),
                              ev->start_hour, ev->start_min,
                              ev->end_hour, ev->end_min,
                              diff);
                 } else {
-                    snprintf(time_buf, sizeof(time_buf), "%02d:%02d  через %dч %02dм",
+                    snprintf(time_buf, sizeof(time_buf), ui_text("%02d:%02d  через %dч %02dм"),
                              ev->start_hour, ev->start_min,
                              diff / 60, diff % 60);
                 }
             } else if (selected_today && end_min <= now_min) {
-                snprintf(time_buf, sizeof(time_buf), "%02d:%02d-%02d:%02d  день почти свободен",
+                snprintf(time_buf, sizeof(time_buf), ui_text("%02d:%02d-%02d:%02d  день почти свободен"),
                          ev->start_hour, ev->start_min,
                          ev->end_hour, ev->end_min);
             } else {
@@ -1249,10 +1431,11 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
 
         if (lbl_hero_status) {
             lv_label_set_text(lbl_hero_status,
-                ev->all_day ? "Весь день" :
-                (hero_active ? "Сейчас" : (selected_today ? "Следующее" : "Выбранный день")));
+                ev->all_day ? ui_text("Весь день") :
+                (hero_active ? ui_text("Сейчас") : (selected_today ? ui_text("Следующее") : ui_text("Выбранный день"))));
         }
         if (lbl_hero_title) {
+            unbind_static_ui_label(lbl_hero_title);
             lv_label_set_text(lbl_hero_title, ev->summary);
             lv_obj_set_style_text_color(lbl_hero_title, COLOR_TEXT, 0);
         }
@@ -1265,16 +1448,17 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
             lv_obj_set_style_border_color(hero_event_card, COLOR_ACCENT, 0);
         }
     } else {
-        if (lbl_hero_status) lv_label_set_text(lbl_hero_status, selected_today ? "Сегодня" : "Выбранный день");
+        if (lbl_hero_status) lv_label_set_text(lbl_hero_status, selected_today ? ui_text("Сегодня") : ui_text("Выбранный день"));
         if (lbl_hero_title) {
-            lv_label_set_text(lbl_hero_title,
-                has_all_day ? (selected_today ? "На сегодня больше событий нет" : "На эту дату больше событий нет") : "Свободный день");
+            const char *message_key = has_all_day ?
+                (selected_today ? "На сегодня больше событий нет" : "На эту дату больше событий нет") : "Свободный день";
+            set_static_ui_label(lbl_hero_title, message_key);
             lv_obj_set_style_text_color(lbl_hero_title, COLOR_TEXT, 0);
         }
         if (lbl_hero_time) {
             lv_label_set_text(lbl_hero_time,
-                has_all_day ? "События на весь день ниже" :
-                (selected_today ? "Нет событий в расписании" : "На эту дату нет событий"));
+                has_all_day ? ui_text("События на весь день ниже") :
+                (selected_today ? ui_text("Нет событий в расписании") : ui_text("На эту дату нет событий")));
             lv_obj_set_style_text_color(lbl_hero_time, COLOR_TEXT_DIM, 0);
         }
         if (hero_event_card) {
@@ -1290,7 +1474,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         const bridge_cal_event_t *ev = &data->events[i];
         char buf[96];
         if (ev->all_day) {
-            snprintf(buf, sizeof(buf), "Весь день  %s", ev->summary);
+            snprintf(buf, sizeof(buf), ui_text("Весь день  %s"), ev->summary);
         } else {
             snprintf(buf, sizeof(buf), "%02d:%02d  %s", ev->start_hour, ev->start_min, ev->summary);
         }
@@ -1311,7 +1495,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
     }
 
     if (list_idx == 0 && lbl_no_events) {
-        lv_label_set_text(lbl_no_events, hero_idx >= 0 ? "Больше событий нет" : "Нет событий");
+        set_static_ui_label(lbl_no_events, hero_idx >= 0 ? "Больше событий нет" : "Нет событий");
         lv_obj_clear_flag(lbl_no_events, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -1336,7 +1520,7 @@ static void append_transport_stop(lv_obj_t *spangroup, const char *label, const 
 
     if (stop->count == 0) {
         lv_span_t *s = lv_spangroup_new_span(spangroup);
-        lv_span_set_text(s, "нет данных");
+        lv_span_set_text(s, ui_text("нет данных"));
         lv_style_set_text_color(lv_span_get_style(s), COLOR_TEXT_DIM);
         return;
     }
@@ -1363,7 +1547,7 @@ static void append_transport_stop(lv_obj_t *spangroup, const char *label, const 
         lv_style_set_text_color(lv_span_get_style(colon), COLOR_TEXT_DIM);
 
         char time_buf[16];
-        snprintf(time_buf, sizeof(time_buf), "%dм", mins);
+        snprintf(time_buf, sizeof(time_buf), ui_text("%dм"), mins);
         lv_span_t *time_span = lv_spangroup_new_span(spangroup);
         lv_span_set_text(time_span, time_buf);
         lv_style_set_text_color(lv_span_get_style(time_span), time_color(mins));
@@ -1382,13 +1566,15 @@ static void append_transport_stop(lv_obj_t *spangroup, const char *label, const 
 
 void ui_dashboard_update_transport(const bridge_transport_t *data)
 {
-    if (!data || !data->valid) return;
+    if (!data) return;
+    if (data != &ui_bridge_snapshot.transport) ui_bridge_snapshot.transport = *data;
+    if (!data->valid) return;
 
     if (lbl_transport_out) {
-        append_transport_stop(lbl_transport_out, "Из центра  ", &data->stops[0]);
+        append_transport_stop(lbl_transport_out, ui_text("Из центра  "), &data->stops[0]);
     }
     if (lbl_transport_in) {
-        append_transport_stop(lbl_transport_in, "В центр    ", &data->stops[1]);
+        append_transport_stop(lbl_transport_in, ui_text("В центр    "), &data->stops[1]);
     }
 }
 
@@ -1402,16 +1588,17 @@ void ui_dashboard_update_time(void)
     // Update top bar clock
     if (lbl_datetime) {
         char buf[64];
+        unbind_static_ui_label(lbl_datetime);
         if (ui_has_preferences && ui_preferences.clock_12h) {
             int hour = tinfo.tm_hour % 12;
             if (!hour) hour = 12;
             snprintf(buf, sizeof(buf), "%s, %d %s %d  %d:%02d %s",
-                     DOW_NAMES[tinfo.tm_wday], tinfo.tm_mday, MONTH_NAMES[tinfo.tm_mon],
+                     weekday_name(tinfo.tm_wday), tinfo.tm_mday, ui_month_name(tinfo.tm_mon),
                      tinfo.tm_year + 1900, hour, tinfo.tm_min,
                      tinfo.tm_hour >= 12 ? "PM" : "AM");
         } else {
             snprintf(buf, sizeof(buf), "%s, %d %s %d  %02d:%02d",
-                     DOW_NAMES[tinfo.tm_wday], tinfo.tm_mday, MONTH_NAMES[tinfo.tm_mon],
+                     weekday_name(tinfo.tm_wday), tinfo.tm_mday, ui_month_name(tinfo.tm_mon),
                      tinfo.tm_year + 1900, tinfo.tm_hour, tinfo.tm_min);
         }
         lv_label_set_text(lbl_datetime, buf);
@@ -1461,6 +1648,7 @@ void ui_dashboard_update_time(void)
         else {
             snprintf(status, sizeof(status), "WiFi:%s %s Data:%s",
                      wifi_is_connected() ? "OK" : "--", sync, data);
+            unbind_static_ui_label(lbl_connection_status);
             lv_label_set_text(lbl_connection_status, status);
             lv_obj_clear_flag(lbl_connection_status, LV_OBJ_FLAG_HIDDEN);
         }
@@ -1477,6 +1665,7 @@ void ui_dashboard_update_time(void)
                  esp_get_free_internal_heap_size() / 1024.0f,
                  error,
                  FW_VERSION);
+        unbind_static_ui_label(lbl_bottom);
         lv_label_set_text(lbl_bottom, buf);
     }
 }
@@ -1506,7 +1695,7 @@ static void create_page2(lv_obj_t *tile)
     lv_obj_t *lbl_htitle = lv_label_create(health_banner);
     lv_obj_set_style_text_color(lbl_htitle, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(lbl_htitle, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(lbl_htitle, "Здоровье");
+    set_static_ui_label(lbl_htitle, "Здоровье");
     lv_obj_set_pos(lbl_htitle, 15, 8);
 
     // Readiness arc (left side)
@@ -1535,7 +1724,7 @@ static void create_page2(lv_obj_t *tile)
     lbl_readiness_label = lv_label_create(health_banner);
     lv_obj_set_style_text_color(lbl_readiness_label, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_readiness_label, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_readiness_label, "Готовность");
+    set_static_ui_label(lbl_readiness_label, "Готовность");
     lv_obj_set_pos(lbl_readiness_label, 33, 154);
 
     // A flat 3x2 grid keeps readiness dominant and removes "cards in cards".
@@ -1549,7 +1738,7 @@ static void create_page2(lv_obj_t *tile)
         metric_cards[i].lbl_name = lv_label_create(health_banner);
         lv_obj_set_style_text_color(metric_cards[i].lbl_name, COLOR_TEXT_DIM, 0);
         lv_obj_set_style_text_font(metric_cards[i].lbl_name, &font_montserrat_16_cyr, 0);
-        lv_label_set_text(metric_cards[i].lbl_name, metric_names[i]);
+        set_static_ui_label(metric_cards[i].lbl_name, metric_names[i]);
         lv_obj_set_pos(metric_cards[i].lbl_name, x + 10, y);
 
         metric_cards[i].lbl_value = lv_label_create(health_banner);
@@ -1580,7 +1769,7 @@ static void create_page2(lv_obj_t *tile)
     lv_obj_t *lbl_ttitle = lv_label_create(tasks_panel);
     lv_obj_set_style_text_color(lbl_ttitle, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(lbl_ttitle, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(lbl_ttitle, "Задачи");
+    set_static_ui_label(lbl_ttitle, "Задачи");
     lv_obj_set_pos(lbl_ttitle, 15, 10);
 
     for (int i = 0; i < MAX_TASK_LINES; i++) {
@@ -1613,7 +1802,7 @@ static void create_page2(lv_obj_t *tile)
     lbl_no_tasks = lv_label_create(tasks_panel);
     lv_obj_set_style_text_color(lbl_no_tasks, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_no_tasks, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_no_tasks, "Нет задач");
+    set_static_ui_label(lbl_no_tasks, "Нет задач");
     lv_obj_set_pos(lbl_no_tasks, 15, 38);
 
     // ===== BOTTOM RIGHT: News =====
@@ -1623,7 +1812,7 @@ static void create_page2(lv_obj_t *tile)
     lv_obj_t *lbl_ntitle = lv_label_create(news_panel);
     lv_obj_set_style_text_color(lbl_ntitle, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(lbl_ntitle, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(lbl_ntitle, "Новости");
+    set_static_ui_label(lbl_ntitle, "Новости");
     lv_obj_set_pos(lbl_ntitle, 15, 10);
 
     for (int i = 0; i < MAX_NEWS_LINES; i++) {
@@ -1664,7 +1853,7 @@ static void create_page2(lv_obj_t *tile)
     lbl_no_news = lv_label_create(news_panel);
     lv_obj_set_style_text_color(lbl_no_news, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl_no_news, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(lbl_no_news, "Нет новостей");
+    set_static_ui_label(lbl_no_news, "Нет новостей");
     lv_obj_set_pos(lbl_no_news, 15, 38);
 }
 
@@ -1696,6 +1885,7 @@ static void format_trend(char *buf, int bufsize, int cur, int prev)
 void ui_dashboard_update_bridge(const bridge_data_t *data)
 {
     if (!data) return;
+    if (data != &ui_bridge_snapshot) ui_bridge_snapshot = *data;
 
     // Health — readiness arc + metric cards
     if (data->health.valid) {
@@ -1714,7 +1904,7 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
         }
         if (lbl_readiness_label) {
             lv_label_set_text(lbl_readiness_label,
-                r >= 80 ? "Отлично" : r >= 50 ? "Норма" : "Низко");
+                r >= 80 ? ui_text("Отлично") : r >= 50 ? ui_text("Норма") : ui_text("Низко"));
         }
 
         // Flat summary: 0=Sleep, 1=Steps, 2=HR, 3=RHR, 4=HRV, 5=SpO2.
@@ -1732,11 +1922,11 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
         set_metric_card(1, val, trend, data->health.steps >= data->health.steps_prev ? COLOR_GOOD : COLOR_BAD);
 
         // Heart Rate (live)
-        snprintf(val, sizeof(val), "%d bpm", data->health.hr);
+        snprintf(val, sizeof(val), ui_text("%d bpm"), data->health.hr);
         set_metric_card(2, val, "", data->health.hr <= 100 ? COLOR_GOOD : COLOR_WARN);
 
         // RHR
-        snprintf(val, sizeof(val), "%d bpm", data->health.rhr);
+        snprintf(val, sizeof(val), ui_text("%d bpm"), data->health.rhr);
         set_metric_card(3, val, "", data->health.rhr <= 60 ? COLOR_GOOD : (data->health.rhr <= 75 ? COLOR_WARN : COLOR_BAD));
 
         // HRV
@@ -1898,7 +2088,7 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_t *pg_title = lv_label_create(tile);
     lv_obj_set_style_text_color(pg_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(pg_title, &font_montserrat_24_cyr, 0);
-    lv_label_set_text(pg_title, "Дом · удерживайте для локальной настройки");
+    set_static_ui_label(pg_title, "Дом · удерживайте для локальной настройки");
     lv_obj_set_width(pg_title, 640);
     lv_obj_add_flag(pg_title, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(pg_title, recovery_title_cb, LV_EVENT_LONG_PRESSED, NULL);
@@ -1907,18 +2097,18 @@ static void create_page3(lv_obj_t *tile)
     home_photo_status = lv_label_create(tile);
     lv_obj_set_style_text_color(home_photo_status, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(home_photo_status, &font_montserrat_16_cyr, 0);
-    lv_obj_set_pos(home_photo_status, 120, 12);
-    lv_obj_set_width(home_photo_status, 570);
+    lv_obj_set_pos(home_photo_status, 15, 37);
+    lv_obj_set_width(home_photo_status, 680);
     lv_label_set_long_mode(home_photo_status, LV_LABEL_LONG_DOT);
-    lv_label_set_text(home_photo_status, "Авто: через 5 мин без касаний");
+    set_static_ui_label(home_photo_status, "Авто: через 5 мин без касаний");
 
     home_settings_link = lv_label_create(tile);
     lv_obj_set_style_text_color(home_settings_link, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(home_settings_link, &font_montserrat_16_cyr, 0);
-    lv_obj_set_pos(home_settings_link, 120, 42);
-    lv_obj_set_width(home_settings_link, 560);
+    lv_obj_set_pos(home_settings_link, 15, 520);
+    lv_obj_set_width(home_settings_link, 680);
     lv_label_set_long_mode(home_settings_link, LV_LABEL_LONG_DOT);
-    lv_label_set_text(home_settings_link, "Настройки HomeDash: откройте Bridge");
+    set_static_ui_label(home_settings_link, "Настройки HomeDash: откройте Bridge");
 
     lv_obj_t *btn_photo = lv_btn_create(tile);
     lv_obj_set_size(btn_photo, 170, 30);
@@ -1930,7 +2120,8 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_t *photo_lbl = lv_label_create(btn_photo);
     lv_obj_set_style_text_color(photo_lbl, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(photo_lbl, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(photo_lbl, "Фоторамка");
+    lv_obj_set_width(photo_lbl, 154);
+    set_static_ui_label(photo_lbl, "Фоторамка");
     lv_obj_center(photo_lbl);
 
     // OTA update button
@@ -1945,16 +2136,17 @@ static void create_page3(lv_obj_t *tile)
     lv_obj_t *ota_lbl = lv_label_create(btn_ota);
     lv_obj_set_style_text_color(ota_lbl, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(ota_lbl, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(ota_lbl, "Обновить");
+    set_static_ui_label(ota_lbl, "Обновить");
     lv_obj_center(ota_lbl);
 
     // Air overview: the two CO2 sensors remain explicitly named, rather than
     // collapsing household air into an ambiguous sensor count.
-    lv_obj_t *air = make_card(tile, 5, 42, 400, 130);
+    lv_obj_t *air = make_card(tile, 5, 60, 400, 120);
     lv_obj_t *air_title = lv_label_create(air);
     lv_obj_set_style_text_color(air_title, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(air_title, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(air_title, "Воздух дома");
+    set_static_ui_label(air_title, "Воздух дома");
+    lv_obj_set_width(air_title, 370);
     lv_obj_set_pos(air_title, 14, 10);
     const char *air_names[] = {"Гостиная CO2", "Кабинет CO2", "PM2.5", "Влажность"};
     for (int i = 0; i < 4; i++) {
@@ -1967,40 +2159,41 @@ static void create_page3(lv_obj_t *tile)
         home_air_names[i] = lv_label_create(air);
         lv_obj_set_style_text_color(home_air_names[i], COLOR_TEXT_DIM, 0);
         lv_obj_set_style_text_font(home_air_names[i], &font_montserrat_16_cyr, 0);
-        lv_label_set_text(home_air_names[i], air_names[i]);
+        set_static_ui_label(home_air_names[i], air_names[i]);
         lv_obj_set_pos(home_air_names[i], 14 + col * 190, 62 + row * 42);
     }
 
-    lv_obj_t *climate = make_card(tile, 412, 42, 607, 130);
+    lv_obj_t *climate = make_card(tile, 412, 60, 607, 120);
     home_climate_name = lv_label_create(climate);
     lv_obj_set_style_text_color(home_climate_name, COLOR_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(home_climate_name, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(home_climate_name, "Кондиционер");
+    set_static_ui_label(home_climate_name, "Кондиционер");
     lv_obj_set_pos(home_climate_name, 14, 10);
     home_climate_current = lv_label_create(climate);
     lv_obj_set_style_text_color(home_climate_current, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(home_climate_current, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(home_climate_current, "Сейчас ---");
+    set_static_ui_label(home_climate_current, "Сейчас ---");
     lv_obj_set_pos(home_climate_current, 14, 40);
     home_climate_target = lv_label_create(climate);
     lv_obj_set_style_text_color(home_climate_target, COLOR_TEXT, 0);
     lv_obj_set_style_text_font(home_climate_target, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(home_climate_target, "Цель ---");
+    set_static_ui_label(home_climate_target, "Цель ---");
     lv_obj_set_pos(home_climate_target, 14, 72);
     home_climate_power = lv_btn_create(climate);
-    lv_obj_set_size(home_climate_power, 115, 36);
+    lv_obj_set_size(home_climate_power, 135, 36);
     lv_obj_set_pos(home_climate_power, 174, 42);
     lv_obj_set_style_radius(home_climate_power, 18, 0);
     lv_obj_set_style_shadow_width(home_climate_power, 0, 0);
     lv_obj_add_event_cb(home_climate_power, climate_power_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *power_label = lv_label_create(home_climate_power);
     lv_obj_set_style_text_font(power_label, &font_montserrat_16_cyr, 0);
-    lv_label_set_text(power_label, "Вкл / выкл");
+    lv_obj_set_width(power_label, 125);
+    set_static_ui_label(power_label, "Вкл / выкл");
     lv_obj_center(power_label);
     for (int i = 0; i < 2; i++) {
         lv_obj_t *btn = lv_btn_create(climate);
         lv_obj_set_size(btn, 42, 36);
-        lv_obj_set_pos(btn, 300 + i * 48, 42);
+        lv_obj_set_pos(btn, 320 + i * 48, 42);
         lv_obj_set_style_radius(btn, 18, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_add_event_cb(btn, climate_temperature_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(i ? 1 : -1));
@@ -2010,17 +2203,18 @@ static void create_page3(lv_obj_t *tile)
         lv_obj_center(label);
     }
     static const char *modes[] = {"cool", "heat", "dry", "fan_only"};
-    static const char *mode_labels[] = {"Охл.", "Тепло", "Сушка", "Вент."};
+    static const char *mode_labels[] = {"Охл.", "Тпл.", "Суш.", "Вен."};
     for (int i = 0; i < 4; i++) {
         home_climate_mode_btns[i] = lv_btn_create(climate);
-        lv_obj_set_size(home_climate_mode_btns[i], 57, 30);
-        lv_obj_set_pos(home_climate_mode_btns[i], 372 + i * 57, 82);
+        lv_obj_set_size(home_climate_mode_btns[i], 45, 30);
+        lv_obj_set_pos(home_climate_mode_btns[i], 412 + i * 48, 82);
         lv_obj_set_style_radius(home_climate_mode_btns[i], 15, 0);
         lv_obj_set_style_shadow_width(home_climate_mode_btns[i], 0, 0);
         lv_obj_add_event_cb(home_climate_mode_btns[i], climate_mode_btn_cb, LV_EVENT_CLICKED, (void *)modes[i]);
         lv_obj_t *label = lv_label_create(home_climate_mode_btns[i]);
         lv_obj_set_style_text_font(label, &font_montserrat_16_cyr, 0);
-        lv_label_set_text(label, mode_labels[i]);
+        lv_obj_set_width(label, 43);
+        set_static_ui_label(label, mode_labels[i]);
         lv_obj_center(label);
     }
 
@@ -2109,27 +2303,28 @@ static bool sensor_is_office_co2(const bridge_sensor_t *sensor)
 
 static const char *air_sensor_label(const bridge_sensor_t *sensor, int index)
 {
-    if (sensor_is_living_co2(sensor)) return "Гостиная CO2";
-    if (sensor_is_office_co2(sensor)) return "Кабинет CO2";
+    if (sensor_is_living_co2(sensor)) return ui_text("Гостиная CO2");
+    if (sensor_is_office_co2(sensor)) return ui_text("Кабинет CO2");
     if (sensor && strcmp(sensor->name, "PM2.5") == 0) return "PM2.5";
-    if (sensor && strcmp(sensor->name, "Влажность") == 0) return "Влажность";
+    if (sensor && strcmp(sensor->name, "Влажность") == 0) return ui_text("Влажность");
     if (sensor && sensor->name[0]) return sensor->name;
     static char fallback_labels[4][24];
     char *fallback = fallback_labels[index % 4];
-    snprintf(fallback, sizeof(fallback_labels[0]), "Датчик %d", index + 1);
+        snprintf(fallback, sizeof(fallback_labels[0]), ui_text("Датчик %d"), index + 1);
     return fallback;
 }
 
 static const char *air_sensor_location(const bridge_sensor_t *sensor)
 {
-    if (sensor_is_living_co2(sensor)) return "Гостиная";
-    if (sensor_is_office_co2(sensor)) return "Кабинет";
-    return sensor && sensor->name[0] ? sensor->name : "Датчик";
+    if (sensor_is_living_co2(sensor)) return ui_text("Гостиная");
+    if (sensor_is_office_co2(sensor)) return ui_text("Кабинет");
+    return sensor && sensor->name[0] ? sensor->name : ui_text("Датчик");
 }
 
 void ui_dashboard_update_ha(const bridge_data_t *data)
 {
     if (!data) return;
+    if (data != &ui_bridge_snapshot) ui_bridge_snapshot = *data;
 
     if (lbl_air_primary && lbl_air_detail) {
         const bridge_sensor_t *living_room_co2 = NULL;
@@ -2154,11 +2349,12 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
             char text[48];
             snprintf(text, sizeof(text), "%s: CO2 %s %s", air_sensor_location(living_room_co2), living_room_co2->value, living_room_co2->unit);
             int value = atoi(living_room_co2->value);
+            unbind_static_ui_label(lbl_air_primary);
             lv_label_set_text(lbl_air_primary, text);
             lv_obj_set_style_text_color(lbl_air_primary,
                 value < 800 ? COLOR_GOOD : value < 1000 ? COLOR_WARN : COLOR_BAD, 0);
         } else {
-            lv_label_set_text(lbl_air_primary, "Гостиная: нет данных CO2");
+            set_static_ui_label(lbl_air_primary, "Гостиная: нет данных CO2");
             lv_obj_set_style_text_color(lbl_air_primary, COLOR_TEXT_DIM, 0);
         }
 
@@ -2166,11 +2362,12 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
             char text[48];
             snprintf(text, sizeof(text), "%s: CO2 %s %s", air_sensor_location(office_co2), office_co2->value, office_co2->unit);
             int value = atoi(office_co2->value);
+            unbind_static_ui_label(lbl_air_detail);
             lv_label_set_text(lbl_air_detail, text);
             lv_obj_set_style_text_color(lbl_air_detail,
                 value < 800 ? COLOR_GOOD : value < 1000 ? COLOR_WARN : COLOR_BAD, 0);
         } else {
-            lv_label_set_text(lbl_air_detail, "Кабинет: нет данных CO2");
+            set_static_ui_label(lbl_air_detail, "Кабинет: нет данных CO2");
             lv_obj_set_style_text_color(lbl_air_detail, COLOR_TEXT_DIM, 0);
         }
     }
@@ -2226,12 +2423,13 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
     for (int i = 0; i < 4; i++) {
         if (!home_air_values[i] || !home_air_names[i]) continue;
         if (i >= sensor_count) {
-            lv_label_set_text(home_air_names[i], default_air_names[i]);
+            set_static_ui_label(home_air_names[i], default_air_names[i]);
             lv_label_set_text(home_air_values[i], "---");
             lv_obj_set_style_text_color(home_air_values[i], COLOR_TEXT_DIM, 0);
             continue;
         }
         const bridge_sensor_t *sensor = &data->sensors[i];
+        unbind_static_ui_label(home_air_names[i]);
         lv_label_set_text(home_air_names[i], air_sensor_label(sensor, i));
         if (!sensor->value[0]) {
             lv_label_set_text(home_air_values[i], "---");
@@ -2257,17 +2455,24 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
         home_climate_on = strcmp(climate->mode, "off") != 0;
         if (climate->has_target_temp) home_climate_target_value = climate->target_temp;
 
-        if (home_climate_name) lv_label_set_text(home_climate_name, climate->name[0] ? climate->name : "Кондиционер");
+        if (home_climate_name) {
+            if (climate->name[0]) {
+                unbind_static_ui_label(home_climate_name);
+                lv_label_set_text(home_climate_name, climate->name);
+            } else set_static_ui_label(home_climate_name, "Кондиционер");
+        }
         if (home_climate_current) {
             char text[48];
-            if (climate->has_current_temp) snprintf(text, sizeof(text), "Сейчас %.1f C", climate->current_temp);
-            else snprintf(text, sizeof(text), "Сейчас нет данных");
+            unbind_static_ui_label(home_climate_current);
+            if (climate->has_current_temp) snprintf(text, sizeof(text), ui_text("Сейчас %.1f C"), climate->current_temp);
+            else snprintf(text, sizeof(text), "%s", ui_text("Сейчас нет данных"));
             lv_label_set_text(home_climate_current, text);
         }
         if (home_climate_target) {
             char text[48];
-            if (climate->has_target_temp) snprintf(text, sizeof(text), "Цель %.0f C", climate->target_temp);
-            else snprintf(text, sizeof(text), "Цель нет данных");
+            unbind_static_ui_label(home_climate_target);
+            if (climate->has_target_temp) snprintf(text, sizeof(text), ui_text("Цель %.0f C"), climate->target_temp);
+            else snprintf(text, sizeof(text), "%s", ui_text("Цель нет данных"));
             lv_label_set_text(home_climate_target, text);
         }
         if (home_climate_power) {
@@ -2306,8 +2511,8 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
             {"sensor.zhimi_ca4_90f5_relative_humidity_2", "Влажн."},
             {"sensor.purifier_humidifier_humidity",     "Влажн."},
             {"sensor.purifier_humidifier_temperature",  "Темп."},
-            {"sensor.zhimi_vb4_f663_temperature",       "Темп.(очист.)"},
-            {"sensor.zhimi_vb4_f663_relative_humidity",  "Влажн.(очист.)"},
+            {"sensor.zhimi_vb4_f663_temperature",       ui_text("Темп.(очист.)")},
+            {"sensor.zhimi_vb4_f663_relative_humidity",  ui_text("Влажн.(очист.)")},
             {"sensor.aqara_sensor_temperature",         "Темп.(Aqara)"},
             {"sensor.aqara_sensor_humidity",            "Влажн.(Aqara)"},
         };
@@ -2365,19 +2570,35 @@ void ui_dashboard_update_ha(const bridge_data_t *data)
 
 bool ui_dashboard_reader_open(void) { return reader_overlay != NULL; }
 
+static bool render_recovery_status(void)
+{
+    if (!home_settings_link || !ui_recovery_active) return false;
+    char status[256];
+    snprintf(status, sizeof(status), ui_text("Локальная сеть %s · пароль %s · %s"),
+             ui_recovery_ssid, ui_recovery_password, ui_recovery_url);
+    unbind_static_ui_label(home_settings_link);
+    lv_label_set_text(home_settings_link, status);
+    return true;
+}
+
 void ui_dashboard_apply_preferences(const web_preferences_t *prefs)
 {
     if (!prefs || !web_preferences_valid(prefs)) return;
+    ui_strings_set_locale(prefs->locale);
     ui_preferences = *prefs;
     ui_has_preferences = true;
+    refresh_static_ui_labels();
+    set_calendar_day_names();
+    const bool recovery_status_visible = render_recovery_status();
     if (lbl_topbar_temp) {
         char city[96];
         snprintf(city, sizeof(city), "%s · %s", prefs->name, prefs->city);
         lv_label_set_text(lbl_topbar_temp, city);
     }
-    if (home_settings_link) {
+    if (home_settings_link && !recovery_status_visible) {
         char link[256];
-        snprintf(link, sizeof(link), "Настройки HomeDash: %s", prefs->settings_url);
+        snprintf(link, sizeof(link), ui_text("Настройки HomeDash: %s"), prefs->settings_url);
+        unbind_static_ui_label(home_settings_link);
         lv_label_set_text(home_settings_link, link);
     }
     if (page1_schedule_panel) {
@@ -2427,18 +2648,33 @@ void ui_dashboard_apply_preferences(const web_preferences_t *prefs)
         if (prefs->visible_home) lv_obj_clear_flag(page3_root, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(page3_root, LV_OBJ_FLAG_HIDDEN);
     }
+    refresh_week_strip();
+    if (sel_year > 0) {
+        update_schedule_title(sel_year, sel_month, sel_day);
+        update_day_context(sel_year, sel_month, sel_day, last_cal_event_count);
+    }
+    ui_dashboard_update_bridge(&ui_bridge_snapshot);
+    ui_dashboard_update_transport(&ui_bridge_snapshot.transport);
+    ui_dashboard_update_weather(&ui_bridge_snapshot.weather);
+    if (ui_calendar_snapshot.valid) ui_dashboard_update_ha_calendar(&ui_calendar_snapshot);
+    ui_dashboard_update_ha(&ui_bridge_snapshot);
+    if (ui_photo_status_snapshot[0]) ui_dashboard_update_photo_status(ui_photo_status_snapshot);
+    else if (home_photo_status) set_static_ui_label(home_photo_status, "Авто: через 5 мин без касаний");
     ui_dashboard_update_time();
+    refresh_reader_locale();
 }
 
 void ui_dashboard_reset_preferences(void)
 {
+    ui_strings_set_locale("ru");
+    refresh_static_ui_labels();
     ui_has_preferences = false;
     memset(&ui_preferences, 0, sizeof(ui_preferences));
     ui_last_touch = esp_timer_get_time() / 1000000;
     wake_override_until = 0;
     if (lbl_topbar_temp) lv_label_set_text(lbl_topbar_temp, WEATHER_CITY);
     if (weather_canvas) lv_obj_clear_flag(weather_canvas, LV_OBJ_FLAG_HIDDEN);
-    if (home_settings_link) lv_label_set_text(home_settings_link, "Настройки HomeDash: откройте Bridge");
+    if (home_settings_link) set_static_ui_label(home_settings_link, "Настройки HomeDash: откройте Bridge");
     if (page1_schedule_panel) lv_obj_clear_flag(page1_schedule_panel, LV_OBJ_FLAG_HIDDEN);
     if (page1_overview_panel) lv_obj_clear_flag(page1_overview_panel, LV_OBJ_FLAG_HIDDEN);
     if (lbl_topbar_temp) lv_obj_clear_flag(lbl_topbar_temp, LV_OBJ_FLAG_HIDDEN);
@@ -2451,27 +2687,89 @@ void ui_dashboard_reset_preferences(void)
     if (page2_tasks_panel) lv_obj_clear_flag(page2_tasks_panel, LV_OBJ_FLAG_HIDDEN);
     if (page2_news_panel) lv_obj_clear_flag(page2_news_panel, LV_OBJ_FLAG_HIDDEN);
     if (page3_root) lv_obj_clear_flag(page3_root, LV_OBJ_FLAG_HIDDEN);
+    refresh_static_ui_labels();
+    set_calendar_day_names();
+    refresh_week_strip();
     set_screen_off(false);
+    ui_dashboard_update_bridge(&ui_bridge_snapshot);
+    ui_dashboard_update_transport(&ui_bridge_snapshot.transport);
+    ui_dashboard_update_weather(&ui_bridge_snapshot.weather);
+    if (ui_calendar_snapshot.valid) ui_dashboard_update_ha_calendar(&ui_calendar_snapshot);
+    ui_dashboard_update_ha(&ui_bridge_snapshot);
+    if (ui_photo_status_snapshot[0]) ui_dashboard_update_photo_status(ui_photo_status_snapshot);
     ui_dashboard_update_time();
+    refresh_reader_locale();
 }
+
+#if defined(SIMULATOR)
+void ui_dashboard_sim_set_page(int page)
+{
+    if (tileview && page >= 0 && page < 3) lv_tileview_set_tile(tileview, nav_tiles[page], LV_ANIM_OFF);
+}
+
+int ui_dashboard_sim_current_page(void)
+{
+    if (!tileview) return -1;
+    lv_obj_t *active = lv_tileview_get_tile_active(tileview);
+    for (int i = 0; i < 3; ++i) if (nav_tiles[i] == active) return i;
+    return -1;
+}
+
+bool ui_dashboard_sim_fixed_labels_fit(void)
+{
+    static const char *keys[] = {"День", "Сводка", "Дом", "Расписание", "Здоровье",
+        "Задачи", "Новости", "Фоторамка", "Обновить", "Воздух дома", "Календарь",
+        "Настройки HomeDash: подключитесь к Bridge", "Настройки HomeDash: откройте Bridge",
+        "Авто: через 5 мин без касаний", "Вкл / выкл", "Охл.", "Тпл.", "Суш.", "Вен.",
+        "Дом · удерживайте для локальной настройки"};
+    for (const auto &binding : static_ui_labels) {
+        if (!binding.label || !binding.key) continue;
+        bool check = false;
+        for (const char *key : keys) if (!strcmp(binding.key, key)) { check = true; break; }
+        if (!check) continue;
+        const lv_font_t *font = lv_obj_get_style_text_font(binding.label, LV_PART_MAIN);
+        const char *text = lv_label_get_text(binding.label);
+        if (!font || !text) return false;
+        lv_point_t measured = {};
+        lv_text_get_size(&measured, text, font,
+                         lv_obj_get_style_text_letter_space(binding.label, LV_PART_MAIN),
+                         lv_obj_get_style_text_line_space(binding.label, LV_PART_MAIN),
+                         LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        if (measured.x > lv_obj_get_width(binding.label)) {
+            std::fprintf(stderr, "[SIM] Fixed label overflows width: %s (%d > %d)\n",
+                         text, measured.x, lv_obj_get_width(binding.label));
+            return false;
+        }
+    }
+    return true;
+}
+#endif
 
 void ui_dashboard_update_recovery(const char *ssid, const char *password, const char *url)
 {
     if (!home_settings_link) return;
     if (!ssid || !ssid[0]) {
+        ui_recovery_active = false;
+        ui_recovery_ssid[0] = ui_recovery_password[0] = ui_recovery_url[0] = '\0';
         if (ui_has_preferences) {
             char link[256];
-            snprintf(link, sizeof(link), "Настройки HomeDash: %s", ui_preferences.settings_url);
+            snprintf(link, sizeof(link), ui_text("Настройки HomeDash: %s"), ui_preferences.settings_url);
+            unbind_static_ui_label(home_settings_link);
             lv_label_set_text(home_settings_link, link);
         } else {
-            lv_label_set_text(home_settings_link, "Настройки HomeDash: подключитесь к Bridge");
+            set_static_ui_label(home_settings_link, "Настройки HomeDash: подключитесь к Bridge");
         }
         return;
     }
+    snprintf(ui_recovery_ssid, sizeof(ui_recovery_ssid), "%s", ssid);
+    snprintf(ui_recovery_password, sizeof(ui_recovery_password), "%s", password ? password : "");
+    snprintf(ui_recovery_url, sizeof(ui_recovery_url), "%s", url ? url : "");
+    ui_recovery_active = true;
     set_screen_off(false);
     char status[256];
-    snprintf(status, sizeof(status), "Локальная сеть %s · пароль %s · %s",
-             ssid, password ? password : "", url ? url : "");
+    snprintf(status, sizeof(status), ui_text("Локальная сеть %s · пароль %s · %s"),
+             ui_recovery_ssid, ui_recovery_password, ui_recovery_url);
+    unbind_static_ui_label(home_settings_link);
     lv_label_set_text(home_settings_link, status);
 }
 
@@ -2497,5 +2795,24 @@ bool ui_dashboard_filter_wake_touch(bool pressed, lv_indev_data_t *data)
 
 void ui_dashboard_update_photo_status(const char *status)
 {
-    if (home_photo_status) lv_label_set_text(home_photo_status, status);
+    if (!home_photo_status || !status) return;
+    unbind_static_ui_label(home_photo_status);
+    if (status != ui_photo_status_snapshot)
+        snprintf(ui_photo_status_snapshot, sizeof(ui_photo_status_snapshot), "%s", status);
+    const char *translated = ui_text(status);
+    if (translated != status && strcmp(translated, status) != 0) {
+        lv_label_set_text(home_photo_status, translated);
+        return;
+    }
+    const char *prefix = nullptr;
+    size_t prefix_len = 0;
+    if (!strncmp(status, "Фото: ", strlen("Фото: "))) { prefix = "Фото:"; prefix_len = strlen("Фото: "); }
+    else if (!strncmp(status, "Список фото: ", strlen("Список фото: "))) { prefix = "Список фото:"; prefix_len = strlen("Список фото: "); }
+    if (prefix) {
+        char localized[192];
+        snprintf(localized, sizeof(localized), "%s %s", ui_text(prefix), status + prefix_len);
+        lv_label_set_text(home_photo_status, localized);
+    } else {
+        lv_label_set_text(home_photo_status, status);
+    }
 }

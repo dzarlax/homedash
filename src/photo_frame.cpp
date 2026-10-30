@@ -449,4 +449,5 @@ void photo_frame_resume_after_ota() { paused.store(false); }
 
 #ifdef SIMULATOR
 void photo_frame_sim_accelerate() { sim_accelerated = true; }
+bool photo_frame_sim_visible() { return overlay != nullptr; }
 #endif

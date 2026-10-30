@@ -54,6 +54,15 @@ changes preserve that identity. The display registers on its first authenticated
 settings sync; select it in the Bridge web panel. Headerless legacy clients retain
 the existing default Bridge feed.
 
+The display supports Russian, English and Serbian Latin (`ru`, `en`, `sr-Latn`).
+Choose the device language in the Bridge Screen settings; the web panel language
+is independent. Changes apply to existing UI objects and persist across reboot.
+User content such as calendar titles, names and news stays as supplied by services.
+Legacy preferences and network journals keep their binary layout: locale uses a
+separate versioned NVS record scoped to Bridge ID and revision. Older Bridge
+responses without a locale select Russian. No firmware update is implied by
+changing the browser language.
+
 Use the Bridge web settings page for managed display preferences. The device keeps its compact three-page dashboard; it does not expose a large local settings menu. A long press on the Home page title starts a protected setup access point for ten minutes. Its unique WPA2 password and local setup URL appear on the display. Network changes are tried before they are committed, and an interrupted trial restores the previous NVS configuration on boot.
 
 ### Dual-Core Layout
@@ -182,17 +191,21 @@ The production firmware keeps Bridge credentials in NVS. Do not put a Bridge URL
 
 ## Custom Fonts
 
-Cyrillic support uses fonts generated with [`lv_font_conv`](https://github.com/lvgl/lv_font_conv):
+Russian and Serbian Latin use generated Montserrat glyphs with the existing
+built-in ASCII fallback. The checked-in source font and SIL OFL license are in
+[src/fonts](src/fonts/README.md). Regenerate both 16/24 fonts with the pinned
+`lv_font_conv` version and `tools/generate_ui_fonts.sh`; the generator includes
+Cyrillic, Latin Extended-A and the middle dot. Do not edit glyph bitmap C by hand.
 
-```bash
-lv_font_conv --font Montserrat-Medium.ttf \
-  --range 0x400-0x4FF \
-  --size 16 --bpp 4 \
-  --no-compress --no-prefilter \
-  --format lvgl \
-  --lv-fallback lv_font_montserrat_16 \
-  -o src/fonts/font_montserrat_16_cyr.c
+Run `make -C sim test-localization` for real LVGL locale-cycle, content-preservation,
+reader-scroll, glyph and fixed-label layout checks. For snapshots of all pages:
+
+```sh
+bash sim/localization_test/run.sh /tmp/homedash-localization-screenshots
 ```
+
+The simulator checks layout and UI behavior; hardware networking, PSRAM, touch
+and OTA installation require separate device acceptance.
 
 ## Related
 

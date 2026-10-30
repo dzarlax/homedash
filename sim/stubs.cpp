@@ -161,6 +161,12 @@ extern "C" void sim_init_fixtures(void)
     set_calendar_for_date(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
 }
 
+extern "C" void sim_set_locale_test_fixtures(void)
+{
+    snprintf(s_data.tasks[0].title, sizeof(s_data.tasks[0].title), "%s", "Today");
+    snprintf(s_data.news[0].title, sizeof(s_data.news[0].title), "%s", "Дом");
+}
+
 void request_calendar_date(int year, int month, int day)
 {
     printf("[SIM] Calendar date requested: %04d-%02d-%02d\n", year, month, day);

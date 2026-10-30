@@ -18,4 +18,5 @@ void photo_frame_resume_after_ota(void);
 
 #ifdef SIMULATOR
 void photo_frame_sim_accelerate(void);
+bool photo_frame_sim_visible(void);
 #endif

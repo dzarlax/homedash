@@ -117,7 +117,7 @@ int main() {
   tick(nullptr);
   assert(!overlay);
   // Reader prevents entry and close resets idle.
-  open_reader("fixture", "fixture", "fixture", nullptr);
+  open_reader("fixture", "fixture", "fixture", nullptr, nullptr);
   fake_seconds = 1000;
   tick(nullptr);
   assert(!busy.load());

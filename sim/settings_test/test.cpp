@@ -104,7 +104,73 @@ static web_preferences_t preferences(uint32_t revision, const char *timezone = "
     return out;
 }
 
+static void test_locale_compatibility() {
+    web_preferences_t p = preferences(7), loaded = {};
+    assert(!strcmp(p.locale, "ru")); // Missing locale from an old Bridge.
+    for (const char *locale : {"ru", "en", "sr-Latn"}) {
+        strcpy(p.locale, locale);
+        assert(web_preferences_valid(&p));
+        assert(web_settings_store_save(&p));
+        assert(web_settings_store_load(&loaded) && !strcmp(loaded.locale, locale));
+        assert(web_settings_store_locale_confirmed(&loaded));
+    }
+    strcpy(p.locale, "sr-Cyrl");
+    assert(!web_preferences_valid(&p));
+    strcpy(p.locale, "en");
+    assert(web_settings_store_save(&p));
+    // A v2 firmware reads this exact prefix, without a new version or layout.
+    struct legacy_blob { uint32_t version; web_preferences_v2_t value; };
+    const bytes old_blob = db["webprefs"]["prefs"];
+    assert(old_blob.size() == sizeof(legacy_blob));
+    legacy_blob old = {};
+    memcpy(&old, old_blob.data(), sizeof(old));
+    assert(old.version == 2 && old.value.revision == 7 && !strcmp(old.value.name, "Hall"));
+    // Legacy firmware leaves the old sidecar behind when it saves another revision.
+    old.value.revision = 8;
+    db["webprefs"]["prefs"] = bytes(reinterpret_cast<unsigned char *>(&old), reinterpret_cast<unsigned char *>(&old) + sizeof(old));
+    assert(web_settings_store_load(&loaded) && !strcmp(loaded.locale, "ru"));
+    assert(!web_settings_store_locale_confirmed(&loaded));
+    old.value.revision = 7;
+    strcpy(old.value.bridge_id, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    db["webprefs"]["prefs"] = bytes(reinterpret_cast<unsigned char *>(&old), reinterpret_cast<unsigned char *>(&old) + sizeof(old));
+    assert(web_settings_store_load(&loaded) && !strcmp(loaded.locale, "ru"));
+    assert(!web_settings_store_locale_confirmed(&loaded));
+    // Missing/corrupt/mismatched locale can never be acknowledged on new firmware.
+    db["webprefs"].erase("locale");
+    assert(web_settings_store_load(&loaded) && !strcmp(loaded.locale, "ru"));
+    assert(!web_settings_store_locale_confirmed(&loaded));
+    db["webprefs"]["locale"] = {0xff};
+    assert(web_settings_store_load(&loaded) && !web_settings_store_locale_confirmed(&loaded));
+    assert(web_settings_store_save(&p));
+    fail_commit_namespace = "webprefs";
+    fail_commit_count = 1;
+    web_preferences_t failed = p;
+    failed.revision++;
+    strcpy(failed.locale, "sr-Latn");
+    assert(!web_settings_store_save(&failed));
+    assert(!web_settings_store_sync_allowed());
+    fail_commit_namespace.clear();
+    assert(web_settings_store_save(&p) && web_settings_store_sync_allowed());
+    device_config_t config = {};
+    strcpy(config.wifi_ssid, "old");
+    strcpy(config.bridge_url, "https://bridge.example");
+    strcpy(config.bridge_key, "old-key");
+    assert(web_settings_store_network_trial_begin(&config, true, &p, true));
+    strcpy(p.locale, "sr-Latn"); p.revision = 9;
+    assert(web_settings_store_save(&p));
+    assert(web_settings_store_network_trial_recover_pending());
+    assert(web_settings_store_load(&loaded) && loaded.revision == 7 && !strcmp(loaded.locale, "en"));
+    // A frozen v1 journal created by old firmware has no locale sidecar.
+    assert(web_settings_store_network_trial_begin(&config, true, &loaded, true));
+    db["webprefs"].erase("trial_locale");
+    assert(web_settings_store_network_trial_recover_pending());
+    assert(web_settings_store_load(&loaded) && !strcmp(loaded.locale, "ru"));
+    assert(web_settings_store_clear_preferences());
+    assert(!db["webprefs"].count("locale"));
+}
+
 int main() {
+    test_locale_compatibility();
     assert(web_identity_init());
     char stable_device_id[33] = {};
     assert(web_identity_get(stable_device_id, sizeof(stable_device_id)));
