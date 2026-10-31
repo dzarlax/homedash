@@ -95,6 +95,7 @@ static lv_obj_t *settings_reveal_label = NULL;
 static lv_obj_t *settings_ap_button_label = NULL;
 static lv_obj_t *settings_device_status = NULL;
 static lv_obj_t *settings_reference_status = NULL, *settings_reference_label = NULL;
+static lv_obj_t *settings_reference_button = NULL, *settings_reference_night_button = NULL;
 static void refresh_reference_test();
 static char settings_qr_url[192] = {};
 static int64_t settings_reveal_until_us = 0;
@@ -2417,23 +2418,29 @@ static void refresh_reference_test()
 {
     if (!settings_reference_status) return;
     auto status = brightness_runtime_reference_status();
+    const bool choices = status.phase == BRIGHTNESS_REFERENCE_CONFIRM || status.phase == BRIGHTNESS_REFERENCE_RESTORED;
+    if (choices) lv_obj_clear_flag(settings_reference_night_button, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(settings_reference_night_button, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_y(settings_reference_button, choices ? 48 : 64);
     const char *message = "Установит новую исходную яркость, не прежнюю.";
     const char *button = "Установить исходную";
     switch (status.phase) {
     case BRIGHTNESS_REFERENCE_DISABLED: message = "Тест подсветки недоступен"; break;
     case BRIGHTNESS_REFERENCE_CONFIRM:
-        message = "Экран читается? Подтвердите тест на 20 секунд.";
-        button = "Экран читается: тест"; break;
+        message = "Экран читается? Выберите уровень теста.";
+        button = "Ярче: 20 секунд"; break;
     case BRIGHTNESS_REFERENCE_PREVIEW: {
         char remaining[128];
-        snprintf(remaining, sizeof(remaining), ui_text("Возврат к исходной через %u с"), (unsigned)status.remaining_seconds);
+        const char *key = status.test_command == 40 ? "Ярче. Возврат через %u с" :
+            status.test_command == 70 ? "Ночной. Возврат через %u с" : "Возврат к исходной через %u с";
+        snprintf(remaining, sizeof(remaining), ui_text(key), (unsigned)status.remaining_seconds);
         lv_label_set_text(settings_reference_status, remaining);
         set_static_ui_label(settings_reference_label, "Вернуть сейчас");
         return;
     }
     case BRIGHTNESS_REFERENCE_RESTORED:
         message = "Команда возврата выполнена. Проверьте яркость.";
-        button = "Повторить тест"; break;
+        button = "Ярче: 20 секунд"; break;
     case BRIGHTNESS_REFERENCE_ERROR:
         message = "Ошибка возврата. Новые тесты заблокированы.";
         button = "Вернуть сейчас"; break;
@@ -2445,12 +2452,20 @@ static void refresh_reference_test()
 static void reference_test_cb(lv_event_t *)
 {
     auto status = brightness_runtime_reference_status();
-    if (status.phase == BRIGHTNESS_REFERENCE_IDLE || status.phase == BRIGHTNESS_REFERENCE_RESTORED)
+    if (status.phase == BRIGHTNESS_REFERENCE_IDLE)
         brightness_runtime_reference_baseline();
-    else if (status.phase == BRIGHTNESS_REFERENCE_CONFIRM)
-        brightness_runtime_reference_preview();
+    else if (status.phase == BRIGHTNESS_REFERENCE_CONFIRM || status.phase == BRIGHTNESS_REFERENCE_RESTORED)
+        brightness_runtime_reference_preview(40);
     else if (status.phase == BRIGHTNESS_REFERENCE_PREVIEW || status.phase == BRIGHTNESS_REFERENCE_ERROR)
         brightness_runtime_restore();
+    refresh_reference_test();
+}
+
+static void reference_night_cb(lv_event_t *)
+{
+    auto status = brightness_runtime_reference_status();
+    if (status.phase == BRIGHTNESS_REFERENCE_CONFIRM || status.phase == BRIGHTNESS_REFERENCE_RESTORED)
+        brightness_runtime_reference_preview(70);
     refresh_reference_test();
 }
 
@@ -2530,7 +2545,9 @@ static void create_settings_page(lv_obj_t *tile)
     if (HOMEDASH_BRIGHTNESS_REFERENCE_TEST) {
         settings_text(system, 16, 12, 930, 28, "Тест подсветки", true);
         settings_reference_status = settings_text(system, 16, 54, 570, 86, "");
-        settings_button(system, 620, 64, 350, "Установить исходную", reference_test_cb, &settings_reference_label);
+        settings_reference_button = settings_button(system, 620, 64, 350, "Установить исходную", reference_test_cb, &settings_reference_label);
+        settings_reference_night_button = settings_button(system, 620, 102, 350, "Ночной: 20 секунд", reference_night_cb);
+        lv_obj_add_flag(settings_reference_night_button, LV_OBJ_FLAG_HIDDEN);
     } else {
         settings_text(system, 16, 12, 930, 28, "Устройство", true);
         settings_device_status = settings_text(system, 16, 54, 570, 80, "");

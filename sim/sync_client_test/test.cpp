@@ -40,6 +40,7 @@ static bool locale_confirmed = true;
 static bool brightness_ready = false, save_failure = false, brightness_write_failure = false;
 static int brightness_rollbacks = 0;
 static bool expect_locale_field = false;
+static bool expect_backlight_report = false;
 static web_preferences_t saved = {};
 
 const char *esp_err_to_name(esp_err_t e) { return e == ESP_OK ? "ESP_OK" : "ESP_ERR_HTTP_CONNECT"; }
@@ -72,6 +73,15 @@ esp_err_t esp_http_client_perform(esp_http_client_handle_t h) {
             if (cJSON_IsString(cap) && !strcmp(cap->valuestring,"locale")) locale_cap = true;
         }
         assert(locale_cap);
+        cJSON *backlight = cJSON_GetObjectItem(p, "backlight_report");
+        assert((backlight != nullptr) == expect_backlight_report);
+        if (backlight) {
+            assert(cJSON_GetObjectItem(backlight, "version")->valueint == 1);
+            assert(!strcmp(cJSON_GetObjectItem(backlight, "phase")->valuestring, "unknown"));
+            assert(cJSON_IsNull(cJSON_GetObjectItem(backlight, "last_command")));
+            assert(cJSON_IsFalse(cJSON_GetObjectItem(backlight, "output_known")));
+            assert(cJSON_GetObjectItem(backlight, "sample_uptime_ms")->valuedouble == 123000);
+        }
         cJSON_Delete(p);
     }
     esp_http_client_event_t e = {}; e.user_data=h->config.user_data;
@@ -108,6 +118,7 @@ bool web_identity_get(char *out,size_t n) { if(n<33)return false; memcpy(out,dev
 bool web_identity_matches(const char *id) { return id && !strcmp(id,device_id); }
 esp_err_t web_identity_set_http_header(esp_http_client_handle_t h) { return esp_http_client_set_header(h,"X-Device-ID",device_id); }
 bool web_settings_store_load(web_preferences_t *out) { if(!has_saved)return false; *out=saved; return true; }
+brightness_report_t brightness_runtime_report() { brightness_report_t r = {}; r.phase="unknown"; r.error=""; r.sample_uptime_ms=123000; return r; }
 bool brightness_runtime_ready() { return brightness_ready; }
 const char *brightness_runtime_error() { return ""; }
 void brightness_runtime_mark_write_failed() {}
@@ -226,5 +237,24 @@ int main() {
     body=response(); auto pos = body.find("\"screen\":{");
     body.insert(pos + strlen("\"screen\":{"), "\"locale\":\"sr-Cyrl\",");
     assert(!poll(&out));
+    // Learn only from a validated response, then withdraw on server rollback.
+    body = response(); body.insert(1, "\"backlight_report_version\":1,");
+    assert(poll(&out));
+    expect_backlight_report = true;
+    assert(poll(&out));
+    status = 400; assert(!poll(&out)); status = 200;
+    expect_backlight_report = false;
+    body = response(); assert(poll(&out));
+    body.insert(1, "\"backlight_report_version\":1,"); assert(poll(&out));
+    expect_backlight_report = true;
+    body = response(); assert(poll(&out));
+    expect_backlight_report = false; assert(poll(&out));
+    body.insert(1, "\"backlight_report_version\":1,"); assert(poll(&out));
+    // A new credential identifies a new peer and must negotiate from scratch.
+    expected_key = "changed-peer-key";
+    body = response();
+    assert(web_sync_poll("https://bridge.test", expected_key.c_str(), "1.0.34", "boot-test", &out));
+    expected_key = "private-test-key";
+    assert(poll(&out));
     puts("sync client: cold bootstrap, identity, revisions, bounds, TLS diagnostics and OOM passed");
 }

@@ -393,9 +393,44 @@ remain disabled; this session does not write NVS or configure day/night dimming.
 All test controls are absent from the standard build, which remains PlatformIO's
 default. No test write occurs on boot, navigation or a locale change.
 
-The release workflow selects this diagnostic environment only for tag `v1.0.33`.
+The release workflow selects this diagnostic environment only for tags `v1.0.33`
+and `v1.0.34`.
 Other tags use the normal build; CI builds both environments. The diagnostic
 Settings card temporarily replaces the device-status/manual-OTA card. This
 software cannot guarantee restoration during MCU reset/hang, power loss or a
 permanent I2C failure. Rebooting the ESP32 does not prove that the helper MCU's
 PWM has reset. Physical installation requires a fresh device-readiness approval.
+
+### Brighter and night candidates (v1.0.34)
+
+The observer confirmed the v1.0.33 reference experiment: 50 dimmed the screen,
+60 dimmed further, and restoration returned to the level at 50. This verifies
+direction and the reference cycle, not absolute luminance or endpoint calibration.
+After establishing reference 50 again, the diagnostic Settings card offers two
+manual choices: **Brighter: 20 seconds** uses command 40 (I2C byte 102), and
+**Night: 20 seconds** uses command 70 (byte 178). Each restores command 50;
+no sequence of levels starts automatically. A successful restore permits a new
+explicit choice. While a preview or recovery is active, other starts are rejected
+without writes or deadline extension. The normal measured profile and persistent
+day/night dimming remain disabled until the observer evaluates these candidates.
+
+### Negotiated backlight feedback (v1.0.34 candidate)
+
+Firmware records an atomic snapshot of the last successful I²C command and
+whether subsequent failures left the output uncertain. It reports reference,
+preview, restored, unknown, or error together with the last test/return commands
+and monotonic sample/deadline timestamps. After boot the command is unknown
+until an explicit successful write; there is no boot-time brightness write.
+The report acknowledges a command, not measured luminance or calibrated percent.
+
+`backlight_report` is sent only after a validated Bridge response advertises
+`backlight_report_version: 1`. URL/key changes and HTTP 400 reset negotiation;
+older Bridges receive their existing payload. Deploy the compatible Bridge
+first. Snapshot reads share the runtime mutex with writes and restore handling;
+the independent worker still owns the 20-second return even without Wi-Fi.
+
+The web panel exposes fresh status and approximate remaining time, and waits
+for a device report before confirming return. Reports older than 20 seconds,
+failed panel reads, and offline status make the current value unknown. Physical
+40/70 acceptance and measured endpoints remain pending; normal brightness and
+night-dimming capabilities stay disabled until board calibration.

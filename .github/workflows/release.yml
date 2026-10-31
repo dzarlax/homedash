@@ -9,8 +9,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      # Only the explicitly reviewed reference-test release enables these controls.
-      PIO_ENV: ${{ github.ref_name == 'v1.0.33' && 'esp32-s3-touch-lcd-7b-brightness-test' || 'esp32-s3-touch-lcd-7b' }}
+      # Only the explicitly reviewed reference-test releases enable these controls.
+      PIO_ENV: ${{ (github.ref_name == 'v1.0.33' || github.ref_name == 'v1.0.34') && 'esp32-s3-touch-lcd-7b-brightness-test' || 'esp32-s3-touch-lcd-7b' }}
     permissions:
       contents: write
     steps:

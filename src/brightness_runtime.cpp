@@ -40,11 +40,16 @@ static bool recovery_pending = false;
 static brightness_checkpoint_t recovery_checkpoint = {};
 static brightness_reference_phase_t reference_phase = BRIGHTNESS_REFERENCE_IDLE;
 static uint64_t reference_deadline_ms = 0;
+static uint8_t reference_command = 0;
+static bool has_last_command = false, has_report_test = false;
+static uint8_t last_command = 0, report_test_command = 0, report_return_command = 0;
+static uint64_t report_deadline_ms = 0;
 static bool reference_active() {
     return reference_phase != BRIGHTNESS_REFERENCE_IDLE;
 }
 static bool write_pwm(uint8_t pwm, void *) {
     bool ok = IO_EXTENSION_Pwm_Try_Output(pwm) == ESP_OK;
+    if (ok) { last_command = pwm; has_last_command = true; }
     write_failed = !ok;
     output_uncertain = !ok;
     return ok;
@@ -77,7 +82,11 @@ bool brightness_runtime_preview(uint8_t percent) {
     StateLock lock;
     if (!lock || !ready_locked() || state.preview || percent < 10 || percent > 100) return false;
     brightness_checkpoint_t checkpoint = state;
-    if (brightness_preview(&state, percent, (uint64_t)(esp_timer_get_time() / 1000))) return true;
+    if (brightness_preview(&state, percent, (uint64_t)(esp_timer_get_time() / 1000))) {
+        has_report_test = true; report_test_command = state.current;
+        report_return_command = state.restore; report_deadline_ms = state.deadline_ms;
+        return true;
+    }
     // A successful rollback confirms the previous output and clears the
     // transient write error. A failed rollback leaves write_failed set and
     // disables the capability until the output can be confirmed again.
@@ -152,11 +161,11 @@ void brightness_runtime_tick() {
 brightness_reference_status_t brightness_runtime_reference_status() {
     StateLock lock;
     if (!HOMEDASH_BRIGHTNESS_REFERENCE_TEST || !lock || !worker_started)
-        return {BRIGHTNESS_REFERENCE_DISABLED, 0};
+        return {BRIGHTNESS_REFERENCE_DISABLED, 0, 0};
     uint64_t ms = (uint64_t)(esp_timer_get_time() / 1000);
     uint32_t seconds = reference_phase == BRIGHTNESS_REFERENCE_PREVIEW && reference_deadline_ms > ms ?
         (uint32_t)((reference_deadline_ms - ms + 999) / 1000) : 0;
-    return {reference_phase, seconds};
+    return {reference_phase, seconds, reference_command};
 }
 bool brightness_runtime_reference_baseline() {
     StateLock lock;
@@ -167,17 +176,40 @@ bool brightness_runtime_reference_baseline() {
     reference_phase = ok ? BRIGHTNESS_REFERENCE_CONFIRM : BRIGHTNESS_REFERENCE_ERROR;
     return ok;
 }
-bool brightness_runtime_reference_preview() {
+bool brightness_runtime_reference_preview(uint8_t command) {
     StateLock lock;
     if (!HOMEDASH_BRIGHTNESS_REFERENCE_TEST || !lock || !worker_started ||
-        reference_phase != BRIGHTNESS_REFERENCE_CONFIRM || output_uncertain) return false;
+        (reference_phase != BRIGHTNESS_REFERENCE_CONFIRM && reference_phase != BRIGHTNESS_REFERENCE_RESTORED) ||
+        (command != 40 && command != 60 && command != 70) || output_uncertain) return false;
     // An explicit second action confirms that the newly established reference
     // is readable. No measured calibration profile or permanent setting is made.
     reference_deadline_ms = (uint64_t)(esp_timer_get_time() / 1000) + 20000;
-    if (!write_pwm(60, nullptr)) {
+    if (!write_pwm(command, nullptr)) {
         reference_phase = write_pwm(50, nullptr) ? BRIGHTNESS_REFERENCE_RESTORED : BRIGHTNESS_REFERENCE_ERROR;
         return false;
     }
+    has_report_test = true; report_test_command = command; report_return_command = 50;
+    report_deadline_ms = reference_deadline_ms;
+    reference_command = command;
     reference_phase = BRIGHTNESS_REFERENCE_PREVIEW;
     return true;
+}
+
+brightness_report_t brightness_runtime_report() {
+    StateLock lock;
+    brightness_report_t r = {};
+    r.phase = "unknown"; r.error = "";
+    r.sample_uptime_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    if (!lock || !worker_started) return r;
+    r.has_last_command = has_last_command; r.last_command = last_command;
+    r.output_known = has_last_command && !output_uncertain && !recovery_pending;
+    r.has_test = has_report_test; r.test_command = report_test_command;
+    r.return_command = report_return_command; r.restore_deadline_uptime_ms = report_deadline_ms;
+    if (output_uncertain || recovery_pending) { r.phase = "error"; r.error = "write_failed"; }
+    else if (has_last_command) {
+        if (reference_phase == BRIGHTNESS_REFERENCE_PREVIEW || state.preview) r.phase = "preview";
+        else if (reference_phase == BRIGHTNESS_REFERENCE_CONFIRM) r.phase = "reference";
+        else r.phase = has_report_test && last_command == report_return_command ? "restored" : "reference";
+    }
+    return r;
 }
