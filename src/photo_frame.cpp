@@ -403,6 +403,7 @@ static bool allocate_buffers() {
 static void publish(int index, const char *id) {
   if (strcmp(shown_id, id) && current_manifest.scene_context_version != 3) { clear_context(); context_poll = 0; card_retry = 0; }
   if (!overlay) {
+    ui_dashboard_cancel_brightness_test();
     ui_dashboard_hide_sensitive();
     overlay = lv_obj_create(lv_screen_active());
     lv_obj_remove_style_all(overlay);

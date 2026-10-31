@@ -44,6 +44,24 @@ static uint8_t reference_command = 0;
 static bool has_last_command = false, has_report_test = false;
 static uint8_t last_command = 0, report_test_command = 0, report_return_command = 0;
 static uint64_t report_deadline_ms = 0;
+static bool write_pwm(uint8_t pwm, void *);
+static brightness_comparison_t comparison = {};
+static bool session_started = false;
+static uint64_t session_limit_ms = 0;
+static uint64_t reference_now() { return (uint64_t)(esp_timer_get_time() / 1000); }
+static bool reference_restore_locked() {
+    comparison.armed = false;
+    bool ok = write_pwm(50, nullptr);
+    reference_phase = ok ? BRIGHTNESS_REFERENCE_RESTORED : BRIGHTNESS_REFERENCE_ERROR;
+    comparison.historical = ok && comparison.valid;
+    if (!ok) { ++comparison.id; comparison.valid = false; }
+    return ok;
+}
+static bool reference_expire_locked(uint64_t now) {
+    if (reference_phase != BRIGHTNESS_REFERENCE_PREVIEW || now < reference_deadline_ms) return false;
+    reference_restore_locked();
+    return true;
+}
 static bool reference_active() {
     return reference_phase != BRIGHTNESS_REFERENCE_IDLE;
 }
@@ -104,9 +122,7 @@ bool brightness_runtime_restore() {
     StateLock lock;
     if (!lock || !worker_started) return false;
     if (reference_active()) {
-        bool ok = write_pwm(50, nullptr);
-        reference_phase = ok ? BRIGHTNESS_REFERENCE_RESTORED : BRIGHTNESS_REFERENCE_ERROR;
-        return ok;
+        return reference_restore_locked();
     }
     if (recovery_pending) return retry_recovery();
     return brightness_restore(&state);
@@ -148,7 +164,7 @@ void brightness_runtime_tick() {
     if (reference_phase == BRIGHTNESS_REFERENCE_ERROR ||
         (reference_phase == BRIGHTNESS_REFERENCE_PREVIEW &&
          (uint64_t)(esp_timer_get_time() / 1000) >= reference_deadline_ms)) {
-        reference_phase = write_pwm(50, nullptr) ? BRIGHTNESS_REFERENCE_RESTORED : BRIGHTNESS_REFERENCE_ERROR;
+        reference_restore_locked();
         return;
     }
     if (recovery_pending) {
@@ -172,27 +188,76 @@ bool brightness_runtime_reference_baseline() {
     if (!HOMEDASH_BRIGHTNESS_REFERENCE_TEST || !lock || !worker_started || state.ready ||
         recovery_pending || (reference_phase != BRIGHTNESS_REFERENCE_IDLE &&
                              reference_phase != BRIGHTNESS_REFERENCE_RESTORED)) return false;
+    ++comparison.id; comparison.armed = false; comparison.valid = false;
+    comparison.has_previous = false; comparison.historical = false; comparison.step_failed = false;
+    session_started = false;
     bool ok = write_pwm(50, nullptr);
     reference_phase = ok ? BRIGHTNESS_REFERENCE_CONFIRM : BRIGHTNESS_REFERENCE_ERROR;
     return ok;
 }
-bool brightness_runtime_reference_preview(uint8_t command) {
+brightness_comparison_t brightness_runtime_comparison() {
+    StateLock lock;
+    return lock && worker_started && HOMEDASH_BRIGHTNESS_REFERENCE_TEST ? comparison : brightness_comparison_t{};
+}
+bool brightness_runtime_reference_begin() {
     StateLock lock;
     if (!HOMEDASH_BRIGHTNESS_REFERENCE_TEST || !lock || !worker_started ||
-        (reference_phase != BRIGHTNESS_REFERENCE_CONFIRM && reference_phase != BRIGHTNESS_REFERENCE_RESTORED) ||
-        (command != 40 && command != 60 && command != 70) || output_uncertain) return false;
-    // An explicit second action confirms that the newly established reference
-    // is readable. No measured calibration profile or permanent setting is made.
-    reference_deadline_ms = (uint64_t)(esp_timer_get_time() / 1000) + 20000;
-    if (!write_pwm(command, nullptr)) {
-        reference_phase = write_pwm(50, nullptr) ? BRIGHTNESS_REFERENCE_RESTORED : BRIGHTNESS_REFERENCE_ERROR;
+        reference_phase != BRIGHTNESS_REFERENCE_CONFIRM || output_uncertain || comparison.armed) return false;
+    ++comparison.id; comparison.armed = true; comparison.valid = true;
+    comparison.has_previous = false; comparison.current = 50;
+    comparison.historical = false; comparison.step_failed = false;
+    session_started = false;
+    return true;
+}
+bool brightness_runtime_reference_step(uint64_t id, bool brighter, uint8_t step) {
+    StateLock lock;
+    if (!HOMEDASH_BRIGHTNESS_REFERENCE_TEST || !lock || !worker_started) return false;
+    const uint64_t now = reference_now();
+    if (reference_expire_locked(now) || !comparison.armed || !comparison.valid ||
+        comparison.id != id || output_uncertain || (step != 1 && step != 5)) return false;
+    int next = (int)comparison.current + (brighter ? -(int)step : (int)step);
+    if (next < 1) next = 1;
+    if (next > 97) next = 97;
+    if (next == comparison.current) return false;
+    if (!write_pwm((uint8_t)next, nullptr)) {
+        ++comparison.id; comparison.valid = false; comparison.step_failed = true;
+        reference_restore_locked();
         return false;
     }
-    has_report_test = true; report_test_command = command; report_return_command = 50;
-    report_deadline_ms = reference_deadline_ms;
-    reference_command = command;
+    if (!session_started) { session_started = true; session_limit_ms = now + 120000; }
+    uint64_t deadline = now + 20000;
+    if (deadline > session_limit_ms) deadline = session_limit_ms;
+    reference_deadline_ms = deadline;
+    comparison.previous = comparison.current; comparison.current = (uint8_t)next;
+    comparison.has_previous = true; ++comparison.id;
+    has_report_test = true; report_test_command = (uint8_t)next; report_return_command = 50;
+    report_deadline_ms = deadline; reference_command = (uint8_t)next;
     reference_phase = BRIGHTNESS_REFERENCE_PREVIEW;
     return true;
+}
+bool brightness_runtime_reference_mark(uint64_t id, bool previous, bool dark, bool historical) {
+    StateLock lock;
+    if (!HOMEDASH_BRIGHTNESS_REFERENCE_TEST || !lock || !worker_started) return false;
+    reference_expire_locked(reference_now());
+    if (!comparison.valid || comparison.id != id || output_uncertain ||
+        comparison.historical != historical || (previous && !comparison.has_previous)) return false;
+    if (historical ? reference_phase != BRIGHTNESS_REFERENCE_RESTORED : !comparison.armed) return false;
+    uint8_t chosen = previous ? comparison.previous : comparison.current;
+    if (dark) {
+        if (comparison.has_bright && chosen <= comparison.bright) return false;
+        comparison.dark = chosen; comparison.has_dark = true;
+    } else {
+        if (comparison.has_dark && chosen >= comparison.dark) return false;
+        comparison.bright = chosen; comparison.has_bright = true;
+    }
+    return true;
+}
+bool brightness_runtime_reference_end() {
+    StateLock lock;
+    if (!HOMEDASH_BRIGHTNESS_REFERENCE_TEST || !lock || !worker_started) return false;
+    if (reference_phase == BRIGHTNESS_REFERENCE_IDLE || reference_phase == BRIGHTNESS_REFERENCE_RESTORED ||
+        reference_phase == BRIGHTNESS_REFERENCE_DISABLED) return true;
+    return reference_restore_locked();
 }
 
 brightness_report_t brightness_runtime_report() {

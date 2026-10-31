@@ -30,7 +30,7 @@ int main() {
     fail_task_creation = false;
     assert(brightness_runtime_start());
     assert(brightness_runtime_reference_status().phase == BRIGHTNESS_REFERENCE_DISABLED);
-    assert(!brightness_runtime_reference_baseline() && !brightness_runtime_reference_preview() && writes == 0);
+    assert(!brightness_runtime_reference_baseline() && !brightness_runtime_reference_begin() && !brightness_runtime_reference_step(0, true, 5) && writes == 0);
     int created = task_creations;
     assert(brightness_runtime_start() && task_creations == created && writes == 0);
     run_restore_worker_step();

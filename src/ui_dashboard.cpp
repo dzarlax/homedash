@@ -95,7 +95,16 @@ static lv_obj_t *settings_reveal_label = NULL;
 static lv_obj_t *settings_ap_button_label = NULL;
 static lv_obj_t *settings_device_status = NULL;
 static lv_obj_t *settings_reference_status = NULL, *settings_reference_label = NULL;
-static lv_obj_t *settings_reference_button = NULL, *settings_reference_night_button = NULL;
+static lv_obj_t *settings_reference_button = NULL, *settings_reference_panel = NULL;
+static lv_obj_t *settings_comparison_label = NULL, *settings_result_label = NULL;
+static lv_obj_t *settings_step_buttons[2] = {}, *settings_mark_buttons[2] = {};
+static lv_obj_t *settings_step_labels[2] = {}, *settings_mark_labels[2] = {};
+static lv_obj_t *settings_step_size_label = NULL, *settings_target_label = NULL;
+static uint8_t settings_step_size = 5;
+static bool settings_dark_target = false;
+static brightness_comparison_t settings_rendered_comparison = {};
+struct calibration_action_t { uint64_t id; bool historical, dark; uint8_t step; };
+static calibration_action_t calibration_actions[4] = {};
 static void refresh_reference_test();
 static char settings_qr_url[192] = {};
 static int64_t settings_reveal_until_us = 0;
@@ -411,7 +420,7 @@ bool ui_dashboard_apply_brightness(const web_preferences_t *prefs) {
 }
 
 static void set_screen_off(bool off) {
-    if (off) ui_dashboard_hide_sensitive();
+    if (off) { ui_dashboard_cancel_brightness_test(); ui_dashboard_hide_sensitive(); }
     if (ui_screen_off == off) return;
     ui_screen_off = off;
     if (off) wavesahre_rgb_lcd_bl_off();
@@ -669,6 +678,7 @@ static void nav_click_cb(lv_event_t *e)
 
     lv_obj_t *target = (lv_obj_t *)lv_event_get_user_data(e);
     if (target) {
+        ui_dashboard_cancel_brightness_test();
         ui_dashboard_hide_sensitive();
         lv_tileview_set_tile(tileview, target, LV_ANIM_ON);
     }
@@ -1056,8 +1066,8 @@ void ui_dashboard_create(void)
     lv_obj_t *tile2 = lv_tileview_add_tile(tileview, 1, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
     lv_obj_t *tile3 = lv_tileview_add_tile(tileview, 2, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
     lv_obj_t *tile4 = lv_tileview_add_tile(tileview, 3, 0, (lv_dir_t)LV_DIR_LEFT);
-    lv_obj_add_event_cb(tileview, [](lv_event_t *) { ui_dashboard_hide_sensitive(); }, LV_EVENT_VALUE_CHANGED, nullptr);
-    lv_obj_add_event_cb(tileview, [](lv_event_t *) { ui_dashboard_hide_sensitive(); }, LV_EVENT_SCROLL_BEGIN, nullptr);
+    lv_obj_add_event_cb(tileview, [](lv_event_t *) { ui_dashboard_cancel_brightness_test(); ui_dashboard_hide_sensitive(); }, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(tileview, [](lv_event_t *) { ui_dashboard_cancel_brightness_test(); ui_dashboard_hide_sensitive(); }, LV_EVENT_SCROLL_BEGIN, nullptr);
     nav_tiles[0] = tile1;
     nav_tiles[1] = tile2;
     nav_tiles[2] = tile3;
@@ -2331,6 +2341,7 @@ void ui_dashboard_hide_sensitive(void)
 
 static void settings_privacy_tick(lv_timer_t *)
 {
+    if (!settings_is_active() || ui_screen_off) ui_dashboard_cancel_brightness_test();
     if (settings_is_active()) refresh_reference_test();
     if (settings_reveal_until_us && (!settings_is_active() || ui_screen_off ||
         esp_timer_get_time() >= settings_reveal_until_us)) ui_dashboard_hide_sensitive();
@@ -2414,60 +2425,101 @@ static void refresh_settings(void)
     refresh_reference_test();
 }
 
+void ui_dashboard_cancel_brightness_test(void) {
+    if (!settings_reference_panel || lv_obj_has_flag(settings_reference_panel, LV_OBJ_FLAG_HIDDEN)) return;
+    brightness_runtime_reference_end();
+    lv_obj_add_flag(settings_reference_panel, LV_OBJ_FLAG_HIDDEN);
+}
+static void reference_close_cb(lv_event_t *) { ui_dashboard_cancel_brightness_test(); }
+static void reference_open_cb(lv_event_t *) {
+    if (!settings_reference_panel) return;
+    ui_dashboard_hide_sensitive();
+    lv_obj_clear_flag(settings_reference_panel, LV_OBJ_FLAG_HIDDEN);
+    refresh_reference_test();
+}
+static void enable_calibration_button(lv_obj_t *button, bool enabled) {
+    lv_obj_set_style_opa(button, enabled ? LV_OPA_COVER : LV_OPA_50, 0);
+    if (enabled) lv_obj_remove_state(button, LV_STATE_DISABLED);
+    else lv_obj_add_state(button, LV_STATE_DISABLED);
+}
 static void refresh_reference_test()
 {
     if (!settings_reference_status) return;
     auto status = brightness_runtime_reference_status();
-    const bool choices = status.phase == BRIGHTNESS_REFERENCE_CONFIRM || status.phase == BRIGHTNESS_REFERENCE_RESTORED;
-    if (choices) lv_obj_clear_flag(settings_reference_night_button, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(settings_reference_night_button, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_y(settings_reference_button, choices ? 48 : 64);
-    const char *message = "Установит новую исходную яркость, не прежнюю.";
-    const char *button = "Установить исходную";
-    switch (status.phase) {
-    case BRIGHTNESS_REFERENCE_DISABLED: message = "Тест подсветки недоступен"; break;
-    case BRIGHTNESS_REFERENCE_CONFIRM:
-        message = "Экран читается? Выберите уровень теста.";
-        button = "Ярче: 20 секунд"; break;
-    case BRIGHTNESS_REFERENCE_PREVIEW: {
-        char remaining[128];
-        const char *key = status.test_command == 40 ? "Ярче. Возврат через %u с" :
-            status.test_command == 70 ? "Ночной. Возврат через %u с" : "Возврат к исходной через %u с";
-        snprintf(remaining, sizeof(remaining), ui_text(key), (unsigned)status.remaining_seconds);
-        lv_label_set_text(settings_reference_status, remaining);
-        set_static_ui_label(settings_reference_label, "Вернуть сейчас");
-        return;
-    }
-    case BRIGHTNESS_REFERENCE_RESTORED:
-        message = "Команда возврата выполнена. Проверьте яркость.";
-        button = "Ярче: 20 секунд"; break;
-    case BRIGHTNESS_REFERENCE_ERROR:
-        message = "Ошибка возврата. Новые тесты заблокированы.";
-        button = "Вернуть сейчас"; break;
-    default: break;
-    }
+    auto c = brightness_runtime_comparison();
+    settings_rendered_comparison = c;
+    char text[256];
+    const char *message = "Начните с исходной 50. Команды — не проценты.";
+    const char *button = "Начать: исходная 50";
+    if (status.phase == BRIGHTNESS_REFERENCE_DISABLED) {
+        message = "Тест подсветки недоступен";
+    } else if (status.phase == BRIGHTNESS_REFERENCE_CONFIRM && !c.armed) {
+        message = "Исходная 50 установлена. Экран читается?";
+        button = "Экран читается — начать";
+    } else if (status.phase == BRIGHTNESS_REFERENCE_ERROR) {
+        message = "Ошибка возврата. Новые тесты заблокированы."; button = "Вернуть сейчас";
+    } else if (c.armed) {
+        snprintf(text, sizeof(text), ui_text("Сейчас %u. Возврат на 50 через %u с."), (unsigned)c.current, (unsigned)status.remaining_seconds);
+        message = text; button = "Вернуть 50";
+        if (status.phase == BRIGHTNESS_REFERENCE_CONFIRM) message = "Выберите шаг. Возврат — через 20 с после нажатия.";
+    } else if (c.historical) {
+        message = "Возвращено 50. Ниже — сравнение завершённого теста.";
+    } else if (c.step_failed) message = "Ошибка шага. Сравнение отменено. Начните заново.";
     lv_label_set_text(settings_reference_status, ui_text(message));
     set_static_ui_label(settings_reference_label, button);
+    enable_calibration_button(settings_reference_button, status.phase != BRIGHTNESS_REFERENCE_DISABLED);
+    if (c.valid) {
+        if (c.has_previous) snprintf(text, sizeof(text), ui_text("Предыдущий: %u · Тест: %u"), (unsigned)c.previous, (unsigned)c.current);
+        else snprintf(text, sizeof(text), ui_text("Текущий уровень: %u. Предыдущего нет."), (unsigned)c.current);
+    } else snprintf(text, sizeof(text), "%s", ui_text("Сравнение ещё не начато"));
+    lv_label_set_text(settings_comparison_label, text);
+    char bright[8] = "—", dark[8] = "—";
+    if (c.has_bright) snprintf(bright, sizeof(bright), "%u", (unsigned)c.bright);
+    if (c.has_dark) snprintf(dark, sizeof(dark), "%u", (unsigned)c.dark);
+    snprintf(text, sizeof(text), ui_text("Выбрано · яркий: %s · тёмный: %s"), bright, dark);
+    lv_label_set_text(settings_result_label, text);
+    snprintf(text, sizeof(text), ui_text("Шаг: %u (нажмите для смены)"), (unsigned)settings_step_size);
+    lv_label_set_text(settings_step_size_label, text);
+    set_static_ui_label(settings_target_label, settings_dark_target ? "Выбираем тёмный уровень" : "Выбираем яркий уровень");
+    for (int i = 0; i < 2; ++i) {
+        enable_calibration_button(settings_step_buttons[i], c.armed && (i == 0 ? c.current > 1 : c.current < 97));
+        uint8_t chosen = i == 0 ? c.previous : c.current;
+        bool order = settings_dark_target ? (!c.has_bright || chosen > c.bright) : (!c.has_dark || chosen < c.dark);
+        enable_calibration_button(settings_mark_buttons[i], c.valid && (c.armed || c.historical) && (i != 0 || c.has_previous) && order);
+    }
+    const char *previous_key = settings_dark_target ? "Слишком темно — выбрать %u" : "Разницы нет — выбрать %u";
+    if (c.has_previous) snprintf(text, sizeof(text), ui_text(previous_key), (unsigned)c.previous);
+    else snprintf(text, sizeof(text), "%s", ui_text("Предыдущего уровня нет"));
+    lv_label_set_text(settings_mark_labels[0], text);
+    if (c.valid) snprintf(text, sizeof(text), ui_text("Этот подходит — выбрать %u"), (unsigned)c.current);
+    else snprintf(text, sizeof(text), "%s", ui_text("Сначала начните сравнение"));
+    lv_label_set_text(settings_mark_labels[1], text);
 }
-static void reference_test_cb(lv_event_t *)
-{
+static void reference_test_cb(lv_event_t *) {
     auto status = brightness_runtime_reference_status();
-    if (status.phase == BRIGHTNESS_REFERENCE_IDLE)
+    auto c = brightness_runtime_comparison();
+    if (status.phase == BRIGHTNESS_REFERENCE_IDLE || status.phase == BRIGHTNESS_REFERENCE_RESTORED)
         brightness_runtime_reference_baseline();
-    else if (status.phase == BRIGHTNESS_REFERENCE_CONFIRM || status.phase == BRIGHTNESS_REFERENCE_RESTORED)
-        brightness_runtime_reference_preview(40);
-    else if (status.phase == BRIGHTNESS_REFERENCE_PREVIEW || status.phase == BRIGHTNESS_REFERENCE_ERROR)
-        brightness_runtime_restore();
+    else if (status.phase == BRIGHTNESS_REFERENCE_CONFIRM && !c.armed)
+        brightness_runtime_reference_begin();
+    else brightness_runtime_reference_end();
     refresh_reference_test();
 }
-
-static void reference_night_cb(lv_event_t *)
-{
-    auto status = brightness_runtime_reference_status();
-    if (status.phase == BRIGHTNESS_REFERENCE_CONFIRM || status.phase == BRIGHTNESS_REFERENCE_RESTORED)
-        brightness_runtime_reference_preview(70);
+static void reference_choice_cb(lv_event_t *event) {
+    int index = (int)(intptr_t)lv_event_get_user_data(event);
+    auto &action = calibration_actions[index];
+    if (lv_event_get_code(event) == LV_EVENT_PRESSED) {
+        action = {settings_rendered_comparison.id, settings_rendered_comparison.historical,
+                  settings_dark_target, settings_step_size};
+        return;
+    }
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    if (index < 2) brightness_runtime_reference_step(action.id, index == 0, action.step);
+    else brightness_runtime_reference_mark(action.id, index == 2, action.dark, action.historical);
     refresh_reference_test();
 }
+static void reference_step_size_cb(lv_event_t *) { settings_step_size = settings_step_size == 5 ? 1 : 5; refresh_reference_test(); }
+static void reference_target_cb(lv_event_t *) { settings_dark_target = !settings_dark_target; refresh_reference_test(); }
 
 static void reveal_password_cb(lv_event_t *)
 {
@@ -2544,10 +2596,31 @@ static void create_settings_page(lv_obj_t *tile)
     lv_obj_t *system = make_card(tile, 14, 364, 996, 160);
     if (HOMEDASH_BRIGHTNESS_REFERENCE_TEST) {
         settings_text(system, 16, 12, 930, 28, "Тест подсветки", true);
-        settings_reference_status = settings_text(system, 16, 54, 570, 86, "");
-        settings_reference_button = settings_button(system, 620, 64, 350, "Установить исходную", reference_test_cb, &settings_reference_label);
-        settings_reference_night_button = settings_button(system, 620, 102, 350, "Ночной: 20 секунд", reference_night_cb);
-        lv_obj_add_flag(settings_reference_night_button, LV_OBJ_FLAG_HIDDEN);
+        settings_text(system, 16, 54, 570, 80, "Пошаговый подбор с возвратом на 50");
+        settings_button(system, 620, 46, 350, "Подбор подсветки", reference_open_cb);
+        settings_button(system, 620, 100, 350, "Проверить обновление", ota_btn_cb);
+        settings_reference_panel = make_card(tile, 14, 8, 996, 516);
+        lv_obj_clear_flag(settings_reference_panel, LV_OBJ_FLAG_SCROLLABLE);
+        settings_text(settings_reference_panel, 20, 12, 750, 36, "Подбор подсветки", true);
+        settings_button(settings_reference_panel, 814, 10, 156, "Назад", reference_close_cb);
+        settings_reference_status = settings_text(settings_reference_panel, 20, 66, 950, 48, "");
+        settings_comparison_label = settings_text(settings_reference_panel, 20, 116, 950, 36, "", true);
+        settings_result_label = settings_text(settings_reference_panel, 20, 160, 950, 24, "");
+        settings_button(settings_reference_panel, 20, 192, 462, "", reference_step_size_cb, &settings_step_size_label);
+        settings_button(settings_reference_panel, 508, 192, 462, "", reference_target_cb, &settings_target_label);
+        for (int i = 0; i < 4; ++i) {
+            lv_obj_t *label;
+            lv_obj_t *button = settings_button(settings_reference_panel, i < 2 ? 20 + i * 488 : 20,
+                i < 2 ? 250 : 308 + (i-2)*54, i < 2 ? 462 : 950, i == 0 ? "Ярче" : i == 1 ? "Темнее" : "", reference_choice_cb, &label);
+            lv_obj_remove_event_cb(button, reference_choice_cb);
+            lv_obj_add_event_cb(button, reference_choice_cb, LV_EVENT_PRESSED, (void *)(intptr_t)i);
+            lv_obj_add_event_cb(button, reference_choice_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            if (i < 2) { settings_step_buttons[i] = button; settings_step_labels[i] = label; }
+            else { settings_mark_buttons[i-2] = button; settings_mark_labels[i-2] = label; }
+        }
+        settings_reference_button = settings_button(settings_reference_panel, 20, 424, 950, "", reference_test_cb, &settings_reference_label);
+        settings_text(settings_reference_panel, 20, 480, 950, 24, "20 с без нажатий · сессия до 2 минут · выбор до перезагрузки");
+        lv_obj_add_flag(settings_reference_panel, LV_OBJ_FLAG_HIDDEN);
     } else {
         settings_text(system, 16, 12, 930, 28, "Устройство", true);
         settings_device_status = settings_text(system, 16, 54, 570, 80, "");
