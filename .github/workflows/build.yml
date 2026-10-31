@@ -43,6 +43,11 @@ jobs:
       - name: Build firmware
         run: pio run -e "$PIO_ENV"
 
+      - name: Check RGB cache guard
+        run: |
+          python -m unittest discover -s tools -p "test_check_rgb_cache.py"
+          python tools/check_rgb_cache.py --config ".pio/build/$PIO_ENV/config/sdkconfig.h"
+
       - name: Check network memory configuration
         run: |
           python tools/check_network_stack.py --build ".pio/build/$PIO_ENV"
