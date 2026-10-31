@@ -308,7 +308,12 @@ Home favorites are implemented with a maximum of four entries and a
 versioned preferences sidecar; they share the existing action tracker. Brightness control is not available by default and unsupported brightness settings are
 rejected instead of acknowledged. The nonfatal PWM driver serializes access to the
 expander and caps raw PWM at 97; the tested preview controller restores its saved
-baseline after 20 seconds using a local monotonic timer. No boot path configures it.
+baseline at a 20-second monotonic deadline. A dedicated FreeRTOS worker checks
+that deadline every 100 ms without LVGL or network access; startup creates the
+worker but does not apply a brightness profile or write PWM. A failed worker
+startup leaves brightness disabled. Controller state and I2C writes are serialized.
+Another preview is rejected until restoration succeeds, so repeated commands
+cannot extend the deadline or replace the original level.
 
 Physical validation requires separate device readiness and flashing approval. First
 confirm a trustworthy readback or independently established current raw PWM without
@@ -349,5 +354,48 @@ calibration. The software accepts a versioned measured profile and a known
 baseline; no profile values are inferred from the board model. See
 [the calibration checklist](docs/brightness-calibration-checklist.md). Applying a
 profile alone performs no PWM write. Preview restoration runs locally without
-requiring network access. These changes require a new firmware installation;
+requiring network access or a responsive UI. Manual restore and automatic retry
+share the same lock. The deadline is subject to task scheduling and I2C latency;
+it does not guarantee physical restoration during MCU hangs, bus failure, or loss
+of power. An I2C success confirms command delivery, not measured luminance.
+These changes require a new firmware installation;
 source availability does not mean that an existing display has been updated.
+
+Run `make -C sim test-brightness` for controller/driver/runtime checks and a
+concurrent preview/restore test. The runtime tests execute the restore task entry
+without LVGL or network code, including failed task startup, an unknown baseline,
+the exact deadline, failed restoration and retry. Test profiles are synthetic;
+their values must never be copied into a physical-board profile. Vendor demo
+initialization at PWM command 50 does not establish the display's current value.
+
+### Explicit reference test (v1.0.33 diagnostic release)
+
+The owner approved establishing a **new** reference with driver command 50,
+then testing 60 for 20 seconds and returning to 50. This does not preserve the
+unknown previous brightness and is not a measured 10–100% calibration.
+The commands encode I2C bytes 127 and 153. The 7B PWM path is inverted according
+to the [ESPHome board example](https://esphome.io/components/waveshare_io_ch32v003/);
+optical behavior on the physical display still needs acceptance.
+
+Build the opt-in diagnostic firmware with:
+
+```sh
+pio run -e esp32-s3-touch-lcd-7b-brightness-test
+make -C sim test-brightness test-brightness-reference-ui test-settings-tab
+```
+
+In Settings, **Set reference level** writes only command 50. Observe the screen,
+then press **Screen readable: test** to start command 60. A countdown appears;
+**Restore now** ends the test early. The independent worker returns to 50 at the
+20-second deadline. A failed write triggers recovery to 50 and blocks new tests
+until the recovery write succeeds. The normal calibrated brightness capabilities
+remain disabled; this session does not write NVS or configure day/night dimming.
+All test controls are absent from the standard build, which remains PlatformIO's
+default. No test write occurs on boot, navigation or a locale change.
+
+The release workflow selects this diagnostic environment only for tag `v1.0.33`.
+Other tags use the normal build; CI builds both environments. The diagnostic
+Settings card temporarily replaces the device-status/manual-OTA card. This
+software cannot guarantee restoration during MCU reset/hang, power loss or a
+permanent I2C failure. Rebooting the ESP32 does not prove that the helper MCU's
+PWM has reset. Physical installation requires a fresh device-readiness approval.

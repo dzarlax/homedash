@@ -93,14 +93,12 @@ static void run_web_command(const web_command_t *command, const device_config_t 
             succeeded = true;
         }
     } else if (!strcmp(command->action, "backlight_preview") || !strcmp(command->action, "backlight_restore")) {
-        bool ready = false;
-        if (lvgl_port_lock(-1)) {
-            ready = brightness_runtime_ready();
-            if (ready) succeeded = !strcmp(command->action, "backlight_preview") ?
-                brightness_runtime_preview(command->percent) : brightness_runtime_restore();
-            lvgl_port_unlock();
-        }
-        if (!succeeded) error = ready ? "device_error" : "unsupported_action";
+        // Runtime serializes with the restore worker; recovery must not wait
+        // for LVGL, nor be rejected solely because a prior write failed.
+        bool ready = brightness_runtime_ready();
+        succeeded = !strcmp(command->action, "backlight_preview") ?
+            brightness_runtime_preview(command->percent) : brightness_runtime_restore();
+        if (!succeeded) error = ready || brightness_runtime_error()[0] ? "device_error" : "unsupported_action";
     } else if (!strcmp(command->action, "ota_check")) {
         bool available = false;
         succeeded = ota_check_available(&available);
@@ -702,6 +700,8 @@ extern "C" void app_main(void)
     tp_handle = touch_gt911_init();
     panel_handle = waveshare_esp32_s3_rgb_lcd_init();
     wavesahre_rgb_lcd_bl_on();
+    // Failure leaves brightness unavailable; display operation continues.
+    if (!brightness_runtime_start()) ESP_LOGW(TAG, "Brightness restore worker unavailable");
     ESP_ERROR_CHECK(lvgl_port_init(panel_handle, tp_handle));
 
     // 2. Create dashboard UI

@@ -21,8 +21,8 @@ bool brightness_set(brightness_controller_t *b, uint8_t percent) {
     b->current = pwm; return true;
 }
 bool brightness_preview(brightness_controller_t *b, uint8_t percent, uint64_t now_ms) {
-    if (!b || !b->ready || percent < 10 || percent > 100 || now_ms > UINT64_MAX - 20000) return false;
-    uint8_t old = b->preview ? b->restore : b->current;
+    if (!b || !b->ready || b->preview || percent < 10 || percent > 100 || now_ms > UINT64_MAX - 20000) return false;
+    uint8_t old = b->current;
     uint8_t pwm = mapped(b, percent);
     if (!b->write(pwm, b->context)) return false;
     b->restore = old; b->current = pwm; b->preview = true; b->deadline_ms = now_ms + 20000;

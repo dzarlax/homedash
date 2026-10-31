@@ -94,6 +94,8 @@ static lv_obj_t *settings_reveal_btn = NULL;
 static lv_obj_t *settings_reveal_label = NULL;
 static lv_obj_t *settings_ap_button_label = NULL;
 static lv_obj_t *settings_device_status = NULL;
+static lv_obj_t *settings_reference_status = NULL, *settings_reference_label = NULL;
+static void refresh_reference_test();
 static char settings_qr_url[192] = {};
 static int64_t settings_reveal_until_us = 0;
 static void refresh_settings(void);
@@ -2269,7 +2271,6 @@ static lv_color_t feedback_color(const action_record_t *record)
 }
 static void home_feedback_tick(lv_timer_t *)
 {
-    brightness_runtime_tick(); // local LVGL timer continues independently of network activity
     uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
     home_action_tick();
     if (home_temp_proposed && now >= home_temp_due_ms) {
@@ -2329,6 +2330,7 @@ void ui_dashboard_hide_sensitive(void)
 
 static void settings_privacy_tick(lv_timer_t *)
 {
+    if (settings_is_active()) refresh_reference_test();
     if (settings_reveal_until_us && (!settings_is_active() || ui_screen_off ||
         esp_timer_get_time() >= settings_reveal_until_us)) ui_dashboard_hide_sensitive();
 }
@@ -2407,7 +2409,49 @@ static void refresh_settings(void)
     snprintf(status, sizeof(status), ui_text("Wi-Fi: %s\nBridge: %s"),
              ui_text(wifi_is_connected() ? "Подключён" : "Нет связи"),
              ui_text(bridge_online ? "На связи" : "Нет связи"));
-    lv_label_set_text(settings_device_status, status);
+    if (settings_device_status) lv_label_set_text(settings_device_status, status);
+    refresh_reference_test();
+}
+
+static void refresh_reference_test()
+{
+    if (!settings_reference_status) return;
+    auto status = brightness_runtime_reference_status();
+    const char *message = "Установит новую исходную яркость, не прежнюю.";
+    const char *button = "Установить исходную";
+    switch (status.phase) {
+    case BRIGHTNESS_REFERENCE_DISABLED: message = "Тест подсветки недоступен"; break;
+    case BRIGHTNESS_REFERENCE_CONFIRM:
+        message = "Экран читается? Подтвердите тест на 20 секунд.";
+        button = "Экран читается: тест"; break;
+    case BRIGHTNESS_REFERENCE_PREVIEW: {
+        char remaining[128];
+        snprintf(remaining, sizeof(remaining), ui_text("Возврат к исходной через %u с"), (unsigned)status.remaining_seconds);
+        lv_label_set_text(settings_reference_status, remaining);
+        set_static_ui_label(settings_reference_label, "Вернуть сейчас");
+        return;
+    }
+    case BRIGHTNESS_REFERENCE_RESTORED:
+        message = "Команда возврата выполнена. Проверьте яркость.";
+        button = "Повторить тест"; break;
+    case BRIGHTNESS_REFERENCE_ERROR:
+        message = "Ошибка возврата. Новые тесты заблокированы.";
+        button = "Вернуть сейчас"; break;
+    default: break;
+    }
+    lv_label_set_text(settings_reference_status, ui_text(message));
+    set_static_ui_label(settings_reference_label, button);
+}
+static void reference_test_cb(lv_event_t *)
+{
+    auto status = brightness_runtime_reference_status();
+    if (status.phase == BRIGHTNESS_REFERENCE_IDLE || status.phase == BRIGHTNESS_REFERENCE_RESTORED)
+        brightness_runtime_reference_baseline();
+    else if (status.phase == BRIGHTNESS_REFERENCE_CONFIRM)
+        brightness_runtime_reference_preview();
+    else if (status.phase == BRIGHTNESS_REFERENCE_PREVIEW || status.phase == BRIGHTNESS_REFERENCE_ERROR)
+        brightness_runtime_restore();
+    refresh_reference_test();
 }
 
 static void reveal_password_cb(lv_event_t *)
@@ -2483,9 +2527,15 @@ static void create_settings_page(lv_obj_t *tile)
     settings_ap_help = settings_text(local, 16, 214, 470, 44, "");
 
     lv_obj_t *system = make_card(tile, 14, 364, 996, 160);
-    settings_text(system, 16, 12, 930, 28, "Устройство", true);
-    settings_device_status = settings_text(system, 16, 54, 570, 80, "");
-    settings_button(system, 620, 64, 350, "Проверить обновление", ota_btn_cb);
+    if (HOMEDASH_BRIGHTNESS_REFERENCE_TEST) {
+        settings_text(system, 16, 12, 930, 28, "Тест подсветки", true);
+        settings_reference_status = settings_text(system, 16, 54, 570, 86, "");
+        settings_button(system, 620, 64, 350, "Установить исходную", reference_test_cb, &settings_reference_label);
+    } else {
+        settings_text(system, 16, 12, 930, 28, "Устройство", true);
+        settings_device_status = settings_text(system, 16, 54, 570, 80, "");
+        settings_button(system, 620, 64, 350, "Проверить обновление", ota_btn_cb);
+    }
     ui_dashboard_hide_sensitive();
     refresh_settings();
 }

@@ -26,6 +26,11 @@ bool brightness_runtime_checkpoint(brightness_checkpoint_t *) { return false; }
 bool brightness_runtime_rollback(const brightness_checkpoint_t *) { return false; }
 bool brightness_runtime_schedule(uint8_t, uint8_t, bool, bool) { return false; }
 void brightness_runtime_tick() {}
+#ifndef BRIGHTNESS_REFERENCE_UI_TEST
+brightness_reference_status_t brightness_runtime_reference_status() { return {BRIGHTNESS_REFERENCE_DISABLED, 0}; }
+bool brightness_runtime_reference_baseline() { return false; }
+bool brightness_runtime_reference_preview() { return false; }
+#endif
 #include "action_feedback_runtime.h"
 #include "../src/action_feedback.cpp"
 #include "esp_timer.h"

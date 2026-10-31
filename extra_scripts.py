@@ -8,7 +8,7 @@ import os, glob
 
 LVGL_SRC = os.path.join(
     env.get("PROJECT_LIBDEPS_DIR", ".pio/libdeps"),
-    "esp32-s3-touch-lcd-7b",
+    env.subst("$PIOENV"),
     "lvgl", "src"
 )
 

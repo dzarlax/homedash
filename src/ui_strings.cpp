@@ -7,6 +7,17 @@ struct entry_t { const char *ru; const char *en; const char *sr; };
 // Keep the Russian key as the stable source string so existing call sites are
 // easy to compare with the former Russian-only UI.
 static const entry_t STRINGS[] = {
+    {"Тест подсветки", "Backlight test", "Test osvetljenja"},
+    {"Установить исходную", "Set reference level", "Postavi početni nivo"},
+    {"Установит новую исходную яркость, не прежнюю.", "Sets a new reference brightness, not the previous level.", "Postavlja novi početni nivo osvetljenja, ne prethodni."},
+    {"Тест подсветки недоступен", "Backlight test unavailable", "Test osvetljenja nije dostupan"},
+    {"Экран читается? Подтвердите тест на 20 секунд.", "Is the screen readable? Confirm the 20-second test.", "Da li je ekran čitljiv? Potvrdite test od 20 sekundi."},
+    {"Экран читается: тест", "Screen readable: test", "Ekran je čitljiv: test"},
+    {"Возврат к исходной через %u с", "Restoring reference in %u s", "Povratak na početni nivo za %u s"},
+    {"Вернуть сейчас", "Restore now", "Vrati sada"},
+    {"Команда возврата выполнена. Проверьте яркость.", "Restore command completed. Check brightness.", "Komanda vraćanja je izvršena. Proverite osvetljenje."},
+    {"Повторить тест", "Repeat test", "Ponovi test"},
+    {"Ошибка возврата. Новые тесты заблокированы.", "Restore failed. New tests are blocked.", "Vraćanje nije uspelo. Novi testovi su blokirani."},
     {"Неполное расписание", "Partial schedule", "Nepotpun raspored"},
     {"Часть календарей недоступна", "Some calendars unavailable", "Neki kalendari nisu dostupni"},
     {"Часть календарей недоступна · %d мин назад", "Some calendars unavailable · received %d min ago", "Neki kalendari nisu dostupni · primljeno pre %d min"},

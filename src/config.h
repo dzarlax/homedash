@@ -1,7 +1,11 @@
 #pragma once
 
 // --- Firmware version (bump before each release) ---
-#define FW_VERSION  "1.0.32"
+#define FW_VERSION  "1.0.33"
+
+#ifndef HOMEDASH_BRIGHTNESS_REFERENCE_TEST
+#define HOMEDASH_BRIGHTNESS_REFERENCE_TEST 0
+#endif
 
 // --- Location ---
 #define WEATHER_CITY "Belgrade"

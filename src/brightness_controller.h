@@ -14,6 +14,7 @@ struct brightness_controller_t {
 bool brightness_init(brightness_controller_t *b, brightness_write_fn write, void *context,
                      uint8_t pwm_at_10, uint8_t pwm_at_100, uint8_t baseline);
 bool brightness_set(brightness_controller_t *b, uint8_t percent);
+// Reject another preview until restore succeeds; never extend its deadline.
 bool brightness_preview(brightness_controller_t *b, uint8_t percent, uint64_t now_ms);
 bool brightness_restore(brightness_controller_t *b);
 bool brightness_tick(brightness_controller_t *b, uint64_t now_ms);

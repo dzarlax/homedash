@@ -18,6 +18,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pio_env: [esp32-s3-touch-lcd-7b, esp32-s3-touch-lcd-7b-brightness-test]
+    env:
+      PIO_ENV: ${{ matrix.pio_env }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,15 +41,15 @@ jobs:
         run: pip install platformio
 
       - name: Build firmware
-        run: pio run
+        run: pio run -e "$PIO_ENV"
 
       - name: Check network memory configuration
         run: |
-          python tools/check_network_stack.py
-          python tools/check_tls_memory.py
+          python tools/check_network_stack.py --build ".pio/build/$PIO_ENV"
+          python tools/check_tls_memory.py --config ".pio/build/$PIO_ENV/config/sdkconfig.h"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firmware
-          path: .pio/build/esp32-s3-touch-lcd-7b/firmware.bin
+          name: firmware-${{ matrix.pio_env }}
+          path: .pio/build/${{ env.PIO_ENV }}/firmware.bin
