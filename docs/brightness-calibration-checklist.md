@@ -51,3 +51,20 @@ Do not mark `baseline_verified` or measured endpoints from documentation or
 consent alone. The reference is physically established only after the device
 executes the write and the observer confirms the screen. The standard build
 keeps the experiment disabled. No automatic test begins at boot.
+
+## Approved manual comparison workflow (v1.0.35 candidate)
+
+The owner approved plan revision 2 on 2026-10-31 for a local, manually stepped
+diagnostic session inside command bounds 1…97, reference 50, step 5 or 1,
+20-second inactivity return and fixed two-minute session cap. This is an
+explicitly scoped diagnostic exception to the general no-sweep guidance above;
+automatic or unattended sweeps remain excluded. The owner observed that 40 is
+brighter and 70 is comfortable at night, and v1.0.34 telemetry confirmed both
+returns to 50. These observations are not measured endpoints or a complete
+board calibration, and the physical board revision is still unconfirmed.
+
+A human marks the previous or current candidate by comparison ID. Record a
+perceived plateau or readable level as an observation, not measured luminance.
+The last transmitted PWM and the chosen endpoint are separate values. Pending
+physical acceptance, standard brightness and automatic night dimming remain
+disabled. Publishing/flashing this candidate still needs separate permission.

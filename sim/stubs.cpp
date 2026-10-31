@@ -30,7 +30,11 @@ brightness_report_t brightness_runtime_report() { brightness_report_t r = {}; r.
 #ifndef BRIGHTNESS_REFERENCE_UI_TEST
 brightness_reference_status_t brightness_runtime_reference_status() { return {BRIGHTNESS_REFERENCE_DISABLED, 0}; }
 bool brightness_runtime_reference_baseline() { return false; }
-bool brightness_runtime_reference_preview(uint8_t) { return false; }
+brightness_comparison_t brightness_runtime_comparison() { return {}; }
+bool brightness_runtime_reference_begin() { return false; }
+bool brightness_runtime_reference_step(uint64_t, bool, uint8_t) { return false; }
+bool brightness_runtime_reference_mark(uint64_t, bool, bool, bool) { return false; }
+bool brightness_runtime_reference_end() { return false; }
 #endif
 #include "action_feedback_runtime.h"
 #include "../src/action_feedback.cpp"

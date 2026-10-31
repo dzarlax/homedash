@@ -22,14 +22,26 @@ bool brightness_runtime_schedule(uint8_t day, uint8_t night, bool is_night, bool
 void brightness_runtime_tick();
 
 // Explicit diagnostic levels, available only in the dedicated test build.
-// Reference 50; selectable commands 40/60/70 are not luminance percentages.
+// Reference 50; diagnostic commands 1..97 are not luminance percentages.
 enum brightness_reference_phase_t { BRIGHTNESS_REFERENCE_DISABLED, BRIGHTNESS_REFERENCE_IDLE,
     BRIGHTNESS_REFERENCE_CONFIRM, BRIGHTNESS_REFERENCE_PREVIEW,
     BRIGHTNESS_REFERENCE_RESTORED, BRIGHTNESS_REFERENCE_ERROR };
 struct brightness_reference_status_t { brightness_reference_phase_t phase; uint32_t remaining_seconds; uint8_t test_command; };
 brightness_reference_status_t brightness_runtime_reference_status();
 bool brightness_runtime_reference_baseline();
-bool brightness_runtime_reference_preview(uint8_t command = 60);
+struct brightness_comparison_t {
+    uint64_t id;
+    bool armed, valid, has_previous, historical, step_failed;
+    uint8_t previous, current;
+    bool has_bright, has_dark;
+    uint8_t bright, dark;
+};
+brightness_comparison_t brightness_runtime_comparison();
+bool brightness_runtime_reference_begin();
+bool brightness_runtime_reference_step(uint64_t id, bool brighter, uint8_t step);
+bool brightness_runtime_reference_mark(uint64_t id, bool previous, bool dark, bool historical);
+// Cancels diagnostics only; a normal calibrated preview is not affected.
+bool brightness_runtime_reference_end();
 
 // Atomic command-state snapshot, not sensor feedback or PWM register readback.
 struct brightness_report_t {

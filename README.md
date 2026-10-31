@@ -434,3 +434,33 @@ for a device report before confirming return. Reports older than 20 seconds,
 failed panel reads, and offline status make the current value unknown. Physical
 40/70 acceptance and measured endpoints remain pending; normal brightness and
 night-dimming capabilities stay disabled until board calibration.
+
+### Step-by-step diagnostic calibration (v1.0.35 candidate)
+
+Settings → Adjust backlight opens a local diagnostic panel. Opening it performs
+no write. Explicitly establish reference 50, confirm readability, then use
+Brighter / Dimmer with command steps of 5 or 1 inside 1…97. Brighter decreases
+the command on the verified inverted path. Holding a button does not repeat.
+Commands are driver units, not percentages of luminance.
+
+Each accepted step has a 20-second inactivity return to 50; a session also has
+a fixed two-minute limit from its first step. The independent worker handles
+return without Wi-Fi or a responsive LVGL loop. Returning, leaving Settings,
+entering the photo frame, or switching the screen off cancels the session.
+Failed writes invalidate the comparison; an uncertain return blocks new steps
+and is retried by the worker. At a range boundary a no-op does not extend time.
+
+The panel distinguishes the **previous** and **current test** commands. If
+40 → 35 adds no visible light, “No difference — select 40” records 40, while
+“This works — select 35” explicitly selects the candidate. For 70 → 75 that
+is too dim, the previous-level button selects 70. Selection uses the comparison
+ID captured when pressed; stale actions cannot select a newer pair. After
+return to 50, the completed comparison is shown as history and can be selected
+explicitly. Starting a new test invalidates the previous comparison.
+
+Bright/dim selections remain in RAM until reboot and must have the correct
+inverted ordering. They do not automatically enable a measured profile,
+persist brightness settings, or change day/night scheduling. Bridge report v1
+continues to describe acknowledged hardware commands, never the chosen endpoint.
+No API or storage migration is needed. Physical endpoint acceptance remains a
+separate manual check after an explicitly authorized diagnostic release.
