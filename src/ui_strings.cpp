@@ -7,6 +7,13 @@ struct entry_t { const char *ru; const char *en; const char *sr; };
 // Keep the Russian key as the stable source string so existing call sites are
 // easy to compare with the former Russian-only UI.
 static const entry_t STRINGS[] = {
+    {"Задачи на сегодня", "Today's tasks", "Današnji zadaci"},
+    {"За день", "Today", "Danas"},
+    {"Обновлено %d мин назад", "Updated %d min ago", "Ažurirano pre %d min"},
+    {"Все показатели", "All metrics", "Svi pokazatelji"},
+    {"Пульс в покое", "Resting heart rate", "Puls u mirovanju"},
+    {"уд/мин", "bpm", "otk/min"},
+    {"%d ч %02d м", "%d h %02d m", "%d č %02d m"},
     {"Загружаю данные…", "Loading data…", "Učitavanje podataka…"},
     {"Блоки Сводки выключены в настройках", "Summary blocks are disabled in Settings", "Blokovi pregleda su isključeni u podešavanjima"},
     {"Источник выключен", "Source disabled", "Izvor je isključen"},

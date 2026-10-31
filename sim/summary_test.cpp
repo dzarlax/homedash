@@ -3,7 +3,7 @@
 #include <cstdio>
 static uint16_t pixels[1024*600],buffer[1024*600];
 static void flush(lv_display_t *d,const lv_area_t *a,uint8_t *map){auto src=(uint16_t*)map;for(int y=a->y1;y<=a->y2;y++)for(int x=a->x1;x<=a->x2;x++)pixels[y*1024+x]=*src++;lv_display_flush_ready(d);}
-static void shot(const char *name){const char *dir=getenv("SUMMARY_QA_DIR");if(!dir)return;lv_refr_now(lv_display_get_default());char path[512];snprintf(path,sizeof(path),"%s/%s.ppm",dir,name);FILE*f=fopen(path,"wb");assert(f);fprintf(f,"P6\n1024 600\n255\n");for(auto p:pixels){unsigned char rgb[3]={(unsigned char)(((p>>11)&31)*255/31),(unsigned char)(((p>>5)&63)*255/63),(unsigned char)((p&31)*255/31)};fwrite(rgb,1,3,f);}fclose(f);}
+static void shot(const char *name){const char *dir=getenv("SUMMARY_QA_DIR");if(!dir)return;lv_obj_invalidate(lv_screen_active());lv_refr_now(lv_display_get_default());char path[512];snprintf(path,sizeof(path),"%s/%s.ppm",dir,name);FILE*f=fopen(path,"wb");assert(f);fprintf(f,"P6\n1024 600\n255\n");for(auto p:pixels){unsigned char rgb[3]={(unsigned char)(((p>>11)&31)*255/31),(unsigned char)(((p>>5)&63)*255/63),(unsigned char)((p&31)*255/31)};fwrite(rgb,1,3,f);}fclose(f);}
 int main(){
  lv_init();auto display=lv_display_create(1024,600);lv_display_set_color_format(display,LV_COLOR_FORMAT_RGB565);lv_display_set_buffers(display,buffer,nullptr,sizeof(buffer),LV_DISPLAY_RENDER_MODE_FULL);lv_display_set_flush_cb(display,flush);ui_dashboard_create();lv_tileview_set_tile(tileview,nav_tiles[1],LV_ANIM_OFF);
  bridge_data_t data={};ui_dashboard_update_bridge(&data);assert(!strcmp(lv_label_get_text(lbl_no_tasks),ui_text("Загружаю данные…")));
@@ -17,16 +17,35 @@ int main(){
   for(int i=0;i<6;i++)assert(strcmp(lv_label_get_text(metric_cards[i].lbl_value),"—"));
   assert(lv_obj_get_scroll_bottom(summary_tasks_body)>0&&lv_obj_get_scroll_bottom(summary_news_body)>0);
   assert(lv_obj_get_y(page2_news_panel)+lv_obj_get_height(page2_news_panel)<=524);
+  for (int i=0;i<6;i++) assert(lv_obj_has_flag(metric_cards[i].lbl_value,LV_OBJ_FLAG_HIDDEN)==(i!=0&&i!=1&&i!=3));
+  assert(lv_obj_get_y(page2_health_panel)==64 && lv_obj_get_height(page2_health_panel)==132);
+  assert(!strcmp(lv_label_get_text(summary_task_count),"8"));
+  lv_obj_send_event(page2_health_panel,LV_EVENT_CLICKED,nullptr);
+  assert(reader_overlay && strstr(lv_label_get_text(reader_text_label),"98%") && strstr(lv_label_get_text(reader_text_label),"80"));
+  reader_close_cb(nullptr);
+  ui_dashboard_update_time();
   char file[48];snprintf(file,sizeof(file),"summary-%s",locale);shot(file);
  }
+ ui_strings_set_locale("ru");refresh_static_ui_labels();
+ auto reference=data;
+ reference.task_count=reference.news_count=3;reference.health.sleep=7.0f+40.0f/60;
+ const char *task_names[]={"Подготовить документы","Записаться на тренировку","Забрать заказ"};
+ const char *news_names[]={"Новая выставка открылась в городе","Что изменилось в технологиях за неделю","Маршруты для прогулок в выходные"};
+ for(int i=0;i<3;i++) {
+  snprintf(reference.tasks[i].title,sizeof(reference.tasks[i].title),"%s",task_names[i]);
+  snprintf(reference.news[i].title,sizeof(reference.news[i].title),"%s",news_names[i]);
+  snprintf(reference.tasks[i].due,sizeof(reference.tasks[i].due),"2026-10-31%s",i==0?"T18:00":"");
+ }
+ ui_dashboard_update_bridge(&reference);assert(strstr(lv_label_get_text(metric_cards[0].lbl_value),"7"));shot("summary-reference");
+ ui_dashboard_update_bridge(&data);
  data.news_state.source_age_seconds=7200;ui_dashboard_update_bridge(&data);assert(strstr(lv_label_get_text(lbl_news_age[0]),"4"));data.news_state.source_age_seconds=120;
  lv_obj_send_event(summary_task_rows[0],LV_EVENT_CLICKED,nullptr);assert(reader_overlay);reader_close_cb(nullptr);
  lv_obj_send_event(summary_news_rows[0],LV_EVENT_CLICKED,nullptr);assert(reader_overlay);reader_close_cb(nullptr);
- data.health.present&=~(1u<<2);ui_dashboard_update_bridge(&data);assert(!strcmp(lv_label_get_text(metric_cards[2].lbl_value),"—"));assert(strstr(lv_label_get_text(metric_cards[1].lbl_value),"4800"));
+ data.health.present&=~(1u<<2);ui_dashboard_update_bridge(&data);assert(!strcmp(lv_label_get_text(metric_cards[2].lbl_value),"—"));assert(strstr(lv_label_get_text(metric_cards[1].lbl_value),"4 800"));
  data.health_state.last_attempt_failed=data.tasks_state.last_attempt_failed=data.news_state.last_attempt_failed=true;ui_dashboard_update_bridge(&data);assert(!lv_obj_has_flag(lbl_task_lines[0],LV_OBJ_FLAG_HIDDEN));assert(strstr(lv_label_get_text(summary_tasks_status),"2"));shot("summary-stale");
  data.tasks_valid=data.news_valid=false;ui_dashboard_update_bridge(&data);assert(!strcmp(lv_label_get_text(lbl_no_tasks),ui_text("Не удалось загрузить данные")));
  data.tasks_valid=data.news_valid=true;data.task_count=data.news_count=0;data.tasks_state.last_attempt_failed=data.news_state.last_attempt_failed=false;ui_dashboard_update_bridge(&data);assert(!strcmp(lv_label_get_text(lbl_no_tasks),ui_text("Нет задач")));assert(!strcmp(lv_label_get_text(lbl_no_news),ui_text("Нет новостей")));shot("summary-empty");
- web_preferences_t p={};web_preferences_defaults(&p);p.revision=1;snprintf(p.settings_url,sizeof(p.settings_url),"https://example.test/settings/");p.visible_health=false;p.visible_tasks=false;p.visible_news=true;ui_dashboard_apply_preferences(&p);lv_obj_update_layout(lv_screen_active());assert(lv_obj_get_width(page2_news_panel)==996&&lv_obj_get_y(page2_news_panel)==8);shot("summary-news-only");
+ web_preferences_t p={};web_preferences_defaults(&p);p.revision=1;snprintf(p.settings_url,sizeof(p.settings_url),"https://example.test/settings/");p.visible_health=false;p.visible_tasks=false;p.visible_news=true;ui_dashboard_apply_preferences(&p);lv_obj_update_layout(lv_screen_active());assert(lv_obj_get_width(page2_news_panel)==996&&lv_obj_get_y(page2_news_panel)==64);shot("summary-news-only");
  p.visible_news=false;ui_dashboard_apply_preferences(&p);assert(!lv_obj_has_flag(summary_empty,LV_OBJ_FLAG_HIDDEN));
  // The returned fresh result clears an earlier calendar warning for the same date.
  bridge_cal_data_t cal={};cal.valid=true;cal.sources_partial=cal.cache_stale=cal.completeness_known=true;cal.year=sel_year;cal.month=sel_month;cal.day=sel_day;ui_dashboard_update_ha_calendar(&cal);char expected[192];snprintf(expected,sizeof(expected),ui_text("Ожидает обновления · получено %d мин назад"),0);assert(!strcmp(lv_label_get_text(lbl_calendar_freshness),expected));

@@ -181,11 +181,11 @@ int main()
                 std::fprintf(stderr, "[SIM] Locale %s translated provider content\n", locale);
                 return 2;
             }
-            const char *expected_header = std::strcmp(locale, "en") == 0 ? "Tasks" :
-                                          std::strcmp(locale, "sr-Latn") == 0 ? "Zadaci" : "Задачи";
+            const char *expected_header = std::strcmp(locale, "en") == 0 ? "Today's tasks" :
+                                          std::strcmp(locale, "sr-Latn") == 0 ? "Današnji zadaci" : "Задачи на сегодня";
             if (!label_contains(lv_screen_active(), expected_header)) {
                 std::fprintf(stderr, "[SIM] Locale %s did not update static page labels (active=%s expected=%s)\n",
-                             locale, ui_strings_locale(), ui_text("Задачи"));
+                             locale, ui_strings_locale(), ui_text("Задачи на сегодня"));
                 return 3;
             }
         }
