@@ -139,6 +139,34 @@ ota_1      7MB   — firmware slot B
 
 If the new firmware fails to connect to Bridge after boot, the bootloader automatically reverts to the previous working version (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`).
 
+### RGB cache safety (v1.0.38 candidate)
+
+The RGB bounce-buffer ISR copies pixels from a PSRAM framebuffer. It must be
+deferred while the external-memory cache is disabled, including short MMU mapping
+windows during OTA boot validation. Both `CONFIG_LCD_RGB_ISR_IRAM_SAFE` and
+`CONFIG_GDMA_ISR_IRAM_SAFE` must remain disabled. PSRAM instruction/rodata fetch,
+double buffering, bounce buffers, display clocks, and the single frame-finish
+callback remain unchanged.
+
+After changing defaults, build from a clean source copy without generated
+`sdkconfig.<environment>` files; an incremental build can retain the old flags.
+Build and Release workflows check the effective generated header in both build
+environments, alongside the network stack and TLS memory guards:
+
+```bash
+python3 -m unittest discover -s tools -p 'test_check_rgb_cache.py'
+python3 tools/check_rgb_cache.py --config .pio/build/esp32-s3-touch-lcd-7b/config/sdkconfig.h
+```
+
+Hardware acceptance is still required: boot validation without cache panic,
+calendar/Summary loading, page changes and photo-frame transitions without drift,
+and preserved day/night brightness. Local builds cannot verify RGB DMA timing.
+OTA through Bridge remains the preferred installation path if the installed app
+stays stable long enough to download and select the new slot. USB app-only
+recovery is a fallback when the old firmware repeatedly resets; it requires
+separate readiness confirmation and must preserve NVS and the partition table.
+This candidate has not yet been installed or validated on hardware.
+
 ## Desktop UI Simulator
 
 Network/bootstrap regression checks run without a device:
