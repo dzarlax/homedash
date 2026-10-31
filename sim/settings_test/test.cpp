@@ -18,6 +18,7 @@ static std::map<int, std::map<std::string, bytes>> staged;
 static int next_handle = 1;
 static std::string fail_commit_namespace;
 static int fail_commit_count = 0;
+static bool fail_commit_before_write = false;
 struct mock_http { std::map<std::string, std::string> headers; };
 static unsigned random_seed = 1;
 
@@ -74,6 +75,10 @@ esp_err_t nvs_erase_key(nvs_handle_t h, const char *key) {
     staged[h][key] = {}; staged[h][key].push_back(0xff); return ESP_OK;
 }
 esp_err_t nvs_commit(nvs_handle_t h) {
+    if (handles[h] == fail_commit_namespace && fail_commit_count > 0 && fail_commit_before_write) {
+        --fail_commit_count;
+        return ESP_ERR_NVS_INVALID_LENGTH;
+    }
     auto &space = db[handles[h]];
     for (const auto &entry : staged[h]) {
         if (entry.second.size() == 1 && entry.second[0] == 0xff) space.erase(entry.first);
@@ -322,11 +327,38 @@ int main() {
     assert(!web_settings_store_ota_telemetry(id, sizeof(id), ota_stage, sizeof(ota_stage), ota_error, sizeof(ota_error)));
     assert(!web_settings_store_ota_written("different", "1.0.22"));
     assert(web_settings_store_ota_written("ota-1", "1.0.22"));
-    assert(web_settings_store_ota_telemetry(id, sizeof(id), ota_stage, sizeof(ota_stage), ota_error, sizeof(ota_error)) && !strcmp(id, "ota-1") && !strcmp(ota_stage,"writing"));
+    struct { char stage[9]; char canary; } short_ota_stage;
+    memset(&short_ota_stage, 'x', sizeof(short_ota_stage));
+    assert(!web_settings_store_ota_telemetry(id, sizeof(id), short_ota_stage.stage,
+        sizeof(short_ota_stage.stage), ota_error, sizeof(ota_error)));
+    assert(short_ota_stage.canary == 'x');
+    assert(web_settings_store_ota_telemetry(id, sizeof(id), ota_stage, sizeof(ota_stage), ota_error, sizeof(ota_error)) && !strcmp(id, "ota-1") && !strcmp(ota_stage,"rebooting"));
+    // Accepted with a durable target is waiting for reboot, not writing flash.
+    db["webprefs"]["cmd_state"] = bytes{'a','c','c','e','p','t','e','d',0};
+    assert(web_settings_store_ota_telemetry(id, sizeof(id), ota_stage, sizeof(ota_stage), ota_error, sizeof(ota_error)) && !strcmp(ota_stage,"rebooting"));
     assert(!web_settings_store_recover_on_boot("boot-c", "1.0.23", true));
     assert(web_settings_store_recover_on_boot("boot-c", "1.0.22", true));
     assert(web_settings_store_command_result(id, sizeof(id), state, sizeof(state), error, sizeof(error)));
     assert(!strcmp(state, "succeeded"));
+    assert(!db["webprefs"].count("ota_target"));
+    db["webprefs"]["ota_target"] = bytes{'1','.', '0','.', '2','2',0}; // Legacy terminal record.
+    assert(!web_settings_store_ota_telemetry(id, sizeof(id), ota_stage, sizeof(ota_stage), ota_error, sizeof(ota_error)));
+    db["webprefs"].erase("ota_target");
+
+    // A failed NVS commit cannot be reported as completed target cleanup.
+    assert(web_settings_store_command_begin("ota-2", "ota_install", "boot-c", "1.0.22"));
+    assert(web_settings_store_ota_written("ota-2", "1.0.23"));
+    fail_commit_namespace = "webprefs";
+    fail_commit_count = 1;
+    fail_commit_before_write = true;
+    assert(!web_settings_store_command_finish("ota-2", "succeeded", nullptr));
+    assert(db["webprefs"].count("ota_target"));
+    fail_commit_namespace.clear();
+    fail_commit_before_write = false;
+    assert(web_settings_store_command_result(id, sizeof(id), state, sizeof(state), error, sizeof(error)));
+    assert(!strcmp(id, "ota-2") && !strcmp(state, "accepted"));
+    assert(web_settings_store_command_finish("ota-2", "failed", "flash_failed"));
+    assert(!db["webprefs"].count("ota_target"));
     assert(web_settings_store_command_begin("reset-1", "reset", "boot-c", "1.0.21"));
     assert(!web_settings_store_recover_on_boot("boot-d", "1.0.21", false));
     assert(web_settings_store_complete_reset_after_recovery());
