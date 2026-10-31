@@ -223,6 +223,22 @@ test-action-executor:
 test-brightness:
 	sh brightness_test/run.sh
 
+$(BUILD)/stubs_reference.o: stubs.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -DBRIGHTNESS_REFERENCE_UI_TEST -c $< -o $@
+
+$(BUILD)/brightness_reference_ui_test.o: brightness_reference_ui_test.cpp $(SRC_DIR)/ui_dashboard.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/brightness_reference_ui_test: $(BUILD)/brightness_reference_ui_test.o $(LVGL_OBJS) $(BUILD)/stubs_reference.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-brightness-reference-ui: $(BUILD)/brightness_reference_ui_test
+	./$(BUILD)/brightness_reference_ui_test
+
+.PHONY: test-brightness-reference-ui
+
 $(BUILD)/day_test.o: day_test.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/bridge.h
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@

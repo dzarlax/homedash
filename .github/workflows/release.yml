@@ -8,6 +8,9 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # Only the explicitly reviewed reference-test release enables these controls.
+      PIO_ENV: ${{ github.ref_name == 'v1.0.33' && 'esp32-s3-touch-lcd-7b-brightness-test' || 'esp32-s3-touch-lcd-7b' }}
     permissions:
       contents: write
     steps:
@@ -28,15 +31,15 @@ jobs:
         run: pip install platformio
 
       - name: Build firmware
-        run: pio run
+        run: pio run -e "$PIO_ENV"
 
       - name: Check network memory configuration
         run: |
-          python tools/check_network_stack.py
-          python tools/check_tls_memory.py
+          python tools/check_network_stack.py --build ".pio/build/$PIO_ENV"
+          python tools/check_tls_memory.py --config ".pio/build/$PIO_ENV/config/sdkconfig.h"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: .pio/build/esp32-s3-touch-lcd-7b/firmware.bin
+          files: .pio/build/${{ env.PIO_ENV }}/firmware.bin
           generate_release_notes: true

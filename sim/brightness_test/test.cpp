@@ -9,9 +9,10 @@ int main() {
     assert(brightness_init(&b, write_pwm, &f, 90, 10, 50));
     assert(!brightness_set(&b, 9)); assert(brightness_set(&b, 100) && f.value == 10);
     assert(brightness_preview(&b, 10, 100) && f.value == 90);
-    assert(brightness_preview(&b, 50, 200)); assert(brightness_tick(&b, 20199) && b.preview);
-    f.fail = true; assert(!brightness_tick(&b, 20200) && b.preview);
-    f.fail = false; assert(brightness_tick(&b, 20201) && !b.preview && f.value == 10);
+    assert(!brightness_preview(&b, 50, 200) && b.deadline_ms == 20100 && b.restore == 10);
+    assert(brightness_tick(&b, 20099) && b.preview);
+    f.fail = true; assert(!brightness_tick(&b, 20100) && b.preview);
+    f.fail = false; assert(brightness_tick(&b, 20101) && !b.preview && f.value == 10);
     assert(brightness_apply_schedule(&b, 100, 10, true, false) && f.value == 90);
     assert(brightness_apply_schedule(&b, 100, 10, true, true) && f.value == 10);
     assert(brightness_apply_schedule(&b, 100, 10, false, false) && f.value == 10);

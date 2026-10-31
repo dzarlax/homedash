@@ -1,5 +1,6 @@
 #include "brightness_runtime.h"
 #include "io_extension.h"
+#include "runtime_freertos.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -18,6 +19,22 @@ int main() {
         1, 1, "waveshare-esp32-s3-touch-lcd-7b", "measured-rev-a",
         0, 97, 90, 10, 50, true, "schematic-and-baseline-record"
     };
+    assert(!brightness_runtime_apply_profile(&profile, &board));
+    fail_mutex_creation = true;
+    assert(!brightness_runtime_start() && !brightness_runtime_ready() && writes == 0);
+    fail_mutex_creation = false;
+    fail_task_creation = true;
+    assert(!brightness_runtime_start());
+    assert(!brightness_runtime_apply_profile(&profile, &board));
+    assert(!brightness_runtime_preview(50) && writes == 0);
+    fail_task_creation = false;
+    assert(brightness_runtime_start());
+    assert(brightness_runtime_reference_status().phase == BRIGHTNESS_REFERENCE_DISABLED);
+    assert(!brightness_runtime_reference_baseline() && !brightness_runtime_reference_preview() && writes == 0);
+    int created = task_creations;
+    assert(brightness_runtime_start() && task_creations == created && writes == 0);
+    run_restore_worker_step();
+    assert(!brightness_runtime_ready() && writes == 0);
     assert(!brightness_runtime_apply_profile(nullptr, &board));
     assert(!brightness_runtime_apply_profile(&profile, nullptr));
     assert(!brightness_runtime_apply_profile(&profile, &unknown_board));
@@ -45,11 +62,17 @@ int main() {
     failure=1;
     assert(!brightness_runtime_preview(50) && last==50); // Failed preview is rolled back to the known baseline.
     assert(brightness_runtime_ready() && !strcmp(brightness_runtime_error(), ""));
-    assert(brightness_runtime_preview(100) && last==10); now_us=19999000; brightness_runtime_tick(); assert(last==10);
-    now_us=20000000; failure=1; brightness_runtime_tick(); assert(last==10);
+    assert(brightness_runtime_preview(100) && last==10);
+    int preview_writes = writes;
+    now_us=1000000;
+    assert(!brightness_runtime_preview(50) && writes==preview_writes);
+    brightness_checkpoint_t active = {};
+    assert(brightness_runtime_checkpoint(&active) && active.deadline_ms==20000 && active.restore==50);
+    now_us=19999000; run_restore_worker_step(); assert(last==10);
+    now_us=20000000; failure=1; run_restore_worker_step(); assert(last==10);
     assert(!brightness_runtime_ready() && !strcmp(brightness_runtime_error(), "write_failed"));
     assert(!brightness_runtime_preview(50)); // Never stack a new preview over an uncertain output.
-    failure=0; brightness_runtime_tick(); assert(last==50);
+    failure=0; run_restore_worker_step(); assert(last==50);
     assert(brightness_runtime_ready());
     assert(brightness_runtime_restore());
     brightness_checkpoint_t checkpoint = {}; assert(brightness_runtime_checkpoint(&checkpoint));
@@ -61,12 +84,21 @@ int main() {
     assert(!brightness_runtime_preview(80) && last==50);
     assert(!brightness_runtime_ready() && !strcmp(brightness_runtime_error(), "write_failed"));
     failure=0;
-    brightness_runtime_tick(); // Retry the retained checkpoint, despite no active preview.
+    run_restore_worker_step(); // Retry the retained checkpoint, despite no active preview.
     assert(last==50 && brightness_runtime_ready());
     brightness_checkpoint_t recovered = {};
     assert(brightness_runtime_checkpoint(&recovered) && !recovered.preview && recovered.current==50);
     failure=1;
     assert(!brightness_runtime_rollback(&recovered) && !brightness_runtime_ready());
     assert(brightness_runtime_restore() && brightness_runtime_ready() && last==50);
-    puts("brightness runtime: profile validation, no-write setup, default disable and restore retry passed");
+    assert(brightness_runtime_preview(70));
+    assert(brightness_runtime_restore() && last==50);
+    assert(brightness_runtime_checkpoint(&recovered) && !recovered.preview);
+    assert(brightness_runtime_preview(80));
+    now_us += 20000000;
+    failure = 1;
+    run_restore_worker_step();
+    assert(!brightness_runtime_ready());
+    assert(brightness_runtime_restore() && brightness_runtime_ready() && last == 50);
+    puts("brightness runtime: startup failures, profile gates, independent worker deadline, non-extending preview, manual restore and retry passed");
 }
