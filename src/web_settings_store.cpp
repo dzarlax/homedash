@@ -179,7 +179,7 @@ bool web_settings_store_command_begin(const char *id, const char *action,
 
 bool web_settings_store_ota_telemetry(char *id, size_t id_size, char *stage, size_t stage_size,
                                       char *error, size_t error_size) {
-    if (!id || !id_size || !stage || stage_size < 8 || !error || error_size < 17) return false;
+    if (!id || !id_size || !stage || stage_size < sizeof("rebooting") || !error || error_size < 17) return false;
     id[0] = stage[0] = error[0] = 0;
     nvs_handle_t h;
     if (nvs_open("webprefs", NVS_READONLY, &h) != ESP_OK) return false;
@@ -187,7 +187,8 @@ bool web_settings_store_ota_telemetry(char *id, size_t id_size, char *stage, siz
     bool ok = read_string(h, "last_cmd", id, id_size) &&
         read_string(h, "cmd_action", action, sizeof(action)) && !strcmp(action, "ota_install") &&
         read_string(h, "cmd_state", state, sizeof(state));
-    if (ok && read_string(h, "ota_target", target, sizeof(target))) strcpy(stage, "writing");
+    if (ok && !strcmp(state, "accepted") && read_string(h, "ota_target", target, sizeof(target)))
+        strcpy(stage, "rebooting");
     if (ok && !strcmp(state, "failed") && read_string(h, "cmd_error", reason, sizeof(reason)) &&
         (!strcmp(reason, "ota_check_failed") || !strcmp(reason, "no_update") || !strcmp(reason, "device_error"))) strcpy(error, reason);
     nvs_close(h); return ok && (stage[0] || error[0]);
@@ -216,6 +217,7 @@ bool web_settings_store_command_finish(const char *id, const char *state,
     char last[65] = {};
     bool same = read_string(h, "last_cmd", last, sizeof(last)) && !strcmp(last, id);
     esp_err_t err = same ? nvs_set_str(h, "cmd_state", state) : ESP_ERR_NVS_NOT_FOUND;
+    if (err == ESP_OK) err = erase_optional(h, "ota_target");
     if (err == ESP_OK) {
         if (error && error[0]) err = nvs_set_str(h, "cmd_error", error);
         else {

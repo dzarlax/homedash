@@ -552,3 +552,17 @@ Checks: `make -C sim test-summary test-day test-localization test-settings-tab
  test-photo-frame test-day-night`, `sh sim/action_bridge_test/run.sh`, and normal
 PlatformIO build with network stack/TLS guards. This candidate is local; release
 and physical-device acceptance remain separate.
+
+### Closure candidate: OTA telemetry and acceptance
+
+After a completed image write, pending OTA telemetry says `rebooting` rather than
+`writing`. A terminal command clears the target in the same NVS commit as its
+result; success cannot leave active progress behind. Recovery still requires a
+matching running version and never fabricates success for an uncertain attempt.
+Native requests already send `X-API-Key`; Bridge no longer accepts URL keys.
+
+This candidate does not change the RGB/cache safety fix, board timing, downloader,
+SDK, or image buffers. Local simulator/build checks do not establish hardware
+stability. Three supervised restarts and a bounded 24-hour observation remain a
+separate acceptance step; see the Bridge `docs/device-acceptance-checklist.md`.
+No new firmware version or OTA artifact is published by these local changes.
