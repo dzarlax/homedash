@@ -264,3 +264,14 @@ $(BUILD)/day_night_ui_test: $(BUILD)/day_night_ui_test.o $(LVGL_OBJS) $(BUILD)/s
 .PHONY: test-day-night
 test-day-night: $(BUILD)/day_night_ui_test
 	./$(BUILD)/day_night_ui_test
+
+$(BUILD)/summary_test.o: summary_test.cpp $(SRC_DIR)/ui_dashboard.cpp
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/summary_test: $(BUILD)/summary_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+.PHONY: test-summary
+test-summary: $(BUILD)/summary_test
+	./$(BUILD)/summary_test

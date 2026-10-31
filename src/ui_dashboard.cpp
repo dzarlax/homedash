@@ -123,6 +123,12 @@ static lv_obj_t *lbl_transport_freshness = NULL, *lbl_calendar_freshness = NULL;
 static lv_obj_t *page2_health_panel = NULL;
 static lv_obj_t *page2_tasks_panel = NULL;
 static lv_obj_t *page2_news_panel = NULL;
+static lv_obj_t *summary_tasks_body=nullptr,*summary_news_body=nullptr;
+static lv_obj_t *summary_health_status=nullptr,*summary_tasks_status=nullptr,*summary_news_status=nullptr;
+static lv_obj_t *summary_empty=nullptr;
+static lv_obj_t *summary_task_due[BRIDGE_MAX_TASKS]={};
+static lv_obj_t *summary_task_rows[BRIDGE_MAX_TASKS]={},*summary_news_rows[BRIDGE_MAX_NEWS]={};
+static void layout_summary();
 static lv_obj_t *page3_root = NULL;
 static web_preferences_t ui_preferences = {};
 static bool ui_has_preferences = false;
@@ -1461,7 +1467,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         if (data->valid && data->sources_partial && !data->last_attempt_failed && lbl_calendar_freshness) {
             int64_t age = esp_timer_get_time() / 1000 - data->received_ms;
             if (age < 0) age = 0;
-            char text[128]; snprintf(text, sizeof(text), ui_text("Часть календарей недоступна · %d мин назад"), (int)(age / 60000));
+            char text[192]; snprintf(text, sizeof(text), ui_text(data->cache_stale?"Ожидает обновления · получено %d мин назад":"Расписание может быть неполным · %d мин назад"), (int)(age / 60000));
             lv_label_set_text(lbl_calendar_freshness, text);
         }
     }
@@ -1623,7 +1629,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data)
         }
         if (lbl_hero_time) {
             lv_label_set_text(lbl_hero_time,
-                data->sources_partial ? ui_text("Часть календарей недоступна") :
+                data->sources_partial ? ui_text(data->cache_stale?"Данные календаря ожидают обновления":"Расписание может быть неполным") :
                 has_all_day ? ui_text("События на весь день ниже") :
                 (selected_today ? ui_text("Нет событий в расписании") : ui_text("На эту дату нет событий")));
             lv_obj_set_style_text_color(lbl_hero_time, COLOR_TEXT_DIM, 0);
@@ -1859,176 +1865,101 @@ static lv_obj_t *make_card(lv_obj_t *parent, int x, int y, int w, int h)
     return card;
 }
 
+static lv_obj_t *summary_label(lv_obj_t *parent,int x,int y,int width,const char *key,bool heading=false) {
+ auto *label=lv_label_create(parent);lv_obj_set_pos(label,x,y);lv_obj_set_width(label,width);
+ lv_obj_set_style_text_font(label,heading?&font_montserrat_24_cyr:&font_montserrat_16_cyr,0);
+ lv_obj_set_style_text_color(label,heading?COLOR_TEXT:COLOR_TEXT_DIM,0);
+ lv_label_set_long_mode(label,LV_LABEL_LONG_DOT);set_static_ui_label(label,key);return label;
+}
+static lv_obj_t *summary_body(lv_obj_t *parent) {
+ auto *body=lv_obj_create(parent);lv_obj_remove_style_all(body);lv_obj_set_pos(body,14,48);
+ lv_obj_set_scroll_dir(body,LV_DIR_VER);lv_obj_set_scrollbar_mode(body,LV_SCROLLBAR_MODE_AUTO);
+ return body;
+}
 static void create_page2(lv_obj_t *tile)
 {
-    // ===== TOP: compact health summary =====
-    lv_obj_t *health_banner = make_card(tile, 5, 5, 1014, 180);
-    page2_health_panel = health_banner;
-
-    // Title
-    lv_obj_t *lbl_htitle = lv_label_create(health_banner);
-    lv_obj_set_style_text_color(lbl_htitle, COLOR_HIGHLIGHT, 0);
-    lv_obj_set_style_text_font(lbl_htitle, &font_montserrat_24_cyr, 0);
-    set_static_ui_label(lbl_htitle, "Здоровье");
-    lv_obj_set_pos(lbl_htitle, 15, 8);
-
-    // Readiness arc (left side)
-    arc_readiness = lv_arc_create(health_banner);
-    lv_obj_set_size(arc_readiness, 112, 112);
-    lv_obj_set_pos(arc_readiness, 20, 42);
-    lv_arc_set_rotation(arc_readiness, 135);
-    lv_arc_set_bg_angles(arc_readiness, 0, 270);
-    lv_arc_set_range(arc_readiness, 0, 100);
-    lv_arc_set_value(arc_readiness, 0);
-    lv_obj_remove_style(arc_readiness, NULL, LV_PART_KNOB);
-    lv_obj_set_style_arc_width(arc_readiness, 10, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(arc_readiness, 10, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(arc_readiness, COLOR_ACCENT, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(arc_readiness, COLOR_GOOD, LV_PART_INDICATOR);
-    lv_obj_clear_flag(arc_readiness, LV_OBJ_FLAG_CLICKABLE);
-
-    // Readiness value (inside arc)
-    lbl_readiness_val = lv_label_create(health_banner);
-    lv_obj_set_style_text_color(lbl_readiness_val, COLOR_TEXT, 0);
-    lv_label_set_text(lbl_readiness_val, "--");
-    lv_obj_set_style_text_font(lbl_readiness_val, &lv_font_montserrat_32, 0);
-    lv_obj_set_pos(lbl_readiness_val, 54, 78);
-
-    // Readiness label (below arc)
-    lbl_readiness_label = lv_label_create(health_banner);
-    lv_obj_set_style_text_color(lbl_readiness_label, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl_readiness_label, &font_montserrat_16_cyr, 0);
-    set_static_ui_label(lbl_readiness_label, "Готовность");
-    lv_obj_set_pos(lbl_readiness_label, 33, 154);
-
-    // A flat 3x2 grid keeps readiness dominant and removes "cards in cards".
-    static const char *metric_names[] = {"Сон", "Шаги", "Пульс", "ЧСС покоя", "ВСР", "SpO2"};
-    const int grid_x = 170, cell_w = 275;
-    for (int i = 0; i < NUM_METRIC_CARDS; i++) {
-        int row = i / 3;
-        int col = i % 3;
-        int x = grid_x + col * cell_w;
-        int y = 42 + row * 66;
-        metric_cards[i].lbl_name = lv_label_create(health_banner);
-        lv_obj_set_style_text_color(metric_cards[i].lbl_name, COLOR_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(metric_cards[i].lbl_name, &font_montserrat_16_cyr, 0);
-        set_static_ui_label(metric_cards[i].lbl_name, metric_names[i]);
-        lv_obj_set_pos(metric_cards[i].lbl_name, x + 10, y);
-
-        metric_cards[i].lbl_value = lv_label_create(health_banner);
-        lv_obj_set_style_text_color(metric_cards[i].lbl_value, COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(metric_cards[i].lbl_value, &font_montserrat_24_cyr, 0);
-        lv_label_set_text(metric_cards[i].lbl_value, "---");
-        lv_obj_set_pos(metric_cards[i].lbl_value, x + 10, y + 18);
-
-        metric_cards[i].lbl_trend = lv_label_create(health_banner);
-        lv_obj_set_style_text_color(metric_cards[i].lbl_trend, COLOR_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(metric_cards[i].lbl_trend, &font_montserrat_16_cyr, 0);
-        lv_label_set_text(metric_cards[i].lbl_trend, "");
-        lv_obj_set_pos(metric_cards[i].lbl_trend, x + 120, y + 24);
-    }
-    for (int i = 1; i < 3; i++) {
-        lv_obj_t *rule = lv_obj_create(health_banner);
-        lv_obj_remove_style_all(rule);
-        lv_obj_set_size(rule, 1, 118);
-        lv_obj_set_pos(rule, grid_x + i * cell_w - 4, 42);
-        lv_obj_set_style_bg_color(rule, COLOR_ACCENT, 0);
-        lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
-    }
-
-    // ===== BOTTOM LEFT: Tasks =====
-    lv_obj_t *tasks_panel = make_card(tile, 5, 190, 505, 340);
-    page2_tasks_panel = tasks_panel;
-
-    lv_obj_t *lbl_ttitle = lv_label_create(tasks_panel);
-    lv_obj_set_style_text_color(lbl_ttitle, COLOR_HIGHLIGHT, 0);
-    lv_obj_set_style_text_font(lbl_ttitle, &font_montserrat_24_cyr, 0);
-    set_static_ui_label(lbl_ttitle, "Задачи");
-    lv_obj_set_pos(lbl_ttitle, 15, 10);
-
-    for (int i = 0; i < MAX_TASK_LINES; i++) {
-        int y = 38 + i * 32;
-
-        // Priority bar (left edge)
-        task_prio_bars[i] = lv_obj_create(tasks_panel);
-        lv_obj_remove_style_all(task_prio_bars[i]);
-        lv_obj_set_size(task_prio_bars[i], 4, 24);
-        lv_obj_set_pos(task_prio_bars[i], 15, y + 2);
-        lv_obj_set_style_bg_color(task_prio_bars[i], COLOR_TEXT_DIM, 0);
-        lv_obj_set_style_bg_opa(task_prio_bars[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(task_prio_bars[i], 2, 0);
-        lv_obj_add_flag(task_prio_bars[i], LV_OBJ_FLAG_HIDDEN);
-
-        // Task text
-        lbl_task_lines[i] = lv_label_create(tasks_panel);
-        lv_obj_set_style_text_color(lbl_task_lines[i], COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(lbl_task_lines[i], &font_montserrat_16_cyr, 0);
-        lv_obj_set_width(lbl_task_lines[i], 460);
-        lv_label_set_long_mode(lbl_task_lines[i], LV_LABEL_LONG_DOT);
-        lv_label_set_text(lbl_task_lines[i], "");
-        lv_obj_set_pos(lbl_task_lines[i], 28, y);
-        lv_obj_add_flag(lbl_task_lines[i], LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(lbl_task_lines[i], content_click_cb, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)i);
-        lv_obj_add_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
-    }
-
-    lbl_no_tasks = lv_label_create(tasks_panel);
-    lv_obj_set_style_text_color(lbl_no_tasks, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl_no_tasks, &font_montserrat_16_cyr, 0);
-    set_static_ui_label(lbl_no_tasks, "Нет задач");
-    lv_obj_set_pos(lbl_no_tasks, 15, 38);
-
-    // ===== BOTTOM RIGHT: News =====
-    lv_obj_t *news_panel = make_card(tile, 514, 190, 505, 340);
-    page2_news_panel = news_panel;
-
-    lv_obj_t *lbl_ntitle = lv_label_create(news_panel);
-    lv_obj_set_style_text_color(lbl_ntitle, COLOR_HIGHLIGHT, 0);
-    lv_obj_set_style_text_font(lbl_ntitle, &font_montserrat_24_cyr, 0);
-    set_static_ui_label(lbl_ntitle, "Новости");
-    lv_obj_set_pos(lbl_ntitle, 15, 10);
-
-    for (int i = 0; i < MAX_NEWS_LINES; i++) {
-        int y = 38 + i * 46;
-
-        // Category dot
-        news_dots[i] = lv_obj_create(news_panel);
-        lv_obj_remove_style_all(news_dots[i]);
-        lv_obj_set_size(news_dots[i], 8, 8);
-        lv_obj_set_pos(news_dots[i], 15, y + 5);
-        lv_obj_set_style_bg_color(news_dots[i], COLOR_HIGHLIGHT, 0);
-        lv_obj_set_style_bg_opa(news_dots[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(news_dots[i], LV_RADIUS_CIRCLE, 0);
-        lv_obj_add_flag(news_dots[i], LV_OBJ_FLAG_HIDDEN);
-
-        // News title
-        lbl_news_lines[i] = lv_label_create(news_panel);
-        lv_obj_set_style_text_color(lbl_news_lines[i], COLOR_TEXT, 0);
-        lv_obj_set_style_text_font(lbl_news_lines[i], &font_montserrat_16_cyr, 0);
-        lv_obj_set_width(lbl_news_lines[i], 460);
-        lv_label_set_long_mode(lbl_news_lines[i], LV_LABEL_LONG_DOT);
-        lv_label_set_text(lbl_news_lines[i], "");
-        lv_obj_set_pos(lbl_news_lines[i], 30, y);
-        lv_obj_add_flag(lbl_news_lines[i], LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(lbl_news_lines[i], content_click_cb, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)(100 + i));
-        lv_obj_add_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
-
-        // Category label (below title)
-        lbl_news_age[i] = lv_label_create(news_panel);
-        lv_obj_set_style_text_color(lbl_news_age[i], COLOR_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(lbl_news_age[i], &font_montserrat_16_cyr, 0);
-        lv_label_set_text(lbl_news_age[i], "");
-        lv_obj_set_pos(lbl_news_age[i], 30, y + 22);
-        lv_obj_add_flag(lbl_news_age[i], LV_OBJ_FLAG_HIDDEN);
-    }
-
-    lbl_no_news = lv_label_create(news_panel);
-    lv_obj_set_style_text_color(lbl_no_news, COLOR_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl_no_news, &font_montserrat_16_cyr, 0);
-    set_static_ui_label(lbl_no_news, "Нет новостей");
-    lv_obj_set_pos(lbl_no_news, 15, 38);
+ auto *health=make_card(tile,14,8,996,210);page2_health_panel=health;
+ summary_label(health,16,12,155,"Здоровье",true);
+ summary_health_status=summary_label(health,180,18,796,"Загружаю данные…");
+ arc_readiness=lv_arc_create(health);lv_obj_set_size(arc_readiness,104,104);lv_obj_set_pos(arc_readiness,30,56);
+ lv_arc_set_rotation(arc_readiness,135);lv_arc_set_bg_angles(arc_readiness,0,270);lv_arc_set_range(arc_readiness,0,100);lv_arc_set_value(arc_readiness,0);
+ lv_obj_remove_style(arc_readiness,nullptr,LV_PART_KNOB);lv_obj_clear_flag(arc_readiness,LV_OBJ_FLAG_CLICKABLE);
+ lv_obj_set_style_arc_width(arc_readiness,8,LV_PART_INDICATOR);lv_obj_set_style_arc_width(arc_readiness,8,LV_PART_MAIN);
+ lv_obj_set_style_arc_color(arc_readiness,COLOR_ACCENT,LV_PART_MAIN);lv_obj_set_style_arc_color(arc_readiness,COLOR_HIGHLIGHT,LV_PART_INDICATOR);
+ lbl_readiness_val=summary_label(health,51,88,70,"",true);lv_label_set_text(lbl_readiness_val,"—");
+ lbl_readiness_label=summary_label(health,18,170,145,"Готовность");
+ static const char *names[]={"Сон","Шаги","Пульс","ЧСС покоя","ВСР","SpO2"};
+ for(int i=0;i<NUM_METRIC_CARDS;i++) {
+  int x=180+(i%3)*270,y=54+(i/3)*72;
+  metric_cards[i].lbl_name=summary_label(health,x,y,245,names[i]);
+  metric_cards[i].lbl_value=summary_label(health,x,y+23,150,"",true);lv_label_set_text(metric_cards[i].lbl_value,"—");
+  metric_cards[i].lbl_trend=summary_label(health,x+155,y+29,85,"");
+ }
+ auto *tasks=make_card(tile,14,232,491,292);page2_tasks_panel=tasks;
+ summary_label(tasks,16,12,450,"Задачи",true);summary_tasks_body=summary_body(tasks);
+ for(int i=0;i<MAX_TASK_LINES;i++) {
+  int y=i*54;
+  auto *row=lv_obj_create(summary_tasks_body);lv_obj_remove_style_all(row);lv_obj_set_pos(row,0,y);lv_obj_set_size(row,463,50);lv_obj_clear_flag(row,LV_OBJ_FLAG_SCROLLABLE);lv_obj_add_flag(row,LV_OBJ_FLAG_CLICKABLE);summary_task_rows[i]=row;
+  lv_obj_add_event_cb(row,content_click_cb,LV_EVENT_CLICKED,(void*)(intptr_t)i);
+  task_prio_bars[i]=lv_obj_create(row);lv_obj_remove_style_all(task_prio_bars[i]);lv_obj_set_pos(task_prio_bars[i],0,2);lv_obj_set_size(task_prio_bars[i],3,41);lv_obj_set_style_bg_opa(task_prio_bars[i],LV_OPA_COVER,0);lv_obj_clear_flag(task_prio_bars[i],LV_OBJ_FLAG_CLICKABLE);
+  lbl_task_lines[i]=summary_label(row,12,0,438,"");lv_obj_set_style_text_color(lbl_task_lines[i],COLOR_TEXT,0);
+  lv_obj_set_height(lbl_task_lines[i],25);lv_obj_clear_flag(lbl_task_lines[i],LV_OBJ_FLAG_CLICKABLE);
+  summary_task_due[i]=summary_label(row,12,26,438,"");
+  lv_obj_add_flag(lbl_task_lines[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(task_prio_bars[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(summary_task_due[i],LV_OBJ_FLAG_HIDDEN);
+ }
+ lbl_no_tasks=summary_label(summary_tasks_body,0,5,450,"Загружаю данные…");
+ summary_tasks_status=summary_label(tasks,16,262,450,"");
+ auto *news=make_card(tile,519,232,491,292);page2_news_panel=news;
+ summary_label(news,16,12,450,"Новости",true);summary_news_body=summary_body(news);
+ for(int i=0;i<MAX_NEWS_LINES;i++) {
+  int y=i*82;
+  auto *row=lv_obj_create(summary_news_body);lv_obj_remove_style_all(row);lv_obj_set_pos(row,0,y);lv_obj_set_size(row,463,78);lv_obj_clear_flag(row,LV_OBJ_FLAG_SCROLLABLE);lv_obj_add_flag(row,LV_OBJ_FLAG_CLICKABLE);summary_news_rows[i]=row;
+  lv_obj_add_event_cb(row,content_click_cb,LV_EVENT_CLICKED,(void*)(intptr_t)(100+i));
+  news_dots[i]=lv_obj_create(row);lv_obj_remove_style_all(news_dots[i]);lv_obj_set_size(news_dots[i],6,6);lv_obj_set_pos(news_dots[i],0,7);lv_obj_set_style_bg_opa(news_dots[i],LV_OPA_COVER,0);lv_obj_set_style_radius(news_dots[i],3,0);lv_obj_clear_flag(news_dots[i],LV_OBJ_FLAG_CLICKABLE);
+  lbl_news_lines[i]=summary_label(row,14,0,436,"");lv_obj_set_height(lbl_news_lines[i],48);lv_obj_set_style_text_color(lbl_news_lines[i],COLOR_TEXT,0);
+  lv_obj_clear_flag(lbl_news_lines[i],LV_OBJ_FLAG_CLICKABLE);
+  lbl_news_age[i]=summary_label(row,14,52,436,"");
+  for(auto *obj:{news_dots[i],lbl_news_lines[i],lbl_news_age[i]})lv_obj_add_flag(obj,LV_OBJ_FLAG_HIDDEN);
+ }
+ lbl_no_news=summary_label(summary_news_body,0,5,450,"Загружаю данные…");summary_news_status=summary_label(news,16,262,450,"");
+ summary_empty=summary_label(tile,30,150,960,"Блоки Сводки выключены в настройках");lv_obj_add_flag(summary_empty,LV_OBJ_FLAG_HIDDEN);
+ layout_summary();
+}
+static void layout_summary() {
+ if(!page2_health_panel)return;
+ bool health=!ui_has_preferences||ui_preferences.visible_health,tasks=!ui_has_preferences||ui_preferences.visible_tasks,news=!ui_has_preferences||ui_preferences.visible_news;
+ for(auto pair:{std::pair<lv_obj_t*,bool>{page2_health_panel,health},{page2_tasks_panel,tasks},{page2_news_panel,news}}) {
+  if(pair.second)lv_obj_clear_flag(pair.first,LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(pair.first,LV_OBJ_FLAG_HIDDEN);
+ }
+ lv_obj_set_height(page2_health_panel,tasks||news?210:516);
+ int top=health?232:8,height=524-top,width=tasks&&news?491:996;
+ lv_obj_set_pos(page2_tasks_panel,14,top);lv_obj_set_size(page2_tasks_panel,width,height);
+ lv_obj_set_pos(page2_news_panel,tasks&&news?519:14,top);lv_obj_set_size(page2_news_panel,width,height);
+ for(auto *body:{summary_tasks_body,summary_news_body})lv_obj_set_size(body,width-28,height-86);
+ for(auto *label:{summary_tasks_status,summary_news_status}){lv_obj_set_y(label,height-30);lv_obj_set_width(label,width-32);}
+ for(int i=0;i<MAX_TASK_LINES;i++){lv_obj_set_width(summary_task_rows[i],width-28);lv_obj_set_width(lbl_task_lines[i],width-52);lv_obj_set_width(summary_task_due[i],width-52);}
+ for(int i=0;i<MAX_NEWS_LINES;i++){lv_obj_set_width(summary_news_rows[i],width-28);lv_obj_set_width(lbl_news_lines[i],width-56);lv_obj_set_width(lbl_news_age[i],width-56);}
+ if(health||tasks||news)lv_obj_add_flag(summary_empty,LV_OBJ_FLAG_HIDDEN);else lv_obj_clear_flag(summary_empty,LV_OBJ_FLAG_HIDDEN);
+}
+static bool summary_visible(const bridge_section_t &s,bool valid) {return valid && !(s.known&&!s.enabled);}
+static void summary_status(lv_obj_t *label,const bridge_section_t &s,bool valid) {
+ if(!label)return;
+ char text[192]={};
+ if(s.known&&!s.enabled)snprintf(text,sizeof(text),"%s",ui_text("Источник выключен"));
+ else if(!valid)snprintf(text,sizeof(text),"%s",ui_text(s.last_attempt_failed?"Не удалось загрузить данные":"Загружаю данные…"));
+ else if(!s.has_received)snprintf(text,sizeof(text),"%s",ui_text("Возраст данных неизвестен"));
+ else {
+  int64_t elapsed=esp_timer_get_time()/1000-s.received_ms;if(elapsed<0)elapsed=0;
+  int64_t age=elapsed/1000+(s.source_age_known?s.source_age_seconds:0);int minutes=(int)(age/60);
+  const char *key=s.last_attempt_failed?"Не удалось обновить · данные %d мин назад":s.source_age_known?"Данные Bridge: %d мин назад":"Получено дисплеем %d мин назад";
+  snprintf(text,sizeof(text),ui_text(key),minutes);
+ }
+ lv_label_set_text(label,text);lv_obj_set_style_text_color(label,s.last_attempt_failed?COLOR_WARN:COLOR_TEXT_DIM,0);
+}
+static const char *summary_empty_text(const bridge_section_t &s,bool valid,const char *empty) {
+ if(s.known&&!s.enabled)return ui_text("Источник выключен");
+ if(valid)return ui_text(empty);
+ return ui_text(s.last_attempt_failed?"Не удалось загрузить данные":"Загружаю данные…");
 }
 
 // ===== BRIDGE UPDATE =====
@@ -2061,59 +1992,31 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
     if (!data) return;
     if (data != &ui_bridge_snapshot) ui_bridge_snapshot = *data;
 
-    // Health — readiness arc + metric cards
-    if (data->health.valid) {
-        int r = data->health.readiness;
-
-        // Arc
-        if (arc_readiness) {
-            lv_arc_set_value(arc_readiness, r);
-            lv_obj_set_style_arc_color(arc_readiness, readiness_color(r), LV_PART_INDICATOR);
-        }
-        if (lbl_readiness_val) {
-            char buf[8];
-            snprintf(buf, sizeof(buf), "%d", r);
-            lv_label_set_text(lbl_readiness_val, buf);
-            lv_obj_set_style_text_color(lbl_readiness_val, readiness_color(r), 0);
-        }
-        if (lbl_readiness_label) {
-            lv_label_set_text(lbl_readiness_label,
-                r >= 80 ? ui_text("Отлично") : r >= 50 ? ui_text("Норма") : ui_text("Низко"));
-        }
-
-        // Flat summary: 0=Sleep, 1=Steps, 2=HR, 3=RHR, 4=HRV, 5=SpO2.
-        char val[16], trend[24];
-
-        // Sleep
-        snprintf(val, sizeof(val), "%.1fh", data->health.sleep);
-        int s10 = (int)(data->health.sleep * 10), sp10 = (int)(data->health.sleep_prev * 10);
-        format_trend(trend, sizeof(trend), s10, sp10);
-        set_metric_card(0, val, trend, data->health.sleep >= 7.0 ? COLOR_GOOD : (data->health.sleep >= 6.0 ? COLOR_WARN : COLOR_BAD));
-
-        // Steps
-        snprintf(val, sizeof(val), "%d", data->health.steps);
-        format_trend(trend, sizeof(trend), data->health.steps, data->health.steps_prev);
-        set_metric_card(1, val, trend, data->health.steps >= data->health.steps_prev ? COLOR_GOOD : COLOR_BAD);
-
-        // Heart Rate (live)
-        snprintf(val, sizeof(val), ui_text("%d bpm"), data->health.hr);
-        set_metric_card(2, val, "", data->health.hr <= 100 ? COLOR_GOOD : COLOR_WARN);
-
-        // RHR
-        snprintf(val, sizeof(val), ui_text("%d bpm"), data->health.rhr);
-        set_metric_card(3, val, "", data->health.rhr <= 60 ? COLOR_GOOD : (data->health.rhr <= 75 ? COLOR_WARN : COLOR_BAD));
-
-        // HRV
-        snprintf(val, sizeof(val), "%d ms", data->health.hrv);
-        set_metric_card(4, val, "", data->health.hrv >= 40 ? COLOR_GOOD : (data->health.hrv >= 25 ? COLOR_WARN : COLOR_BAD));
-
-        // SpO2
-        snprintf(val, sizeof(val), "%d%%", data->health.spo2);
-        set_metric_card(5, val, "", data->health.spo2 >= 95 ? COLOR_GOOD : COLOR_WARN);
+    summary_status(summary_health_status,data->health_state,data->health.valid);
+    summary_status(summary_tasks_status,data->tasks_state,data->tasks_valid);
+    summary_status(summary_news_status,data->news_state,data->news_valid);
+    bool health=summary_visible(data->health_state,data->health.valid);
+    auto present=[&](int i){return health && (!data->health.presence_known || (data->health.present&(1u<<i)));};
+    int readiness=data->health.readiness;
+    if(arc_readiness)lv_arc_set_value(arc_readiness,present(6)?readiness:0);
+    if(lbl_readiness_val){char val[16];if(present(6))snprintf(val,sizeof(val),"%d",readiness);else snprintf(val,sizeof(val),"—");lv_label_set_text(lbl_readiness_val,val);}
+    if(lbl_readiness_label)lv_label_set_text(lbl_readiness_label,ui_text(present(6)?"Готовность":"Нет оценки"));
+    if(arc_readiness)lv_obj_set_style_arc_color(arc_readiness,present(6)?readiness_color(readiness):COLOR_ACCENT,LV_PART_INDICATOR);
+    for(int i=0;i<NUM_METRIC_CARDS;i++) {
+     char value[32]="—",trend[24]={};
+     if(present(i))switch(i) {
+      case 0:snprintf(value,sizeof(value),ui_text("%.1f ч"),data->health.sleep);if(present(7))format_trend(trend,sizeof(trend),(int)(data->health.sleep*10),(int)(data->health.sleep_prev*10));break;
+      case 1:snprintf(value,sizeof(value),"%d",data->health.steps);if(present(8))format_trend(trend,sizeof(trend),data->health.steps,data->health.steps_prev);break;
+      case 2:snprintf(value,sizeof(value),ui_text("%d bpm"),data->health.hr);break;
+      case 3:snprintf(value,sizeof(value),ui_text("%d bpm"),data->health.rhr);break;
+      case 4:snprintf(value,sizeof(value),"%d ms",data->health.hrv);break;
+      case 5:snprintf(value,sizeof(value),"%d%%",data->health.spo2);break;
+     }
+     set_metric_card(i,value,trend,COLOR_TEXT_DIM);
     }
 
     // Tasks — with priority bars
-    if (data->tasks_valid) {
+    if (summary_visible(data->tasks_state,data->tasks_valid)) {
         int n = data->task_count;
         if (n > MAX_TASK_LINES) n = MAX_TASK_LINES;
         if (n == 0) {
@@ -2134,6 +2037,7 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
                     lv_label_set_text(lbl_task_lines[i], data->tasks[i].title);
                     lv_obj_clear_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
                 }
+                if(summary_task_due[i]) {lv_label_set_text(summary_task_due[i],data->tasks[i].due);lv_obj_clear_flag(summary_task_due[i],LV_OBJ_FLAG_HIDDEN);}
                 strncpy(task_titles[i], data->tasks[i].title, sizeof(task_titles[i]) - 1);
                 task_titles[i][sizeof(task_titles[i]) - 1] = '\0';
                 strncpy(task_due[i], data->tasks[i].due, sizeof(task_due[i]) - 1);
@@ -2141,6 +2045,7 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
             } else {
                 if (task_prio_bars[i]) lv_obj_add_flag(task_prio_bars[i], LV_OBJ_FLAG_HIDDEN);
                 if (lbl_task_lines[i]) lv_obj_add_flag(lbl_task_lines[i], LV_OBJ_FLAG_HIDDEN);
+                if(summary_task_due[i])lv_obj_add_flag(summary_task_due[i],LV_OBJ_FLAG_HIDDEN);
                 task_titles[i][0] = '\0';
                 task_due[i][0] = '\0';
             }
@@ -2148,7 +2053,7 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
     }
 
     // News — with dots and age
-    if (data->news_valid) {
+    if (summary_visible(data->news_state,data->news_valid)) {
         int n = data->news_count;
         if (n > MAX_NEWS_LINES) n = MAX_NEWS_LINES;
         if (n == 0) {
@@ -2172,7 +2077,11 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
                     lv_obj_clear_flag(lbl_news_lines[i], LV_OBJ_FLAG_HIDDEN);
                 }
                 if (lbl_news_age[i]) {
-                    lv_label_set_text(lbl_news_age[i], data->news[i].category);
+                    int64_t elapsed = data->news_state.has_received ? esp_timer_get_time()/1000-data->news_state.received_ms : 0;
+                    if(elapsed<0)elapsed=0;
+                    int64_t age_seconds=elapsed/1000+(data->news_state.source_age_known?data->news_state.source_age_seconds:0);
+                    int64_t hours=(data->news[i].hours_ago<0?0:data->news[i].hours_ago)+age_seconds/3600;
+                    char age[96];snprintf(age,sizeof(age),ui_text("%s · %d ч назад"),data->news[i].category,(int)(hours>INT32_MAX?INT32_MAX:hours));lv_label_set_text(lbl_news_age[i], age);
                     lv_obj_clear_flag(lbl_news_age[i], LV_OBJ_FLAG_HIDDEN);
                 }
                 strncpy(news_titles[i], data->news[i].title, sizeof(news_titles[i]) - 1);
@@ -2191,6 +2100,19 @@ void ui_dashboard_update_bridge(const bridge_data_t *data)
             }
         }
     }
+    for(int i=0;i<MAX_TASK_LINES;i++){if(summary_visible(data->tasks_state,data->tasks_valid)&&i<data->task_count)lv_obj_clear_flag(summary_task_rows[i],LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(summary_task_rows[i],LV_OBJ_FLAG_HIDDEN);}
+    for(int i=0;i<MAX_NEWS_LINES;i++){if(summary_visible(data->news_state,data->news_valid)&&i<data->news_count)lv_obj_clear_flag(summary_news_rows[i],LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(summary_news_rows[i],LV_OBJ_FLAG_HIDDEN);}
+    if(lbl_no_tasks)lv_label_set_text(lbl_no_tasks,summary_empty_text(data->tasks_state,data->tasks_valid,"Нет задач"));
+    if(lbl_no_news)lv_label_set_text(lbl_no_news,summary_empty_text(data->news_state,data->news_valid,"Нет новостей"));
+    if(!summary_visible(data->tasks_state,data->tasks_valid)) {
+     lv_obj_clear_flag(lbl_no_tasks,LV_OBJ_FLAG_HIDDEN);
+     for(int i=0;i<MAX_TASK_LINES;i++){lv_obj_add_flag(lbl_task_lines[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(summary_task_due[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(task_prio_bars[i],LV_OBJ_FLAG_HIDDEN);task_titles[i][0]=0;}
+    }
+    if(!summary_visible(data->news_state,data->news_valid)) {
+     lv_obj_clear_flag(lbl_no_news,LV_OBJ_FLAG_HIDDEN);
+     for(int i=0;i<MAX_NEWS_LINES;i++){lv_obj_add_flag(lbl_news_lines[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(lbl_news_age[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(news_dots[i],LV_OBJ_FLAG_HIDDEN);news_titles[i][0]=0;}
+    }
+
 }
 
 // ===== PAGE 3: HA Control — rooms =====
@@ -3303,6 +3225,7 @@ void ui_dashboard_apply_preferences(const web_preferences_t *prefs)
         if (prefs->visible_news) lv_obj_clear_flag(page2_news_panel, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(page2_news_panel, LV_OBJ_FLAG_HIDDEN);
     }
+    layout_summary();
     if (page3_root) {
         if (prefs->visible_home) lv_obj_clear_flag(page3_root, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(page3_root, LV_OBJ_FLAG_HIDDEN);
@@ -3342,6 +3265,7 @@ void ui_dashboard_reset_preferences(void)
         lv_obj_clear_flag(lbl_transport_out, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(lbl_transport_in, LV_OBJ_FLAG_HIDDEN);
     }
+    layout_summary();
     if (page2_health_panel) lv_obj_clear_flag(page2_health_panel, LV_OBJ_FLAG_HIDDEN);
     if (page2_tasks_panel) lv_obj_clear_flag(page2_tasks_panel, LV_OBJ_FLAG_HIDDEN);
     if (page2_news_panel) lv_obj_clear_flag(page2_news_panel, LV_OBJ_FLAG_HIDDEN);

@@ -7,6 +7,20 @@ struct entry_t { const char *ru; const char *en; const char *sr; };
 // Keep the Russian key as the stable source string so existing call sites are
 // easy to compare with the former Russian-only UI.
 static const entry_t STRINGS[] = {
+    {"Загружаю данные…", "Loading data…", "Učitavanje podataka…"},
+    {"Блоки Сводки выключены в настройках", "Summary blocks are disabled in Settings", "Blokovi pregleda su isključeni u podešavanjima"},
+    {"Источник выключен", "Source disabled", "Izvor je isključen"},
+    {"Не удалось загрузить данные", "Could not load data", "Učitavanje podataka nije uspelo"},
+    {"Возраст данных неизвестен", "Data age unknown", "Starost podataka nije poznata"},
+    {"Не удалось обновить · данные %d мин назад", "Refresh failed · data from %d min ago", "Osvežavanje nije uspelo · podaci od pre %d min"},
+    {"Данные Bridge: %d мин назад", "Bridge data: %d min ago", "Podaci Bridge-a: pre %d min"},
+    {"Нет оценки", "No score", "Nema ocene"},
+    {"%.1f ч", "%.1f h", "%.1f č"},
+    {"%s · %d ч назад", "%s · %d h ago", "%s · pre %d č"},
+    {"Ожидает обновления · получено %d мин назад", "Awaiting refresh · received %d min ago", "Čeka osvežavanje · primljeno pre %d min"},
+    {"Расписание может быть неполным · %d мин назад", "Schedule may be incomplete · %d min ago", "Raspored možda nije potpun · pre %d min"},
+    {"Данные календаря ожидают обновления", "Calendar data awaiting refresh", "Podaci kalendara čekaju osvežavanje"},
+    {"Расписание может быть неполным", "Schedule may be incomplete", "Raspored možda nije potpun"},
     {"Проверка подсветки. Возврат через %u с", "Backlight test. Restoring in %u s", "Test osvetljenja. Povratak za %u s"},
     {"Временная яркость. Доступен возврат.", "Temporary brightness. Restore is available.", "Privremeno osvetljenje. Povratak je dostupan."},
     {"Вернуть яркость", "Restore brightness", "Vrati osvetljenje"},
