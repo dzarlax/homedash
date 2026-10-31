@@ -129,5 +129,24 @@ int main() {
     assert(s_cal_data.valid && s_cal_data.last_attempt_failed && s_cal_data.received_ms == 200000);
     bridge_fetch_calendar(2099, 1, 2);
     assert(!s_cal_data.valid && s_cal_data.day == 2 && s_cal_data.last_attempt_failed);
+    reset(R"({"ts":1,"health":{"steps":0,"sleep":7,"present":{"steps":true,"sleep":true}},"tasks":[],"news":[{"t":"Example","c":"Local","h":2}],"sections":{"health":{"state":"ready","age_seconds":600},"tasks":{"state":"ready","age_seconds":5},"news":{"state":"ready","age_seconds":30}}})");
+    fake_now=500000000;bridge_fetch_and_update();
+    assert(s_data.health.valid && (s_data.health.present&2) && !(s_data.health.present&4));
+    assert(s_data.tasks_valid && s_data.task_count==0 && s_data.news_count==1);
+    assert(s_data.health_state.source_age_seconds==600 && s_data.health_state.received_ms==500000);
+    reset(R"({"ts":2,"health":null,"tasks":null,"news":null,"sections":{"health":{"state":"error"},"tasks":{"state":"error"},"news":{"state":"error"}}})");
+    fake_now=560000000;bridge_fetch_and_update();
+    assert(s_data.health.valid && s_data.health_state.last_attempt_failed && s_data.health_state.received_ms==500000);
+    assert(s_data.news_count==1 && s_data.news_state.last_attempt_failed);
+    reset(R"({"ts":3,"tasks":[],"sections":{"tasks":{"state":"disabled"}}})");bridge_fetch_and_update();
+    assert(s_data.tasks_state.known && !s_data.tasks_state.enabled && !s_data.tasks_state.last_attempt_failed);
+    reset("[]");calendar_header="partial";fake_now=1000000000;bridge_fetch_calendar(2026,10,31);int oldcalls=calls;
+    fake_now+=119999000;bridge_refresh_calendar_if_due();assert(calls==oldcalls);
+    fake_now+=1000;calendar_header="complete";bridge_refresh_calendar_if_due();assert(calls==oldcalls+1 && !s_cal_data.sources_partial && s_cal_data.day==31);
+    response_status=500;fake_now+=120000000;bridge_refresh_calendar_if_due();assert(s_cal_data.valid && s_cal_data.last_attempt_failed);
+    oldcalls=calls;response_status=200;fake_now+=29999000;bridge_refresh_calendar_if_due();assert(calls==oldcalls);
+    fake_now+=1000;bridge_refresh_calendar_if_due();assert(calls==oldcalls+1 && !s_cal_data.last_attempt_failed);
+    reset(R"({"ts":4,"health":{"steps":0,"sleep":0,"readiness":0,"present":{}}})");bridge_fetch_and_update();assert(s_data.health.valid && s_data.health.presence_known && s_data.health.present==0);
+    http_buf_t reason_buf={};esp_http_client_event_t reason_event={HTTP_EVENT_ON_HEADER,&reason_buf,nullptr,0,const_cast<char*>("X-HomeDash-Calendar-Reason"),const_cast<char*>("cache_stale")};http_event_handler(&reason_event);assert(reason_buf.cache_stale);
     puts("PASS: dashboard receipt, stale retention, recovery, selected-day failure; typed action HTTP, explicit intents, bounded responses, legacy acceptance, normalized observations, safe errors and single-entity merge");
 }

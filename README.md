@@ -492,3 +492,31 @@ and persistence. Removing brightness settings returns to reference command 50.
 Validation: `make -C sim test-brightness test-day-night test-settings-tab
  test-photo-frame test-localization` and `sh sim/sync_client_test/run.sh`.
 This candidate is locally tested; physical acceptance requires a separate OTA.
+
+
+### Calendar freshness and Summary (v1.0.37 candidate)
+
+The display now refreshes its selected calendar date every two minutes; failed
+requests retry after 30 seconds while connected. Refreshing never navigates away
+from that date. A fresh complete response clears the previous partial warning.
+`partial` means the schedule may be incomplete: `cache_stale` specifically means
+Calendar Platform's cached data awaits refresh, even when source status is ready.
+It does not assert that a provider account is inaccessible. Last good selected-day
+data remains visible during an error, with its original receipt age.
+
+Summary retains readiness and all six metrics, tasks and news. Each block has its
+own loading, empty, disabled, failed and retained-data state. Missing health values
+render as a dash; genuine zero steps remain zero. Rows open existing readers,
+include task due dates or news age, and scroll to all eight tasks/five headlines.
+Hidden blocks release their space to the remaining blocks.
+
+Dashboard `sections` metadata carries acquisition age from Bridge, not measurement
+time. Legacy Bridge responses still work, but cannot supply missing-field or
+provider freshness information they never exposed. With a modern Bridge, health
+`present` is authoritative even when empty. Schedule detail is read-only; provider
+synchronization, credentials and calendar selection are unchanged.
+
+Checks: `make -C sim test-summary test-day test-localization test-settings-tab
+ test-photo-frame test-day-night`, `sh sim/action_bridge_test/run.sh`, and normal
+PlatformIO build with network stack/TLS guards. This candidate is local; release
+and physical-device acceptance remain separate.

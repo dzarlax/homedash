@@ -16,7 +16,19 @@
 #define BRIDGE_TRANSPORT_STOPS    2
 #define BRIDGE_TRANSPORT_VEHICLES 5
 
+// Freshness is independent of payload validity: a failed request keeps last good data.
+struct bridge_section_t {
+ bool known;
+ bool enabled;
+ bool last_attempt_failed;
+ bool has_received;
+ bool source_age_known;
+ uint32_t source_age_seconds;
+ int64_t received_ms;
+};
 struct bridge_health_t {
+ uint16_t present;
+ bool presence_known;
     int  steps;
     int  steps_prev;
     int  cal;
@@ -125,10 +137,12 @@ struct bridge_cal_data_t {
     bool last_attempt_failed;
     bool completeness_known;
     bool sources_partial;
+    bool cache_stale;
 };
 
 struct bridge_data_t {
     uint32_t ts;
+    bridge_section_t health_state, tasks_state, news_state;
 
     bridge_health_t health;
 
@@ -161,6 +175,7 @@ void bridge_fetch_and_update(void);
 void bridge_toggle_light(const char *entity_id);
 void bridge_climate_action(const char *entity_id, const char *action, float temperature, const char *hvac_mode);
 void bridge_fetch_calendar(int year, int month, int day);
+void bridge_refresh_calendar_if_due(void);
 bool bridge_copy_data(bridge_data_t *out);
 bool bridge_has_data(void);
 bool bridge_copy_calendar_data(bridge_cal_data_t *out);

@@ -664,6 +664,9 @@ static void network_task(void *param)
             }
         }
 
+        // Refresh the selected date without changing UI navigation or adding a task.
+        bridge_refresh_calendar_if_due();
+
         // Periodic OTA check
         if (ota_elapsed >= OTA_CHECK_INTERVAL_MS) {
             ota_managed_poll();

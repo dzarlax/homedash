@@ -1,4 +1,5 @@
 #include "bridge.h"
+#include "calendar_refresh.h"
 #include "wifi_manager.h"
 
 #include <string.h>
@@ -50,12 +51,14 @@ static void utf8_strncpy(char *dst, const char *src, size_t dst_size)
 
 static bridge_data_t s_data = {};
 static bridge_cal_data_t s_cal_data = {};
+static calendar_refresh_t s_calendar_refresh;
 static char s_last_error[64] = "Waiting...";
 
 typedef struct {
     char *data;
     int   len;
     int   cap;
+    bool cache_stale;
     uint8_t calendar_state; // 0 unknown, 1 complete, 2 partial.
 } http_buf_t;
 
@@ -64,6 +67,8 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     http_buf_t *buf = (http_buf_t *)evt->user_data;
     switch (evt->event_id) {
     case HTTP_EVENT_ON_HEADER:
+        if (evt->header_key && evt->header_value && !strcasecmp(evt->header_key, "X-HomeDash-Calendar-Reason"))
+            buf->cache_stale = !strcmp(evt->header_value, "cache_stale");
         if (evt->header_key && evt->header_value && !strcasecmp(evt->header_key, "X-HomeDash-Calendar-State")) {
             if (!strcmp(evt->header_value, "partial")) buf->calendar_state = 2;
             else if (!strcmp(evt->header_value, "complete") && buf->calendar_state != 2) buf->calendar_state = 1;
@@ -131,31 +136,40 @@ static bool http_get(const char *url, http_buf_t *buf, char *err_out, size_t err
     return true;
 }
 
-static void parse_health(cJSON *obj)
+static bool parse_health(cJSON *obj)
 {
-    if (!obj || !cJSON_IsObject(obj)) {
-        s_data.health.valid = false;
-        return;
-    }
-    s_data.health.steps      = cJSON_GetObjectItem(obj, "steps")      ? cJSON_GetObjectItem(obj, "steps")->valueint : 0;
-    s_data.health.steps_prev = cJSON_GetObjectItem(obj, "steps_prev") ? cJSON_GetObjectItem(obj, "steps_prev")->valueint : 0;
-    s_data.health.cal        = cJSON_GetObjectItem(obj, "cal")        ? cJSON_GetObjectItem(obj, "cal")->valueint : 0;
-    s_data.health.cal_prev   = cJSON_GetObjectItem(obj, "cal_prev")   ? cJSON_GetObjectItem(obj, "cal_prev")->valueint : 0;
-    s_data.health.sleep      = cJSON_GetObjectItem(obj, "sleep")      ? (float)cJSON_GetObjectItem(obj, "sleep")->valuedouble : 0;
-    s_data.health.sleep_prev = cJSON_GetObjectItem(obj, "sleep_prev") ? (float)cJSON_GetObjectItem(obj, "sleep_prev")->valuedouble : 0;
-    s_data.health.hr         = cJSON_GetObjectItem(obj, "hr")         ? cJSON_GetObjectItem(obj, "hr")->valueint : 0;
-    s_data.health.rhr        = cJSON_GetObjectItem(obj, "rhr")        ? cJSON_GetObjectItem(obj, "rhr")->valueint : 0;
-    s_data.health.hrv        = cJSON_GetObjectItem(obj, "hrv")        ? cJSON_GetObjectItem(obj, "hrv")->valueint : 0;
-    s_data.health.spo2       = cJSON_GetObjectItem(obj, "spo2")       ? cJSON_GetObjectItem(obj, "spo2")->valueint : 0;
-    s_data.health.readiness  = cJSON_GetObjectItem(obj, "readiness")  ? cJSON_GetObjectItem(obj, "readiness")->valueint : 0;
-    s_data.health.valid = true;
+ if (!cJSON_IsObject(obj)) return false;
+ bridge_health_t fresh = {};
+ static const char *keys[] = {"sleep","steps","hr","rhr","hrv","spo2","readiness","sleep_prev","steps_prev","cal","cal_prev"};
+ cJSON *present = cJSON_GetObjectItem(obj,"present");
+ fresh.presence_known = true;
+ for (int i=0;i<11;i++) {
+  cJSON *v=cJSON_GetObjectItem(obj,keys[i]);
+  bool available=cJSON_IsNumber(v) && std::isfinite(v->valuedouble) && v->valuedouble>=0 && v->valuedouble<=2147483647;
+  if (cJSON_IsObject(present)) available=available && cJSON_IsTrue(cJSON_GetObjectItem(present,keys[i]));
+  if (available && i>=2 && i<=5 && v->valuedouble<=0) available=false;
+  if (available && (i==5 || i==6) && v->valuedouble>100) available=false;
+  if (!available) continue;
+  fresh.present |= (1u<<i);
+  switch(i) {
+   case 0:fresh.sleep=v->valuedouble;break;case 1:fresh.steps=v->valueint;break;
+   case 2:fresh.hr=v->valueint;break;case 3:fresh.rhr=v->valueint;break;case 4:fresh.hrv=v->valueint;break;
+   case 5:fresh.spo2=v->valueint;break;case 6:fresh.readiness=v->valueint;break;
+   case 7:fresh.sleep_prev=v->valuedouble;break;case 8:fresh.steps_prev=v->valueint;break;
+   case 9:fresh.cal=v->valueint;break;case 10:fresh.cal_prev=v->valueint;break;
+  }
+ }
+ fresh.valid=true;s_data.health=fresh;return true;
 }
 
-static void parse_tasks(cJSON *arr)
+static bool parse_tasks(cJSON *arr)
 {
+    if (!arr || !cJSON_IsArray(arr)) return false;
+    for (int i=0;i<cJSON_GetArraySize(arr);i++) {
+     cJSON *row=cJSON_GetArrayItem(arr,i);
+     if (!cJSON_IsObject(row) || !cJSON_IsString(cJSON_GetObjectItem(row,"t"))) return false;
+    }
     s_data.task_count = 0;
-    s_data.tasks_valid = false;
-    if (!arr || !cJSON_IsArray(arr)) return;
 
     int n = cJSON_GetArraySize(arr);
     if (n > BRIDGE_MAX_TASKS) n = BRIDGE_MAX_TASKS;
@@ -181,13 +195,17 @@ static void parse_tasks(cJSON *arr)
         s_data.task_count++;
     }
     s_data.tasks_valid = true;
+    return true;
 }
 
-static void parse_news(cJSON *arr)
+static bool parse_news(cJSON *arr)
 {
+    if (!arr || !cJSON_IsArray(arr)) return false;
+    for (int i=0;i<cJSON_GetArraySize(arr);i++) {
+     cJSON *row=cJSON_GetArrayItem(arr,i);
+     if (!cJSON_IsObject(row) || !cJSON_IsString(cJSON_GetObjectItem(row,"t"))) return false;
+    }
     s_data.news_count = 0;
-    s_data.news_valid = false;
-    if (!arr || !cJSON_IsArray(arr)) return;
 
     int n = cJSON_GetArraySize(arr);
     if (n > BRIDGE_MAX_NEWS) n = BRIDGE_MAX_NEWS;
@@ -217,6 +235,7 @@ static void parse_news(cJSON *arr)
         s_data.news_count++;
     }
     s_data.news_valid = true;
+    return true;
 }
 
 static void parse_sensors(cJSON *arr)
@@ -388,9 +407,26 @@ static void parse_transport(cJSON *arr)
     s_data.transport = fresh;
 }
 
+static bool section_can_parse(cJSON *root,const char *key,bridge_section_t *state) {
+ cJSON *meta=cJSON_GetObjectItem(cJSON_GetObjectItem(root,"sections"),key);
+ cJSON *status=cJSON_GetObjectItem(meta,"state");
+ state->known=cJSON_IsString(status);
+ state->enabled=!state->known || strcmp(status->valuestring,"disabled");
+ return state->enabled && (!state->known || !strcmp(status->valuestring,"ready"));
+}
+static void section_received(cJSON *root,const char *key,bridge_section_t *state,bool success) {
+ state->last_attempt_failed=state->enabled && !success;
+ if(!success)return;
+ state->has_received=true;state->received_ms=esp_timer_get_time()/1000;
+ cJSON *age=cJSON_GetObjectItem(cJSON_GetObjectItem(cJSON_GetObjectItem(root,"sections"),key),"age_seconds");
+ state->source_age_known=cJSON_IsNumber(age)&&std::isfinite(age->valuedouble)&&age->valuedouble>=0&&age->valuedouble<=UINT32_MAX;
+ state->source_age_seconds=state->source_age_known?(uint32_t)age->valuedouble:0;
+}
+
 static void mark_dashboard_failure() {
     xSemaphoreTake(s_data_mutex, portMAX_DELAY);
     s_data.weather.last_attempt_failed = s_data.transport.last_attempt_failed = true;
+    s_data.health_state.last_attempt_failed=s_data.tasks_state.last_attempt_failed=s_data.news_state.last_attempt_failed=true;
     xSemaphoreGive(s_data_mutex);
 }
 
@@ -426,9 +462,9 @@ void bridge_fetch_and_update(void)
     cJSON *ts = cJSON_GetObjectItem(root, "ts");
     if (ts) s_data.ts = (uint32_t)ts->valueint;
 
-    parse_health(cJSON_GetObjectItem(root, "health"));
-    parse_tasks(cJSON_GetObjectItem(root, "tasks"));
-    parse_news(cJSON_GetObjectItem(root, "news"));
+    section_received(root,"health",&s_data.health_state,section_can_parse(root,"health",&s_data.health_state) && parse_health(cJSON_GetObjectItem(root,"health")));
+    section_received(root,"tasks",&s_data.tasks_state,section_can_parse(root,"tasks",&s_data.tasks_state) && parse_tasks(cJSON_GetObjectItem(root,"tasks")));
+    section_received(root,"news",&s_data.news_state,section_can_parse(root,"news",&s_data.news_state) && parse_news(cJSON_GetObjectItem(root,"news")));
     parse_sensors(cJSON_GetObjectItem(root, "sensors"));
     parse_lights(cJSON_GetObjectItem(root, "lights"));
     parse_climate(cJSON_GetObjectItem(root, "climate"));
@@ -804,6 +840,8 @@ static void mark_calendar_failure(int year, int month, int day) {
 
 void bridge_fetch_calendar(int year, int month, int day)
 {
+    // Default to a bounded retry; a complete HTTP/JSON reply below promotes to 2 min.
+    s_calendar_refresh.complete(year,month,day,esp_timer_get_time()/1000,true);
     if (!wifi_is_connected()) { mark_calendar_failure(year, month, day); return; }
 
     char url[256];
@@ -860,6 +898,13 @@ void bridge_fetch_calendar(int year, int month, int day)
     s_cal_data.last_attempt_failed = false;
     s_cal_data.completeness_known = resp.calendar_state != 0;
     s_cal_data.sources_partial = resp.calendar_state == 2;
+    s_cal_data.cache_stale = s_cal_data.sources_partial && resp.cache_stale;
+    s_calendar_refresh.complete(year,month,day,esp_timer_get_time()/1000,false);
     xSemaphoreGive(s_data_mutex);
     cJSON_Delete(root);
+}
+
+void bridge_refresh_calendar_if_due(void) {
+ if (!wifi_is_connected() || !s_calendar_refresh.due(esp_timer_get_time()/1000)) return;
+ bridge_fetch_calendar(s_calendar_refresh.year,s_calendar_refresh.month,s_calendar_refresh.day);
 }
