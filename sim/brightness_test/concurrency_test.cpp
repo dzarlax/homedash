@@ -45,6 +45,9 @@ int main() {
             assert(brightness_runtime_checkpoint(&current));
             assert(current.current <= 97);
             assert(!*brightness_runtime_error());
+            auto report = brightness_runtime_report();
+            assert(report.output_known && report.has_last_command && report.has_test);
+            assert(report.last_command == report.test_command || report.last_command == report.return_command);
         }
     });
     worker.join(); manual.join(); observer.join();

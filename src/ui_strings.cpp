@@ -7,6 +7,11 @@ struct entry_t { const char *ru; const char *en; const char *sr; };
 // Keep the Russian key as the stable source string so existing call sites are
 // easy to compare with the former Russian-only UI.
 static const entry_t STRINGS[] = {
+    {"Экран читается? Выберите уровень теста.", "Is the screen readable? Choose a test level.", "Da li je ekran čitljiv? Izaberite nivo testa."},
+    {"Ярче: 20 секунд", "Brighter: 20 seconds", "Svetlije: 20 sekundi"},
+    {"Ночной: 20 секунд", "Night: 20 seconds", "Noćni: 20 sekundi"},
+    {"Ярче. Возврат через %u с", "Brighter. Restoring in %u s", "Svetlije. Povratak za %u s"},
+    {"Ночной. Возврат через %u с", "Night. Restoring in %u s", "Noćni. Povratak za %u s"},
     {"Тест подсветки", "Backlight test", "Test osvetljenja"},
     {"Установить исходную", "Set reference level", "Postavi početni nivo"},
     {"Установит новую исходную яркость, не прежнюю.", "Sets a new reference brightness, not the previous level.", "Postavlja novi početni nivo osvetljenja, ne prethodni."},

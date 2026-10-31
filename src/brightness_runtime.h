@@ -21,12 +21,22 @@ bool brightness_runtime_schedule(uint8_t day, uint8_t night, bool is_night, bool
 // Worker step; does not call LVGL or use the network.
 void brightness_runtime_tick();
 
-// Explicit two-level diagnostic, available only in the dedicated test build.
-// Values 50/60 are driver commands, never measured luminance percentages.
+// Explicit diagnostic levels, available only in the dedicated test build.
+// Reference 50; selectable commands 40/60/70 are not luminance percentages.
 enum brightness_reference_phase_t { BRIGHTNESS_REFERENCE_DISABLED, BRIGHTNESS_REFERENCE_IDLE,
     BRIGHTNESS_REFERENCE_CONFIRM, BRIGHTNESS_REFERENCE_PREVIEW,
     BRIGHTNESS_REFERENCE_RESTORED, BRIGHTNESS_REFERENCE_ERROR };
-struct brightness_reference_status_t { brightness_reference_phase_t phase; uint32_t remaining_seconds; };
+struct brightness_reference_status_t { brightness_reference_phase_t phase; uint32_t remaining_seconds; uint8_t test_command; };
 brightness_reference_status_t brightness_runtime_reference_status();
 bool brightness_runtime_reference_baseline();
-bool brightness_runtime_reference_preview();
+bool brightness_runtime_reference_preview(uint8_t command = 60);
+
+// Atomic command-state snapshot, not sensor feedback or PWM register readback.
+struct brightness_report_t {
+    const char *phase;
+    bool has_last_command, output_known, has_test;
+    uint8_t last_command, test_command, return_command;
+    uint64_t sample_uptime_ms, restore_deadline_uptime_ms;
+    const char *error;
+};
+brightness_report_t brightness_runtime_report();

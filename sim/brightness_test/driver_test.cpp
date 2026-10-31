@@ -20,8 +20,10 @@ int main() {
     assert(IO_EXTENSION_Pwm_Try_Output(50)==ESP_ERR_INVALID_STATE);
     IO_EXTENSION_Init(); IO_EXTENSION_Output(IO_EXTENSION_IO_2,0);
     uint8_t io=IO_EXTENSION.Last_io_value; assert(last[0]==IO_EXTENSION_IO_OUTPUT_ADDR);
+    assert(IO_EXTENSION_Pwm_Try_Output(40)==ESP_OK && last[1]==102);
     assert(IO_EXTENSION_Pwm_Try_Output(50)==ESP_OK && last[1]==127);
     assert(IO_EXTENSION_Pwm_Try_Output(60)==ESP_OK && last[1]==153);
+    assert(IO_EXTENSION_Pwm_Try_Output(70)==ESP_OK && last[1]==178);
     assert(IO_EXTENSION_Pwm_Try_Output(100)==ESP_OK);
     assert(last[0]==IO_EXTENSION_PWM_ADDR && last[1]==(uint8_t)(97*(255/100.0)));
     assert(IO_EXTENSION.Last_io_value==io && !locked);

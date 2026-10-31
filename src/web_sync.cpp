@@ -62,12 +62,14 @@ static char s_sync_error[48] = {};
 // Old Bridges reject unknown heartbeat fields. Learn support from a validated
 // response, scope it to the peer, and relearn after an HTTP 400 on rollback.
 static bool s_locale_report_supported = false;
+static bool s_backlight_report_supported = false;
 static bool s_optional_telemetry_supported = true;
 static char s_locale_peer[128] = {};
 static char s_locale_peer_key[64] = {};
 static void select_locale_peer(const char *url, const char *key) {
     if (!url || !key || strcmp(s_locale_peer, url) || strcmp(s_locale_peer_key, key)) {
         s_locale_report_supported = false;
+        s_backlight_report_supported = false;
         s_optional_telemetry_supported = true;
         snprintf(s_locale_peer, sizeof(s_locale_peer), "%s", url ? url : "");
         snprintf(s_locale_peer_key, sizeof(s_locale_peer_key), "%s", key ? key : "");
@@ -125,6 +127,22 @@ static cJSON *make_payload(const char *firmware, const char *boot_id,
         lvgl_port_unlock();
     }
     if (s_optional_telemetry_supported && brightness_error[0]) add_string(root, "backlight_error", brightness_error);
+    if (s_backlight_report_supported) {
+        const auto report = brightness_runtime_report();
+        cJSON *b = cJSON_AddObjectToObject(root, "backlight_report");
+        cJSON_AddNumberToObject(b, "version", 1);
+        add_string(b, "phase", report.phase);
+        cJSON_AddBoolToObject(b, "output_known", report.output_known);
+        if (report.has_last_command) cJSON_AddNumberToObject(b, "last_command", report.last_command);
+        else cJSON_AddNullToObject(b, "last_command");
+        cJSON_AddNumberToObject(b, "sample_uptime_ms", (double)report.sample_uptime_ms);
+        if (report.has_test) {
+            cJSON_AddNumberToObject(b, "test_command", report.test_command);
+            cJSON_AddNumberToObject(b, "return_command", report.return_command);
+            cJSON_AddNumberToObject(b, "restore_deadline_uptime_ms", (double)report.restore_deadline_uptime_ms);
+        }
+        add_string(b, "error", report.error);
+    }
     bool needs_brightness = applied.backlight_percent || applied.night_backlight_percent || applied.night_dim;
     cJSON_AddNumberToObject(root, "applied_revision",
                             web_settings_store_favorites_confirmed(&applied) && (!needs_brightness || (brightness_ready && !brightness_error[0])) ? applied.revision : 0);
@@ -224,7 +242,7 @@ static bool post_payload(const char *url, const char *key, const char *payload,
         snprintf(diagnostic, sizeof(diagnostic), "Sync:HTTP %d", status);
     }
     if (diagnostic[0]) set_diagnostic(diagnostic);
-    if (err == ESP_OK && status == 400) { s_locale_report_supported = false; s_optional_telemetry_supported = false; }
+    if (err == ESP_OK && status == 400) { s_locale_report_supported = false; s_backlight_report_supported = false; s_optional_telemetry_supported = false; }
     if (status_out) *status_out = status;
     esp_http_client_cleanup(client);
     return err == ESP_OK && status == 200 && !response->overflow;
@@ -433,6 +451,8 @@ bool web_sync_poll(const char *url, const char *key, const char *firmware,
     if (ok) {
         cJSON *screen = cJSON_GetObjectItemCaseSensitive(prefs, "screen");
         s_locale_report_supported = cJSON_HasObjectItem(screen, "locale");
+        cJSON *backlight_version = cJSON_GetObjectItemCaseSensitive(decoded, "backlight_report_version");
+        s_backlight_report_supported = cJSON_IsNumber(backlight_version) && backlight_version->valuedouble == 1;
     }
     cJSON_Delete(decoded);
     if (ok) s_sync_error[0] = 0;
