@@ -522,7 +522,7 @@ Validation: `make -C sim test-brightness test-day-night test-settings-tab
 This candidate is locally tested; physical acceptance requires a separate OTA.
 
 
-### Calendar freshness and Summary (v1.0.37 candidate)
+### Calendar freshness and Summary (v1.0.39)
 
 The display now refreshes its selected calendar date every two minutes; failed
 requests retry after 30 seconds while connected. Refreshing never navigates away
@@ -532,7 +532,11 @@ Calendar Platform's cached data awaits refresh, even when source status is ready
 It does not assert that a provider account is inaccessible. Last good selected-day
 data remains visible during an error, with its original receipt age.
 
-Summary retains readiness and all six metrics, tasks and news. Each block has its
+The Summary overview follows the approved three-card layout: a dated header,
+three prominent health values (sleep in hours/minutes, grouped steps and resting
+heart rate), followed by tasks and news with separators and a task-count badge.
+Tap Health to read all six metrics and readiness; no health data is discarded.
+Task and news lists scroll in whole rows. Each block has its
 own loading, empty, disabled, failed and retained-data state. Missing health values
 render as a dash; genuine zero steps remain zero. Rows open existing readers,
 include task due dates or news age, and scroll to all eight tasks/five headlines.
