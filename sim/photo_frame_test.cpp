@@ -21,6 +21,13 @@ static void pointer(lv_indev_t *indev, bool down, int x, int y) {
   lv_tick_inc(40);
   lv_indev_read(indev);
 }
+static void hold_for_controls(lv_indev_t *indev, int x = 10, int y = 10) {
+  pointer(indev, true, x, y);
+  ++fake_seconds;
+  tick(nullptr);
+  pointer(indev, false, 0, 0);
+  assert(overlay && controls_visible);
+}
 static lv_area_t control_coords(int index) {
   assert(control_buttons[index]);
   lv_obj_update_layout(overlay);
@@ -48,7 +55,9 @@ static void tap_control(lv_indev_t *indev, int index) {
   lv_area_t coords = control_coords(index);
   int x = (coords.x1 + coords.x2) / 2, y = (coords.y1 + coords.y2) / 2;
   pointer(indev, true, x, y);
-  pointer(indev, false, x, y);
+  // The real GT911 path supplies no coordinates on release; the adapter
+  // initializes that sample to (0, 0). Do not retain desktop pointer position.
+  pointer(indev, false, 0, 0);
 }
 
 extern "C" int64_t esp_timer_get_time() { return fake_seconds * 1000000; }
@@ -136,45 +145,64 @@ int main() {
   assert(overlay && displayed >= 0);
   assert(shown_id[0] == 'a');
   complete_context_404();
-  // Photo taps reveal a timed control strip; subsequent background taps hide
-  // it. Every contact stays inside the photo mode and never reaches dashboard.
+  // A stationary hold opens controls without exiting on release. A short tap
+  // is handled separately below and never reaches the dashboard underneath.
   lv_obj_t *initial_overlay = overlay;
-  if (controls_visible) { pointer(indev, true, 10, 10); pointer(indev, false, 10, 10); }
-  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  clear_controls();
+  pointer(indev, true, 10, 10);
+  assert(overlay == initial_overlay && !controls_visible);
+  pointer(indev, true, 15, 14); // Small finger jitter remains a stationary hold.
+  ++fake_seconds; tick(nullptr);
+  assert(overlay == initial_overlay && controls_visible);
+  pointer(indev, false, 0, 0);
   assert(overlay == initial_overlay && controls_visible && clicks == 0);
   assert_controls_on_screen();
-  pointer(indev, true, 80, 80); pointer(indev, false, 80, 80);
-  assert(overlay == initial_overlay && !controls_visible && clicks == 0);
-  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  tap_control(indev, 1);
+  assert(manual_target_pending && manual_target_id[0] == 'b');
+  tap_control(indev, 0);
+  assert(!manual_target_pending && shown_id[0] == 'a');
+  // Opening controls under the finger must not activate the newly shown Exit.
+  lv_area_t exit_area = control_coords(4);
+  clear_controls();
+  hold_for_controls(indev, (exit_area.x1 + exit_area.x2) / 2, (exit_area.y1 + exit_area.y2) / 2);
+  assert(overlay == initial_overlay && controls_visible);
   fake_seconds += 5; tick(nullptr);
+  assert(!controls_visible && overlay == initial_overlay);
+  // Movement outside the tap slop cancels a hold even below swipe distance.
+  pointer(indev, true, 300, 240); pointer(indev, true, 325, 240);
+  ++fake_seconds; tick(nullptr);
+  assert(!controls_visible && overlay == initial_overlay);
+  pointer(indev, false, 0, 0);
   assert(!controls_visible && overlay == initial_overlay);
   // A horizontal swipe advances in manifest order and replaces only after the
   // requested image is ready.
-  pointer(indev, true, 300, 240); pointer(indev, false, 380, 245);
+  pointer(indev, true, 300, 240); pointer(indev, true, 380, 245); pointer(indev, false, 0, 0);
   assert(manual_target_pending && manual_target_id[0] == 'b');
   tick(nullptr); assert(busy && job.kind == FRAME && job.frame.id[0] == 'b');
   unsigned obsolete_generation = job.generation;
-  pointer(indev, true, 380, 240); pointer(indev, false, 300, 245);
+  pointer(indev, true, 380, 240); pointer(indev, true, 300, 245); pointer(indev, false, 0, 0);
   assert(!manual_target_pending && shown_id[0] == 'a' && epoch.load() != obsolete_generation);
   complete_frame(); tick(nullptr);
   assert(shown_id[0] == 'a' && overlay == initial_overlay && !manual_target_pending);
   // A fresh next request can proceed after the obsolete response is discarded.
-  pointer(indev, true, 300, 240); pointer(indev, false, 380, 245);
+  pointer(indev, true, 300, 240); pointer(indev, true, 380, 245); pointer(indev, false, 0, 0);
   assert(manual_target_pending && manual_target_id[0] == 'b');
   tick(nullptr); assert(busy && job.kind == FRAME && job.frame.id[0] == 'b');
   complete_frame(); tick(nullptr); assert(shown_id[0] == 'b');
   assert(overlay == initial_overlay);
   complete_context_404();
   // Pause stops timed changes but manual navigation continues to work.
+  hold_for_controls(indev);
   assert_controls_on_screen();
   tap_control(indev, 2);
   assert(slideshow_paused);
-  pointer(indev, true, 400, 240); pointer(indev, false, 480, 240);
+  pointer(indev, true, 400, 240); pointer(indev, true, 480, 240); pointer(indev, false, 0, 0);
   assert(manual_target_pending && manual_target_id[0] == 'a');
   tick(nullptr); assert(busy && job.kind == FRAME && job.frame.id[0] == 'a');
   complete_frame(); tick(nullptr); assert(shown_id[0] == 'a' && slideshow_paused);
   complete_context_404();
-  execute_control(5);
+  assert_controls_on_screen();
+  tap_control(indev, 4);
   assert(!overlay && !slideshow_paused && !info_hidden);
   // An unfinished transfer from the previous idle generation cannot publish.
   fake_seconds = 600;
@@ -232,7 +260,7 @@ int main() {
   assert(busy && job.kind == MANIFEST && stale_refresh_pending);
   job.result = PHOTO_FAILED; job.complete = true; busy = false; tick(nullptr);
   assert(overlay == stale_overlay && load_error && retry_requested);
-  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  hold_for_controls(indev);
   assert(controls_visible && control_status && !lv_obj_has_flag(control_status, LV_OBJ_FLAG_HIDDEN));
   assert_controls_on_screen();
   tap_control(indev, 4);
@@ -326,9 +354,7 @@ int main() {
   assert(lv_tileview_get_tile_active(tileview) == nav_tiles[2]);
   // Exit is explicit, and the same gesture cannot relaunch the frame.
   pointer(indev, true, 740, 20);
-  pointer(indev, false, 740, 20);
-  assert_controls_on_screen();
-  tap_control(indev, 4);
+  pointer(indev, false, 0, 0);
   assert(!overlay && !manual_requested && !busy.load());
   // A failed manual attempt leaves photo mode closed.
   assert(photo_frame_start_now());
@@ -374,7 +400,7 @@ int main() {
   assert(busy.load() && job.kind == FRAME && overlay == visible_overlay);
   complete_frame(PHOTO_FAILED); tick(nullptr);
   assert(overlay == visible_overlay && shown_id[0] == 'a' && load_error);
-  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  hold_for_controls(indev);
   assert(controls_visible && control_status && !lv_obj_has_flag(control_status, LV_OBJ_FLAG_HIDDEN));
   assert_controls_on_screen();
   tap_control(indev, 4);
@@ -404,8 +430,8 @@ int main() {
   job.result = PHOTO_OK; job.complete = true; busy = false; tick(nullptr);
   assert(cards[0].pixels && overlay == visible_overlay && last_slide == slide_before);
   assert(clock_label && date_label && !lv_obj_has_flag(clock_label, LV_OBJ_FLAG_HIDDEN));
-  if (controls_visible) { pointer(indev, true, 10, 10); pointer(indev, false, 10, 10); }
-  pointer(indev, true, 10, 10); pointer(indev, false, 10, 10);
+  clear_controls();
+  hold_for_controls(indev);
   assert_controls_on_screen();
   tap_control(indev, 3);
   assert(info_hidden && lv_obj_has_flag(cards[0].object, LV_OBJ_FLAG_HIDDEN));

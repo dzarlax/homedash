@@ -54,8 +54,12 @@ static bool touch_started_in_photo = false, controls_visible = false;
 static bool slideshow_paused = false, info_hidden = false, load_error = false;
 static bool retry_requested = false, stale_refresh_pending = false;
 static int touch_start_x = 0, touch_start_y = 0;
+static int touch_last_x = 0, touch_last_y = 0;
 static int touch_start_action = -1;
-static bool touch_start_controls = false;
+static bool touch_hold_opened = false, touch_hold_cancelled = false;
+static int64_t touch_started_us = 0;
+static constexpr int TOUCH_TAP_SLOP = 16;
+static constexpr int64_t TOUCH_HOLD_US = 700000;
 static int64_t controls_until = 0;
 static lv_obj_t *control_bar = nullptr, *control_status = nullptr;
 static lv_obj_t *control_buttons[6] = {}, *control_labels[6] = {};
@@ -580,41 +584,68 @@ static int control_at(int x, int y) {
   }
   return -1;
 }
+static void maybe_open_photo_controls() {
+  if (!physical_down || !touch_started_in_photo || !overlay || touch_start_action >= 0 ||
+      touch_hold_opened || touch_hold_cancelled) return;
+  if (esp_timer_get_time() - touch_started_us < TOUCH_HOLD_US) return;
+  touch_hold_opened = true;
+  show_controls();
+}
 static bool process_photo_touch(bool pressed, int x, int y) {
   int64_t t = now();
   if (pressed) {
-    if (physical_down) return touch_started_in_photo;
+    // GT911 supplies coordinates only while contact is present. Cache every
+    // pressed sample, including movement; release coordinates are undefined.
+    touch_last_x = x;
+    touch_last_y = y;
+    if (physical_down) {
+      if (abs(x - touch_start_x) > TOUCH_TAP_SLOP || abs(y - touch_start_y) > TOUCH_TAP_SLOP)
+        touch_hold_cancelled = true;
+      maybe_open_photo_controls();
+      return touch_started_in_photo;
+    }
     physical_down = true;
     last_touch = t;
     touch_start_x = x;
     touch_start_y = y;
     touch_started_in_photo = overlay != nullptr;
-    touch_start_controls = controls_visible;
-    touch_start_action = touch_start_controls ? control_at(x, y) : -1;
+    touch_hold_opened = touch_hold_cancelled = false;
+    touch_started_us = esp_timer_get_time();
+    touch_start_action = controls_visible ? control_at(x, y) : -1;
     gesture = touch_started_in_photo;
     if (!touch_started_in_photo) {
       epoch.fetch_add(1);
       manual_requested = false;
       return false;
     }
-    if (!touch_start_controls) show_controls();
     return true;
   }
+  maybe_open_photo_controls();
   physical_down = false;
   if (!touch_started_in_photo) {
     touch_started_in_photo = false;
     gesture = false;
     return false;
   }
-  int dx = x - touch_start_x, dy = y - touch_start_y;
-  if (abs(dx) >= 60 && abs(dy) < abs(dx) / 2) request_navigation(dx < 0 ? 1 : -1);
-  else if (touch_start_action >= 0) {
+  int dx = touch_last_x - touch_start_x, dy = touch_last_y - touch_start_y;
+  if (touch_hold_opened) {
+    // The release that finishes the hold must neither exit nor press a button
+    // newly revealed underneath the finger.
     controls_until = t + 5;
-    execute_control(touch_start_action);
-  } else if (touch_start_controls && controls_visible) clear_controls();
-  else if (!touch_start_controls && overlay) show_controls();
+  } else if (abs(dx) >= 60 && abs(dy) < abs(dx) / 2) {
+    request_navigation(dx < 0 ? 1 : -1);
+  } else if (!touch_hold_cancelled && abs(dx) <= TOUCH_TAP_SLOP && abs(dy) <= TOUCH_TAP_SLOP) {
+    if (touch_start_action >= 0) {
+      if (control_at(touch_last_x, touch_last_y) == touch_start_action) {
+        controls_until = t + 5;
+        execute_control(touch_start_action);
+      }
+    } else {
+      execute_control(5);
+    }
+  }
   touch_start_action = -1;
-  touch_start_controls = false;
+  touch_hold_opened = touch_hold_cancelled = false;
   touch_started_in_photo = false;
   gesture = false;
   return true;
@@ -809,7 +840,8 @@ static void tick(lv_timer_t *) {
     render_clock();
   }
   if (info_hidden) set_info_hidden(true);
-  if (controls_visible && t >= controls_until) clear_controls();
+  maybe_open_photo_controls();
+  if (controls_visible && t >= controls_until && !physical_down) clear_controls();
   if (controls_visible) update_controls();
   controls_raise();
   if (last_ready && t - last_ready >= stale_seconds) {
