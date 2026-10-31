@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "brightness_controller.h"
 #include "brightness_calibration.h"
+#include "brightness_instance_profile.h"
 // Call once during startup, before UI/network tasks. Starts a local restore
 // worker without enabling brightness or writing PWM. Failure keeps it disabled.
 bool brightness_runtime_start();
@@ -9,7 +10,12 @@ bool brightness_runtime_start();
 // trustworthy current PWM baseline. No boot path calls this by default.
 bool brightness_runtime_apply_profile(const brightness_calibration_profile_t *profile,
                                       const brightness_board_identity_t *observed_board);
+bool brightness_runtime_apply_instance(const brightness_instance_profile_t *, const char *device_id);
 bool brightness_runtime_ready();
+bool brightness_runtime_settings_confirmed();
+bool brightness_runtime_preview_active();
+bool brightness_runtime_adjust(uint8_t percent);
+bool brightness_runtime_clear_schedule();
 const char *brightness_runtime_error();
 void brightness_runtime_mark_write_failed();
 bool brightness_runtime_preview(uint8_t percent);

@@ -28,11 +28,23 @@ bool brightness_preview(brightness_controller_t *b, uint8_t percent, uint64_t no
     b->restore = old; b->current = pwm; b->preview = true; b->deadline_ms = now_ms + 20000;
     return true;
 }
+bool brightness_adjust_preview(brightness_controller_t *b, uint8_t percent, uint64_t now_ms) {
+    if (!b || !b->ready || percent < 10 || percent > 100 || now_ms > UINT64_MAX - 120000) return false;
+    if (b->preview && (!b->live_preview || now_ms >= b->deadline_ms)) return false;
+    uint8_t target = mapped(b, percent);
+    if (b->preview && b->current == target) return true;
+    if (!b->write(target, b->context)) return false;
+    if (!b->preview) { b->restore = b->current; b->live_limit_ms = now_ms + 120000; }
+    b->current = target; b->preview = true; b->live_preview = true;
+    b->deadline_ms = now_ms + 20000;
+    if (b->deadline_ms > b->live_limit_ms) b->deadline_ms = b->live_limit_ms;
+    return true;
+}
 bool brightness_restore(brightness_controller_t *b) {
     if (!b || !b->ready) return false;
     if (!b->preview) return true;
     if (!b->write(b->restore, b->context)) return false;
-    b->current = b->restore; b->preview = false; b->deadline_ms = 0; return true;
+    b->current = b->restore; b->preview = false; b->live_preview = false; b->deadline_ms = 0; b->live_limit_ms = 0; return true;
 }
 bool brightness_tick(brightness_controller_t *b, uint64_t now_ms) {
     return b && b->ready && (!b->preview || now_ms < b->deadline_ms || brightness_restore(b));

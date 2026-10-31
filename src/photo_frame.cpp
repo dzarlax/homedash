@@ -990,6 +990,14 @@ bool photo_frame_touch(bool pressed) {
 }
 void photo_frame_filter_touch(bool pressed, uint16_t x, uint16_t y,
                               lv_indev_data_t *data) {
+  static bool backlight_passthrough = false;
+  if (pressed && !physical_down && ui_dashboard_backlight_preview_contains(x, y)) backlight_passthrough = true;
+  if (backlight_passthrough) {
+    data->point.x = x; data->point.y = y;
+    data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    if (!pressed) backlight_passthrough = false;
+    return;
+  }
   if (process_photo_touch(pressed, x, y)) {
     data->state = LV_INDEV_STATE_RELEASED;
     return;

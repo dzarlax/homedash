@@ -68,3 +68,13 @@ perceived plateau or readable level as an observation, not measured luminance.
 The last transmitted PWM and the chosen endpoint are separate values. Pending
 physical acceptance, standard brightness and automatic night dimming remain
 disabled. Publishing/flashing this candidate still needs separate permission.
+
+
+## User-observed instance profile
+
+The owner selected raw bright command 1 and dim command 97 in v1.0.35 and
+reported that every step changed brightness. This establishes operational bounds
+for that software-identified device only, not photometric calibration or a known
+factory revision. v1.0.36 moves everyday level selection to Bridge; normal
+Settings have no step-test UI. Choose day/night levels by temporary preview,
+explicitly assign them, then save. Unknown IDs must not inherit this profile.

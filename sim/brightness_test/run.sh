@@ -16,3 +16,5 @@ c++ -std=c++17 -pthread -DHOMEDASH_BRIGHTNESS_REFERENCE_TEST=1 -Isim/brightness_
 "$tmp/reference"
 c++ -std=c++17 -pthread -DHOMEDASH_BRIGHTNESS_REFERENCE_TEST=1 -Isim/brightness_test/include -Isrc src/brightness_calibration.cpp src/brightness_controller.cpp src/brightness_runtime.cpp sim/brightness_test/runtime_freertos.cpp sim/brightness_test/reference_concurrency_test.cpp -o "$tmp/reference-concurrency"
 "$tmp/reference-concurrency"
+c++ -std=c++17 -pthread -Isim/brightness_test/include -Isrc src/brightness_calibration.cpp src/brightness_controller.cpp src/brightness_runtime.cpp sim/brightness_test/runtime_freertos.cpp sim/brightness_test/instance_test.cpp -o "$tmp/instance"
+"$tmp/instance"

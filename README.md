@@ -464,3 +464,31 @@ persist brightness settings, or change day/night scheduling. Bridge report v1
 continues to describe acknowledged hardware commands, never the chosen endpoint.
 No API or storage migration is needed. Physical endpoint acceptance remains a
 separate manual check after an explicitly authorized diagnostic release.
+
+
+### Day/night brightness (v1.0.36 candidate)
+
+Brightness is chosen in the Bridge web panel: move the candidate slider, observe
+its temporary effect, then select **Use during day** or **Use at night**. These
+choices edit a draft; save changes after the preview returns to persist both
+levels and the local-time schedule. No day or night level is selected by default.
+The display keeps only preview status and **Restore brightness**, including in
+the photo frame. Normal firmware does not expose the old step calibration screen.
+
+The user-observed instance profile is bound to this display's stable software ID,
+not a factory board revision (which remains unknown). Commands 1 and 97 are the
+selected bright/dim endpoints; 50 is the explicitly accepted reference. Levels
+10–100 map inversely onto these commands and are not measured light percentages.
+Startup requires an acknowledged reference write before advertising support.
+Unknown devices remain unsupported; diagnostic builds retain the laboratory test.
+
+Preview restores the exact prior command after 20 seconds without an accepted
+change, or at the two-minute session limit. Expired continuation commands cannot
+restart it. A failed write/return stays visibly uncertain and cannot be selected.
+Stored settings survive reboot and run locally without Bridge; a night schedule
+waits for valid time. Sync acknowledges a revision only after hardware application
+and persistence. Removing brightness settings returns to reference command 50.
+
+Validation: `make -C sim test-brightness test-day-night test-settings-tab
+ test-photo-frame test-localization` and `sh sim/sync_client_test/run.sh`.
+This candidate is locally tested; physical acceptance requires a separate OTA.

@@ -16,17 +16,32 @@
 
 #include "bridge.h"
 #include "brightness_runtime.h"
+#include "brightness_fixture.h"
+namespace brightness_fixture { bool ready=false,time_valid=true,preview=false; int schedule_calls=0,clear_calls=0; uint8_t day=0,night=0; bool is_night=false,wake=false; }
 bool brightness_runtime_apply_profile(const brightness_calibration_profile_t *, const brightness_board_identity_t *) { return false; }
-bool brightness_runtime_ready() { return false; }
+bool brightness_runtime_ready() { return brightness_fixture::ready; }
+bool brightness_runtime_settings_confirmed() { return false; }
+bool brightness_runtime_preview_active() { return brightness_fixture::preview; }
+bool brightness_runtime_adjust(uint8_t) { return false; }
+bool brightness_runtime_clear_schedule() { ++brightness_fixture::clear_calls; return brightness_fixture::ready; }
+bool wifi_time_is_valid() { return brightness_fixture::time_valid; }
+void wifi_set_timezone(const char *) {}
 const char *brightness_runtime_error() { return ""; }
 void brightness_runtime_mark_write_failed() {}
 bool brightness_runtime_preview(uint8_t) { return false; }
-bool brightness_runtime_restore() { return false; }
+bool brightness_runtime_restore() { if(!brightness_fixture::ready)return false; brightness_fixture::preview=false; return true; }
 bool brightness_runtime_checkpoint(brightness_checkpoint_t *) { return false; }
 bool brightness_runtime_rollback(const brightness_checkpoint_t *) { return false; }
-bool brightness_runtime_schedule(uint8_t, uint8_t, bool, bool) { return false; }
+bool brightness_runtime_schedule(uint8_t day,uint8_t night,bool is_night,bool wake) {
+    ++brightness_fixture::schedule_calls; brightness_fixture::day=day; brightness_fixture::night=night;
+    brightness_fixture::is_night=is_night;brightness_fixture::wake=wake;return brightness_fixture::ready;
+}
 void brightness_runtime_tick() {}
-brightness_report_t brightness_runtime_report() { brightness_report_t r = {}; r.phase="unknown"; r.error=""; return r; }
+brightness_report_t brightness_runtime_report() {
+    brightness_report_t r = {}; r.phase=brightness_fixture::preview ? "preview" : "unknown"; r.error="";
+    if(brightness_fixture::preview) {r.has_last_command=true;r.output_known=true;r.last_command=70;r.has_test=true;r.test_command=70;r.return_command=50;r.sample_uptime_ms=1000;r.restore_deadline_uptime_ms=21000;}
+    return r;
+}
 #ifndef BRIGHTNESS_REFERENCE_UI_TEST
 brightness_reference_status_t brightness_runtime_reference_status() { return {BRIGHTNESS_REFERENCE_DISABLED, 0}; }
 bool brightness_runtime_reference_baseline() { return false; }
