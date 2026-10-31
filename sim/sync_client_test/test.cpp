@@ -38,9 +38,11 @@ static bool expect_stable_status = false;
 static bool has_saved = false;
 static bool locale_confirmed = true;
 static bool brightness_ready = false, save_failure = false, brightness_write_failure = false;
+static bool settings_confirmed = false, clock_valid = true, preview_active = false;
 static int brightness_rollbacks = 0;
 static bool expect_locale_field = false;
 static bool expect_backlight_report = false;
+static bool expect_control = false;
 static web_preferences_t saved = {};
 
 const char *esp_err_to_name(esp_err_t e) { return e == ESP_OK ? "ESP_OK" : "ESP_ERR_HTTP_CONNECT"; }
@@ -63,7 +65,7 @@ esp_err_t esp_http_client_perform(esp_http_client_handle_t h) {
         cJSON *p = cJSON_Parse(h->payload.c_str()); assert(p);
         assert(!strcmp(cJSON_GetObjectItem(p,"device_id")->valuestring, device_id));
         assert(!strcmp(cJSON_GetObjectItem(p,"boot_id")->valuestring,"boot-test"));
-        assert(cJSON_GetObjectItem(p,"applied_revision")->valueint == (has_saved && (brightness_ready || !(saved.backlight_percent || saved.night_backlight_percent || saved.night_dim)) ? static_cast<int>(saved.revision) : 0));
+        assert(cJSON_GetObjectItem(p,"applied_revision")->valueint == (has_saved && ((brightness_ready && settings_confirmed) || !(saved.backlight_percent || saved.night_backlight_percent || saved.night_dim)) ? static_cast<int>(saved.revision) : 0));
         cJSON *applied_locale = cJSON_GetObjectItem(p,"applied_locale");
         assert((applied_locale != nullptr) == expect_locale_field);
         if (applied_locale) assert(!strcmp(applied_locale->valuestring, has_saved && locale_confirmed ? saved.locale : ""));
@@ -73,6 +75,7 @@ esp_err_t esp_http_client_perform(esp_http_client_handle_t h) {
             if (cJSON_IsString(cap) && !strcmp(cap->valuestring,"locale")) locale_cap = true;
         }
         assert(locale_cap);
+        assert(cJSON_GetArraySize(cJSON_GetObjectItem(p,"capabilities")) == 13 + (brightness_ready ? (expect_control ? 5 : 3) : 0));
         cJSON *backlight = cJSON_GetObjectItem(p, "backlight_report");
         assert((backlight != nullptr) == expect_backlight_report);
         if (backlight) {
@@ -112,7 +115,7 @@ esp_err_t esp_netif_get_ip_info(esp_netif_t *,esp_netif_ip_info_t *) { return ES
 esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap) { strcpy(reinterpret_cast<char *>(ap->ssid),"private-test-ssid"); return ESP_OK; }
 extern "C" int64_t esp_timer_get_time(void) { return 123000000; }
 bool wifi_is_connected(void) { return true; }
-bool wifi_time_is_valid(void) { return true; }
+bool wifi_time_is_valid(void) { return clock_valid; }
 const char *ota_available_version(void) { return ""; }
 bool web_identity_get(char *out,size_t n) { if(n<33)return false; memcpy(out,device_id,33);return true; }
 bool web_identity_matches(const char *id) { return id && !strcmp(id,device_id); }
@@ -120,11 +123,14 @@ esp_err_t web_identity_set_http_header(esp_http_client_handle_t h) { return esp_
 bool web_settings_store_load(web_preferences_t *out) { if(!has_saved)return false; *out=saved; return true; }
 brightness_report_t brightness_runtime_report() { brightness_report_t r = {}; r.phase="unknown"; r.error=""; r.sample_uptime_ms=123000; return r; }
 bool brightness_runtime_ready() { return brightness_ready; }
+bool brightness_runtime_settings_confirmed() { return settings_confirmed; }
+bool brightness_runtime_preview_active() { return preview_active; }
+void wifi_set_timezone(const char *) {}
 const char *brightness_runtime_error() { return ""; }
 void brightness_runtime_mark_write_failed() {}
-bool brightness_runtime_checkpoint(brightness_checkpoint_t *) { return brightness_ready; }
-bool brightness_runtime_rollback(const brightness_checkpoint_t *) { ++brightness_rollbacks; return true; }
-bool ui_dashboard_apply_brightness(const web_preferences_t *) { return brightness_ready && !brightness_write_failure; }
+bool brightness_runtime_checkpoint(brightness_checkpoint_t *p) { p->configured = settings_confirmed; return brightness_ready; }
+bool brightness_runtime_rollback(const brightness_checkpoint_t *p) { ++brightness_rollbacks; settings_confirmed=p->configured; return true; }
+bool ui_dashboard_apply_brightness(const web_preferences_t *) { if(!brightness_ready || brightness_write_failure)return false; settings_confirmed=true; return true; }
 static bool ota_telemetry = false;
 bool web_settings_store_ota_telemetry(char *id, size_t, char *stage, size_t, char *error, size_t) {
     if (!ota_telemetry) return false;
@@ -165,6 +171,8 @@ int main() {
     assert(!strcmp(saved.bridge_id,bridge_id));
     body=response(); body.replace(body.find("\"command\":null"), 14, "\"command\":{\"id\":\"ota-test\",\"action\":\"ota_install\",\"expires_at\":\"later\",\"target_version\":\"1.0.30\"}");
     assert(poll(&out) && !strcmp(out.command.target_version, "1.0.30"));
+    body=response(); body.replace(body.find("\"command\":null"),14,"\"command\":{\"id\":\"adjust-test\",\"action\":\"backlight_adjust\",\"percent\":36,\"expires_at\":\"later\"}");
+    assert(poll(&out) && !strcmp(out.command.action,"backlight_adjust") && out.command.percent==36);
     body=response(); body.insert(body.find("\"name\":\"Hall\""), "\"backlight_percent\":50,");
     assert(poll(&out) && !web_sync_apply_preferences(&out));
     web_preferences_t before_brightness = saved;
@@ -173,6 +181,18 @@ int main() {
     brightness_write_failure = false; save_failure = true;
     assert(!web_sync_apply_preferences(&out) && brightness_rollbacks == 2);
     save_failure = false; assert(web_sync_apply_preferences(&out));
+    // A saved preference revision does not prove post-boot application.
+    settings_confirmed = false;
+    assert(poll(&out));
+    assert(web_sync_apply_preferences(&out) && settings_confirmed);
+    preview_active = true; settings_confirmed = false;
+    assert(!web_sync_apply_preferences(&out)); preview_active = false;
+    out.preferences.night_enabled = true; clock_valid = false;
+    int rollback_before_clock = brightness_rollbacks;
+    assert(!web_sync_apply_preferences(&out) && brightness_rollbacks == rollback_before_clock);
+    clock_valid = true; out.preferences.night_enabled = false;
+    assert(web_sync_apply_preferences(&out));
+
     brightness_ready = false; saved = before_brightness; applies = 1;
     body=response(); body.insert(body.find("\"screen\":"), "\"home\":{\"favorites\":[{\"entity_id\":\"light.test\",\"kind\":\"light\"}]},");
     assert(poll(&out) && out.preferences.favorite_count == 1);
@@ -256,5 +276,12 @@ int main() {
     assert(web_sync_poll("https://bridge.test", expected_key.c_str(), "1.0.34", "boot-test", &out));
     expected_key = "private-test-key";
     assert(poll(&out));
+    // New live-control capabilities are learned only from a validated new Bridge.
+    brightness_ready=true;body=response();body.insert(1,"\"backlight_control_version\":1,");assert(poll(&out));
+    expect_control=true;assert(poll(&out));
+    status=422;assert(!poll(&out));status=200;expect_control=false;assert(poll(&out));
+    expect_control=true;assert(poll(&out));
+    status=400;assert(!poll(&out));status=200;
+    expect_control=false;body=response();assert(poll(&out));
     puts("sync client: cold bootstrap, identity, revisions, bounds, TLS diagnostics and OOM passed");
 }

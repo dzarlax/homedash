@@ -7,6 +7,9 @@ struct entry_t { const char *ru; const char *en; const char *sr; };
 // Keep the Russian key as the stable source string so existing call sites are
 // easy to compare with the former Russian-only UI.
 static const entry_t STRINGS[] = {
+    {"Проверка подсветки. Возврат через %u с", "Backlight test. Restoring in %u s", "Test osvetljenja. Povratak za %u s"},
+    {"Временная яркость. Доступен возврат.", "Temporary brightness. Restore is available.", "Privremeno osvetljenje. Povratak je dostupan."},
+    {"Вернуть яркость", "Restore brightness", "Vrati osvetljenje"},
     {"Сначала начните сравнение", "Start a comparison first", "Prvo započnite poređenje"},
     {"Начните с исходной 50. Команды — не проценты.", "Start with reference 50. Commands are not percentages.", "Počnite od početne vrednosti 50. Komande nisu procenti."},
     {"Начать: исходная 50", "Start: reference 50", "Počni: početna vrednost 50"},

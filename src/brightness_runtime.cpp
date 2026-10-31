@@ -90,6 +90,55 @@ bool brightness_runtime_apply_profile(const brightness_calibration_profile_t *pr
     return brightness_init(&state, write_pwm, nullptr, profile->pwm_at_10,
                            profile->pwm_at_100, profile->baseline_pwm);
 }
+bool brightness_runtime_apply_instance(const brightness_instance_profile_t *profile, const char *id) {
+    StateLock lock;
+    if (!lock || !worker_started || HOMEDASH_BRIGHTNESS_REFERENCE_TEST || state.ready || reference_active() ||
+        !profile || !id || !profile->device_id || strcmp(profile->device_id, id) ||
+        !profile->model || strcmp(profile->model, "waveshare-esp32-s3-touch-lcd-7b") ||
+        !profile->evidence || !profile->evidence[0] || profile->bright_command < 1 ||
+        profile->dim_command > 97 || profile->bright_command >= profile->dim_command ||
+        profile->reference < profile->bright_command || profile->reference > profile->dim_command) return false;
+    // Establish a known output by an actual ACK; never infer it from a profile.
+    if (!write_pwm(profile->reference, nullptr)) return false;
+    return brightness_init(&state, write_pwm, nullptr, profile->dim_command, profile->bright_command, profile->reference);
+}
+bool brightness_runtime_settings_confirmed() {
+    StateLock lock;
+    return lock && ready_locked() && state.configured && has_last_command;
+}
+bool brightness_runtime_preview_active() { StateLock lock; return lock && state.preview; }
+bool brightness_runtime_clear_schedule() {
+    StateLock lock;
+    if (!lock || !ready_locked() || state.preview) return false;
+    if (!has_last_command || state.current != state.baseline) {
+        if (!write_pwm(state.baseline, nullptr)) return false;
+        state.current = state.baseline;
+    }
+    state.configured = true;
+    return true;
+}
+bool brightness_runtime_adjust(uint8_t percent) {
+    StateLock lock;
+    if (!lock || !ready_locked()) return false;
+    const uint64_t now = reference_now();
+    if (state.live_expired) return false;
+    if (state.preview && now >= state.deadline_ms) { state.live_expired = true; brightness_restore(&state); return false; }
+    if (state.preview && !state.live_preview) return false;
+    brightness_checkpoint_t checkpoint = state;
+    if (brightness_adjust_preview(&state, percent, now)) {
+        has_report_test = true; report_test_command = state.current;
+        report_return_command = state.restore; report_deadline_ms = state.deadline_ms;
+        return true;
+    }
+    if (percent < 10 || percent > 100) return false;
+    if (checkpoint.preview) {
+        checkpoint.current = checkpoint.restore; checkpoint.preview = false;
+        checkpoint.live_preview = false; checkpoint.deadline_ms = checkpoint.live_limit_ms = 0;
+    }
+    checkpoint.live_expired = true;
+    rollback_locked(&checkpoint);
+    return false;
+}
 // A failed I2C write leaves the physical output uncertain until a later
 // successful restore/write confirms it. Keep automatic restore retries
 // available through state.ready, but do not advertise the capability as ready.
@@ -125,7 +174,9 @@ bool brightness_runtime_restore() {
         return reference_restore_locked();
     }
     if (recovery_pending) return retry_recovery();
-    return brightness_restore(&state);
+    bool ok = brightness_restore(&state);
+    if (ok) state.live_expired = false;
+    return ok;
 }
 bool brightness_runtime_checkpoint(brightness_checkpoint_t *out) {
     StateLock lock;
@@ -155,7 +206,10 @@ bool brightness_runtime_schedule(uint8_t day, uint8_t night, bool is_night, bool
     StateLock lock;
     if (!lock || !ready_locked() || day < 10 || day > 100 || night < 10 || night > 100) return false;
     brightness_checkpoint_t checkpoint = state;
-    if (brightness_apply_schedule(&state, day, night, is_night, wake_override)) return true;
+    if (brightness_apply_schedule(&state, day, night, is_night, wake_override)) {
+        if (!state.preview) state.configured = true;
+        return true;
+    }
     rollback_locked(&checkpoint); return false;
 }
 void brightness_runtime_tick() {
@@ -171,7 +225,11 @@ void brightness_runtime_tick() {
         retry_recovery();
         return;
     }
-    if (state.ready) brightness_tick(&state, (uint64_t)(esp_timer_get_time() / 1000));
+    if (state.ready) {
+        const uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
+        if (state.preview && state.live_preview && now >= state.deadline_ms) state.live_expired = true;
+        brightness_tick(&state, now);
+    }
 }
 
 brightness_reference_status_t brightness_runtime_reference_status() {

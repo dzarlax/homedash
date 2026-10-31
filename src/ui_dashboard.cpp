@@ -94,6 +94,9 @@ static lv_obj_t *settings_reveal_btn = NULL;
 static lv_obj_t *settings_reveal_label = NULL;
 static lv_obj_t *settings_ap_button_label = NULL;
 static lv_obj_t *settings_device_status = NULL;
+static lv_obj_t *settings_backlight_restore = NULL;
+static lv_obj_t *backlight_preview_bar = NULL, *backlight_preview_text = NULL;
+static void refresh_backlight_preview();
 static lv_obj_t *settings_reference_status = NULL, *settings_reference_label = NULL;
 static lv_obj_t *settings_reference_button = NULL, *settings_reference_panel = NULL;
 static lv_obj_t *settings_comparison_label = NULL, *settings_result_label = NULL;
@@ -407,11 +410,12 @@ static bool clock_is_night_for(const web_preferences_t &prefs, const struct tm &
 }
 
 static bool clock_is_night(const struct tm &t) {
-    return ui_has_preferences && clock_is_night_for(ui_preferences, t);
+    return ui_has_preferences && wifi_time_is_valid() && clock_is_night_for(ui_preferences, t);
 }
 bool ui_dashboard_apply_brightness(const web_preferences_t *prefs) {
-    if (!prefs || !prefs->backlight_percent) return true;
-    if (!brightness_runtime_ready()) return false;
+    if (!prefs) return false;
+    if (!prefs->backlight_percent) return brightness_runtime_ready() ? brightness_runtime_clear_schedule() : true;
+    if (!brightness_runtime_ready() || (prefs->night_enabled && !wifi_time_is_valid())) return false;
     time_t now; time(&now); struct tm t = {}; localtime_r(&now, &t);
     bool night = prefs->night_dim && clock_is_night_for(*prefs, t);
     bool wake = esp_timer_get_time() / 1000000 < wake_override_until;
@@ -425,6 +429,22 @@ static void set_screen_off(bool off) {
     ui_screen_off = off;
     if (off) wavesahre_rgb_lcd_bl_off();
     else wavesahre_rgb_lcd_bl_on();
+}
+
+void ui_dashboard_show_backlight_preview(void) {
+    if (brightness_runtime_preview_active()) set_screen_off(false);
+    refresh_backlight_preview();
+}
+bool ui_dashboard_backlight_preview_contains(uint16_t x, uint16_t y) {
+    if (!backlight_preview_bar || lv_obj_has_flag(backlight_preview_bar, LV_OBJ_FLAG_HIDDEN)) return false;
+    lv_obj_update_layout(backlight_preview_bar);
+    lv_area_t area; lv_obj_get_coords(backlight_preview_bar, &area);
+    return x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2;
+}
+static void local_backlight_restore_cb(lv_event_t *) {
+    brightness_runtime_restore();
+    refresh_backlight_preview();
+    ui_dashboard_update_time();
 }
 
 static void return_calendar_to_today(void)
@@ -1763,7 +1783,7 @@ void ui_dashboard_update_time(void)
         bool idle_off = !ui_preferences.idle_photos &&
                         now_seconds - ui_last_touch >= ui_preferences.photo_idle_seconds;
         bool sleep = ((clock_is_night(tinfo) && !ui_preferences.night_dim) || idle_off) &&
-                     now_seconds >= wake_override_until;
+                     !brightness_runtime_preview_active() && now_seconds >= wake_override_until;
         set_screen_off(sleep);
         if (!sleep) ui_dashboard_apply_brightness(&ui_preferences);
     }
@@ -2341,6 +2361,7 @@ void ui_dashboard_hide_sensitive(void)
 
 static void settings_privacy_tick(lv_timer_t *)
 {
+    refresh_backlight_preview();
     if (!settings_is_active() || ui_screen_off) ui_dashboard_cancel_brightness_test();
     if (settings_is_active()) refresh_reference_test();
     if (settings_reveal_until_us && (!settings_is_active() || ui_screen_off ||
@@ -2421,6 +2442,16 @@ static void refresh_settings(void)
     snprintf(status, sizeof(status), ui_text("Wi-Fi: %s\nBridge: %s"),
              ui_text(wifi_is_connected() ? "Подключён" : "Нет связи"),
              ui_text(bridge_online ? "На связи" : "Нет связи"));
+    const auto backlight = brightness_runtime_report();
+    const bool temporary = brightness_runtime_preview_active();
+    if (settings_backlight_restore) {
+        if (temporary || backlight.error[0]) lv_obj_clear_flag(settings_backlight_restore, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(settings_backlight_restore, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (temporary) {
+        size_t used = strlen(status);
+        snprintf(status + used, sizeof(status) - used, "\n%s", ui_text("Временная яркость. Доступен возврат."));
+    }
     if (settings_device_status) lv_label_set_text(settings_device_status, status);
     refresh_reference_test();
 }
@@ -2568,6 +2599,31 @@ static lv_obj_t *settings_button(lv_obj_t *parent, int x, int y, int width,
     return button;
 }
 
+static void refresh_backlight_preview() {
+    if (HOMEDASH_BRIGHTNESS_REFERENCE_TEST) return;
+    const auto report = brightness_runtime_report();
+    const bool active = brightness_runtime_preview_active();
+    const bool failed = report.has_test && report.error[0];
+    if (!active && !failed) {
+        if (backlight_preview_bar) lv_obj_add_flag(backlight_preview_bar, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (!backlight_preview_bar) {
+        backlight_preview_bar = make_card(lv_layer_top(), 212, 12, 600, 72);
+        lv_obj_clear_flag(backlight_preview_bar, LV_OBJ_FLAG_SCROLLABLE);
+        backlight_preview_text = settings_text(backlight_preview_bar, 14, 10, 356, 50, "");
+        settings_button(backlight_preview_bar, 382, 14, 204, "Вернуть яркость", local_backlight_restore_cb);
+    }
+    char text[160];
+    if (failed) snprintf(text, sizeof(text), "%s", ui_text("Ошибка возврата. Новые тесты заблокированы."));
+    else {
+        uint64_t left = report.restore_deadline_uptime_ms > report.sample_uptime_ms ? report.restore_deadline_uptime_ms - report.sample_uptime_ms : 0;
+        snprintf(text, sizeof(text), ui_text("Проверка подсветки. Возврат через %u с"), (unsigned)((left + 999) / 1000));
+    }
+    lv_label_set_text(backlight_preview_text, text);
+    lv_obj_clear_flag(backlight_preview_bar, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void create_settings_page(lv_obj_t *tile)
 {
     settings_text(tile, 18, 12, 980, 34, "Настройки", true);
@@ -2623,8 +2679,10 @@ static void create_settings_page(lv_obj_t *tile)
         lv_obj_add_flag(settings_reference_panel, LV_OBJ_FLAG_HIDDEN);
     } else {
         settings_text(system, 16, 12, 930, 28, "Устройство", true);
-        settings_device_status = settings_text(system, 16, 54, 570, 80, "");
-        settings_button(system, 620, 64, 350, "Проверить обновление", ota_btn_cb);
+        settings_device_status = settings_text(system, 16, 54, 570, 90, "");
+        settings_button(system, 620, 46, 350, "Проверить обновление", ota_btn_cb);
+        settings_backlight_restore = settings_button(system, 620, 100, 350, "Вернуть яркость", local_backlight_restore_cb);
+        lv_obj_add_flag(settings_backlight_restore, LV_OBJ_FLAG_HIDDEN);
     }
     ui_dashboard_hide_sensitive();
     refresh_settings();

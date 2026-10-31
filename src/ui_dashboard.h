@@ -9,6 +9,9 @@ void ui_dashboard_create(void);
 void ui_dashboard_open_settings(void);
 void ui_dashboard_hide_sensitive(void);
 void ui_dashboard_cancel_brightness_test(void);
+// Call with the LVGL lock after a successful temporary backlight command.
+void ui_dashboard_show_backlight_preview(void);
+bool ui_dashboard_backlight_preview_contains(uint16_t x, uint16_t y);
 void ui_dashboard_update_weather(const bridge_weather_t *data);
 void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data);
 void ui_dashboard_update_transport(const bridge_transport_t *data);

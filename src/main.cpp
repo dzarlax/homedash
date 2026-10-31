@@ -92,12 +92,18 @@ static void run_web_command(const web_command_t *command, const device_config_t 
         } else {
             succeeded = true;
         }
-    } else if (!strcmp(command->action, "backlight_preview") || !strcmp(command->action, "backlight_restore")) {
+    } else if (!strcmp(command->action, "backlight_preview") || !strcmp(command->action, "backlight_adjust") || !strcmp(command->action, "backlight_begin") || !strcmp(command->action, "backlight_restore")) {
         // Runtime serializes with the restore worker; recovery must not wait
         // for LVGL, nor be rejected solely because a prior write failed.
         bool ready = brightness_runtime_ready();
-        succeeded = !strcmp(command->action, "backlight_preview") ?
-            brightness_runtime_preview(command->percent) : brightness_runtime_restore();
+        if (!strcmp(command->action, "backlight_begin")) {
+            succeeded = ready && brightness_runtime_restore() && brightness_runtime_adjust(command->percent);
+        } else succeeded = !strcmp(command->action, "backlight_preview") ?
+            brightness_runtime_preview(command->percent) : !strcmp(command->action, "backlight_adjust") ?
+            brightness_runtime_adjust(command->percent) : brightness_runtime_restore();
+        if (succeeded && brightness_runtime_preview_active() && lvgl_port_lock(-1)) {
+            ui_dashboard_show_backlight_preview(); lvgl_port_unlock();
+        }
         if (!succeeded) error = ready || brightness_runtime_error()[0] ? "device_error" : "unsupported_action";
     } else if (!strcmp(command->action, "ota_check")) {
         bool available = false;
@@ -702,6 +708,14 @@ extern "C" void app_main(void)
     wavesahre_rgb_lcd_bl_on();
     // Failure leaves brightness unavailable; display operation continues.
     if (!brightness_runtime_start()) ESP_LOGW(TAG, "Brightness restore worker unavailable");
+    if (!HOMEDASH_BRIGHTNESS_REFERENCE_TEST && web_identity_init()) {
+        char instance_id[33] = {};
+        if (web_identity_get(instance_id, sizeof(instance_id))) {
+            const auto *profile = brightness_instance_profile_for(instance_id);
+            if (profile && !brightness_runtime_apply_instance(profile, instance_id))
+                ESP_LOGW(TAG, "Verified backlight reference could not be established");
+        }
+    }
     ESP_ERROR_CHECK(lvgl_port_init(panel_handle, tp_handle));
 
     // 2. Create dashboard UI

@@ -1,6 +1,7 @@
 #include "../src/photo_frame.cpp"
 #include "../src/ui_dashboard.cpp"
 #include <cassert>
+#include "brightness_fixture.h"
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
@@ -350,6 +351,14 @@ int main() {
   complete_frame();
   tick(nullptr);
   assert(overlay);
+  // The temporary brightness toolbar receives touch without exiting photo mode.
+  brightness_fixture::ready = true; brightness_fixture::preview = true;
+  ui_dashboard_show_backlight_preview();lv_obj_update_layout(lv_screen_active());
+  assert(ui_dashboard_backlight_preview_contains(650,40));
+  pointer(indev,true,650,40);pointer(indev,false,650,40);
+  assert(overlay && !brightness_fixture::preview && lv_obj_has_flag(backlight_preview_bar,LV_OBJ_FLAG_HIDDEN));
+  brightness_fixture::ready = false;
+
   complete_context_404();
   assert(lv_tileview_get_tile_active(tileview) == nav_tiles[2]);
   // Exit is explicit, and the same gesture cannot relaunch the frame.
