@@ -321,7 +321,7 @@ unavailable until that calibration is supplied. Existing night-off behavior
 remains in effect while the capability is disabled.
 
 
-### Day view and photo-frame controls (v1.0.31)
+### Day view and photo-frame controls (v1.0.31; touch update v1.0.32)
 
 The Day page gives the selected day's current or next event priority, with a
 large weather temperature, condition icon, daily range when available, and
@@ -333,8 +333,10 @@ can attach `X-HomeDash-Calendar-State: complete|partial` without changing the
 legacy event-array body. The display warns about partial calendars and avoids
 calling an unverified empty response a free day; older Bridges remain supported.
 
-In the photo frame, tap to show a compact control bar for five seconds. Swipe
-left/right or use the arrows to navigate the current manifest order. Pause stops
+In the photo frame, a short tap on the photo exits directly to the dashboard.
+Hold still for about 0.7 seconds to open a compact control bar; releasing that
+hold keeps the frame open, and the bar remains available for five seconds.
+Swipe left/right or use the arrows to navigate the current manifest order. Pause stops
 only automatic photo changes: the clock and context keep updating, and manual
 navigation still works. Hide info temporarily hides clock, weather and event
 until frame exit; it does not change saved Bridge preferences. Use Exit to

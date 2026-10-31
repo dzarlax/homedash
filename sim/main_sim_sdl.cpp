@@ -307,8 +307,17 @@ int main()
             }
             if (std::getenv("HOMEDASH_SIM_PHOTO_CONTROLS")) {
                 lv_indev_data_t touch = {};
+                s_pointer_down = true; s_pointer_x = 512; s_pointer_y = 200;
                 photo_frame_filter_touch(true, 512, 200, &touch);
-                photo_frame_filter_touch(false, 512, 200, &touch);
+                // Exercise a stationary hardware-style hold, then a release
+                // with no meaningful coordinates.
+                for (int i = 0; i < 80; ++i) {
+                    SDL_Delay(10); lv_tick_inc(10);
+                    photo_frame_filter_touch(true, 512, 200, &touch);
+                    lv_timer_handler();
+                }
+                s_pointer_down = false; s_pointer_x = s_pointer_y = 0;
+                photo_frame_filter_touch(false, 0, 0, &touch);
                 lv_obj_update_layout(lv_screen_active());
             }
             const char *photo_shot = std::getenv("HOMEDASH_SIM_PHOTO_SCREENSHOT_PATH");
