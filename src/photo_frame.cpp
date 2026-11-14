@@ -50,6 +50,9 @@ static lv_image_dsc_t descriptor[2] = {};
 static lv_obj_t *overlay = nullptr, *image = nullptr;
 static int displayed = -1;
 static bool gesture = false, physical_down = false;
+static bool voice_active = false;
+static bool raw_touch_down = false, raw_touch_known = false, swallow_voice_release = false;
+static bool backlight_passthrough = false;
 static bool touch_started_in_photo = false, controls_visible = false;
 static bool slideshow_paused = false, info_hidden = false, load_error = false;
 static bool retry_requested = false, stale_refresh_pending = false;
@@ -674,7 +677,7 @@ static void schedule_info() {
   }
 }
 static void tick(lv_timer_t *) {
-  if (!mutex || paused.load())
+  if (!mutex || paused.load() || voice_active)
     return;
   xSemaphoreTake(mutex, portMAX_DELAY);
   if (network_update_pending) {
@@ -988,9 +991,22 @@ bool photo_frame_start_now() {
 bool photo_frame_touch(bool pressed) {
   return process_photo_touch(pressed, 0, 0);
 }
+void photo_frame_observe_raw_touch(bool pressed) {
+  raw_touch_down = pressed;
+  raw_touch_known = true;
+  if (!pressed && swallow_voice_release) swallow_voice_release = false;
+}
 void photo_frame_filter_touch(bool pressed, uint16_t x, uint16_t y,
                               lv_indev_data_t *data) {
-  static bool backlight_passthrough = false;
+  if (swallow_voice_release) {
+    data->state = LV_INDEV_STATE_RELEASED;
+    return;
+  }
+  if (voice_active) {
+    data->point.x = x; data->point.y = y;
+    data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    return;
+  }
   if (pressed && !physical_down && ui_dashboard_backlight_preview_contains(x, y)) backlight_passthrough = true;
   if (backlight_passthrough) {
     data->point.x = x; data->point.y = y;
@@ -1008,6 +1024,21 @@ void photo_frame_filter_touch(bool pressed, uint16_t x, uint16_t y,
     data->state = LV_INDEV_STATE_PRESSED;
   } else
     data->state = LV_INDEV_STATE_RELEASED;
+}
+void photo_frame_set_voice_active(bool active) {
+  if (active != voice_active && (!raw_touch_known || raw_touch_down)) {
+    swallow_voice_release = true;
+    for (lv_indev_t *indev = lv_indev_get_next(nullptr); indev; indev = lv_indev_get_next(indev))
+      if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) lv_indev_reset(indev, nullptr);
+  }
+  if (active && !voice_active) {
+    physical_down = touch_started_in_photo = gesture = false;
+    touch_hold_opened = touch_hold_cancelled = false;
+    touch_start_action = -1;
+    backlight_passthrough = false;
+  }
+  voice_active = active;
+  if (!active) { last_touch = now(); last_slide = now(); }
 }
 void photo_frame_reader_closed() {
   manual_requested = false;

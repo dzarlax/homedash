@@ -20,7 +20,8 @@ bool web_settings_store_command_id(char *id, size_t size);
 bool web_settings_store_clear_preferences(void);
 bool web_settings_store_recover_on_boot(const char *boot_id, const char *firmware,
                                         bool config_present);
-bool web_settings_store_complete_reset_after_recovery(void);
+// before_complete runs only for an interrupted accepted reset.
+bool web_settings_store_complete_reset_after_recovery(bool (*before_complete)() = nullptr);
 bool web_settings_store_network_trial_begin(const device_config_t *old_config,
                                             bool had_config,
                                             const web_preferences_t *old_preferences,

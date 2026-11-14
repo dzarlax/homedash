@@ -133,6 +133,7 @@ static void layout_summary();
 static lv_obj_t *page3_root = NULL;
 static web_preferences_t ui_preferences = {};
 static bool ui_has_preferences = false;
+static bool ui_voice_active = false;
 static bool ui_screen_off = false;
 static int64_t wake_override_until = 0;
 static int64_t ui_last_touch = 0;
@@ -434,6 +435,12 @@ static void set_screen_off(bool off) {
     ui_screen_off = off;
     if (off) wavesahre_rgb_lcd_bl_off();
     else wavesahre_rgb_lcd_bl_on();
+}
+
+void ui_dashboard_set_voice_active(bool active) {
+    ui_voice_active = active;
+    if (active) { ui_dashboard_hide_sensitive(); set_screen_off(false); }
+    else ui_last_touch = esp_timer_get_time() / 1000000;
 }
 
 void ui_dashboard_show_backlight_preview(void) {
@@ -1787,7 +1794,7 @@ void ui_dashboard_update_time(void)
         int64_t now_seconds = esp_timer_get_time() / 1000000;
         bool idle_off = !ui_preferences.idle_photos &&
                         now_seconds - ui_last_touch >= ui_preferences.photo_idle_seconds;
-        bool sleep = ((clock_is_night(tinfo) && !ui_preferences.night_dim) || idle_off) &&
+        bool sleep = !ui_voice_active && ((clock_is_night(tinfo) && !ui_preferences.night_dim) || idle_off) &&
                      !brightness_runtime_preview_active() && now_seconds >= wake_override_until;
         set_screen_off(sleep);
         if (!sleep) ui_dashboard_apply_brightness(&ui_preferences);

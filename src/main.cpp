@@ -27,6 +27,8 @@
 #include "web_sync.h"
 #include "web_identity.h"
 #include "recovery_ap.h"
+#include "voice_push_client.h"
+#include "voice_reset.h"
 #include "esp_timer.h"
 #include "action_feedback_runtime.h"
 #include "action_executor.h"
@@ -83,14 +85,24 @@ static void run_web_command(const web_command_t *command, const device_config_t 
         web_preferences_t old_preferences = {};
         bool had_preferences = web_settings_store_load(&old_preferences);
         device_config_t old_config = *cfg;
-        bool cleared_preferences = web_settings_store_clear_preferences();
-        bool cleared_config = cleared_preferences && nvs_config_reset_device();
-        if (!cleared_config || !recovery_ap_start()) {
-            nvs_config_set_credentials(&old_config);
-            if (had_preferences) web_settings_store_save(&old_preferences);
-            error = cleared_config ? "reset_recovery_failed" : "reset_persistence_failed";
-        } else {
-            succeeded = true;
+        struct reset_context { device_config_t *config; web_preferences_t *preferences; bool had_preferences; };
+        reset_context context = { &old_config, &old_preferences, had_preferences };
+        const voice_reset_ops ops = {
+            [](void *) { return voice_push_forget(); },
+            [](void *) { return web_settings_store_clear_preferences(); },
+            [](void *) { return nvs_config_reset_device(); },
+            [](void *) { return recovery_ap_start(); },
+            [](void *p) {
+                auto *ctx = static_cast<reset_context *>(p);
+                nvs_config_set_credentials(ctx->config);
+                if (ctx->had_preferences) web_settings_store_save(ctx->preferences);
+            }, &context
+        };
+        switch (voice_reset_run(ops)) {
+        case voice_reset_result::success: succeeded = true; break;
+        case voice_reset_result::voice_failed: error = "voice_reset_persistence_failed"; break;
+        case voice_reset_result::persistence_failed: error = "reset_persistence_failed_voice_cleared"; break;
+        case voice_reset_result::recovery_failed: error = "reset_recovery_failed_voice_cleared"; break;
         }
     } else if (!strcmp(command->action, "backlight_preview") || !strcmp(command->action, "backlight_adjust") || !strcmp(command->action, "backlight_begin") || !strcmp(command->action, "backlight_restore")) {
         // Runtime serializes with the restore worker; recovery must not wait
@@ -219,6 +231,18 @@ static void halt_if_settings_fail_closed(void)
     for (;;) vTaskDelay(pdMS_TO_TICKS(10000));
 }
 
+struct VoiceNetworkGuard {
+    bool enabled;
+    VoiceNetworkGuard(const web_network_update_t &u, const device_config_t &c) : enabled(
+        (u.has_wifi_ssid && strcmp(u.wifi_ssid,c.wifi_ssid)) ||
+        (u.has_wifi_password && strcmp(u.wifi_password,c.wifi_pass)) ||
+        (u.has_bridge_url && strcmp(u.bridge_url,c.bridge_url)) ||
+        (u.has_bridge_key && strcmp(u.bridge_key,c.bridge_key))) {
+        if (enabled) voice_push_priority(VOICE_PRIORITY_NETWORK_UPDATE,true);
+    }
+    ~VoiceNetworkGuard() { if (enabled) voice_push_priority(VOICE_PRIORITY_NETWORK_UPDATE,false); }
+};
+
 static bool stage_network_update(const web_network_update_t *update,
                                  const device_config_t *cfg, const char *boot_id,
                                  device_config_t *candidate_out, bool *changed_out,
@@ -303,6 +327,8 @@ static void finalize_network_handoff(const device_config_t *candidate, bool wifi
 
 static bool apply_recovery_network_update_now(const web_network_update_t *update)
 {
+    if (!update) return false;
+    VoiceNetworkGuard guard(*update, s_runtime_config);
     device_config_t candidate = {};
     bool changed = false, trial = false;
     char target_bridge_id[33] = {};
@@ -494,7 +520,8 @@ static void network_task(void *param)
     if (!config_present) {
         ESP_LOGW(TAG, "Device setup missing; starting protected local setup");
         if (recovery_ap_start()) {
-            web_settings_store_complete_reset_after_recovery();
+            if (!web_settings_store_complete_reset_after_recovery(voice_push_forget))
+                ESP_LOGE(TAG, "Interrupted reset cleanup could not be confirmed");
             if (lvgl_port_lock(-1)) {
                 ui_dashboard_open_settings();
                 lvgl_port_unlock();
@@ -587,6 +614,7 @@ static void network_task(void *param)
                     run_web_command(&sync_response.command, &cfg, s_boot_id);
                     sync_elapsed = 0;
                 } else {
+                VoiceNetworkGuard guard(sync_response.network, cfg);
                 device_config_t candidate = cfg;
                 bool network_changed = false, wifi_trial = false;
                 char target_bridge_id[33] = {};
@@ -725,11 +753,13 @@ extern "C" void app_main(void)
     if (lvgl_port_lock(-1)) {
         ui_dashboard_create();
         photo_frame_ui_init();
+        voice_push_ui_init();
         lvgl_port_unlock();
     }
 
     // 3. Start LVGL render loop
     lvgl_port_task_start();
+    voice_push_start();
 
     // 4. Network task on core 0
     s_request_queue = xQueueCreate(8, sizeof(network_request_t));

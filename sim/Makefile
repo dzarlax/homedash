@@ -275,3 +275,93 @@ $(BUILD)/summary_test: $(BUILD)/summary_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(B
 .PHONY: test-summary
 test-summary: $(BUILD)/summary_test
 	./$(BUILD)/summary_test
+
+$(BUILD)/ui_voice.o: $(SRC_DIR)/ui_voice.cpp $(SRC_DIR)/ui_voice.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/voice_overlay_test.o: voice_overlay_test.cpp $(SRC_DIR)/ui_voice.h $(SRC_DIR)/ui_strings.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/voice_overlay_test: $(BUILD)/voice_overlay_test.o $(BUILD)/ui_voice.o $(BUILD)/ui_strings.o $(FONT_OBJS) $(LVGL_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-voice-overlay: $(BUILD)/voice_overlay_test
+	./$(BUILD)/voice_overlay_test
+
+VOICE_FIXTURE ?= fixtures/voice_snapshot.json
+
+test-voice-protocol: $(CJSON_OBJ)
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) $(SRC_DIR)/voice_protocol.cpp $(SRC_DIR)/voice_fragments.cpp voice_protocol_test.cpp -o $(BUILD)/voice_protocol_test
+	./$(BUILD)/voice_protocol_test "$(VOICE_FIXTURE)"
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) $(SRC_DIR)/voice_view_model.cpp voice_state_test.cpp -o $(BUILD)/voice_state_test
+	./$(BUILD)/voice_state_test
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) $(SRC_DIR)/voice_view_model.cpp voice_delivery_state_test.cpp -o $(BUILD)/voice_delivery_state_test
+	./$(BUILD)/voice_delivery_state_test
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) $(SRC_DIR)/voice_config.cpp voice_config_test.cpp -o $(BUILD)/voice_config_test
+	./$(BUILD)/voice_config_test
+	$(CXX) $(CXXFLAGS) -Ivoice_nvs_stubs -I$(SRC_DIR) $(SRC_DIR)/voice_config.cpp $(SRC_DIR)/voice_config_store.cpp voice_config_store_test.cpp -o $(BUILD)/voice_config_store_test
+	./$(BUILD)/voice_config_store_test
+	$(CXX) $(CXXFLAGS) -Iesp_stubs -I$(SRC_DIR) $(SRC_DIR)/voice_config.cpp $(SRC_DIR)/voice_recovery_request.cpp voice_recovery_request_test.cpp $(CJSON_OBJ) -o $(BUILD)/voice_recovery_request_test
+	./$(BUILD)/voice_recovery_request_test
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) voice_backoff_test.cpp -o $(BUILD)/voice_backoff_test
+	./$(BUILD)/voice_backoff_test
+
+.PHONY: test-voice-overlay test-voice-protocol
+
+$(BUILD)/voice_screenshots.o: voice_screenshots.cpp $(SRC_DIR)/ui_voice.h $(SRC_DIR)/ui_strings.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/voice_screenshots: $(BUILD)/voice_screenshots.o $(BUILD)/ui_voice.o $(BUILD)/ui_strings.o $(FONT_OBJS) $(LVGL_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+$(BUILD)/voice_push_client_sim.o: $(SRC_DIR)/voice_push_client.cpp $(SRC_DIR)/voice_push_client.h $(SRC_DIR)/voice_view_model.h $(SRC_DIR)/voice_protocol.h $(SRC_DIR)/voice_fragments.h $(SRC_DIR)/voice_config.h $(SRC_DIR)/voice_backoff.h $(SRC_DIR)/ui_voice.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/voice_protocol_sim.o: $(SRC_DIR)/voice_protocol.cpp $(SRC_DIR)/voice_protocol.h $(SRC_DIR)/voice_view_model.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/voice_fragments_sim.o: $(SRC_DIR)/voice_fragments.cpp $(SRC_DIR)/voice_fragments.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/voice_config_sim.o: $(SRC_DIR)/voice_config.cpp $(SRC_DIR)/voice_config.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/voice_view_model_sim.o: $(SRC_DIR)/voice_view_model.cpp $(SRC_DIR)/voice_view_model.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/voice_integration_test.o: voice_integration_test.cpp $(SRC_DIR)/voice_push_client.h $(SRC_DIR)/ui_voice.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/voice_integration_test: $(BUILD)/voice_integration_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-voice-integration: $(BUILD)/voice_integration_test
+	./$(BUILD)/voice_integration_test
+.PHONY: test-voice-integration
+
+test-voice-wss:
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) $(SRC_DIR)/voice_protocol.cpp $(SRC_DIR)/voice_fragments.cpp $(SRC_DIR)/voice_view_model.cpp voice_wss_replay.cpp -o $(BUILD)/voice_wss_replay
+	python3 voice_wss_fixture.py $(BUILD)/voice_wss_replay
+.PHONY: test-voice-wss
+
+# Five-minute deterministic malformed-frame stress; local synthetic data only.
+test-voice-mutation:
+	@mkdir -p $(BUILD)
+	clang++ -O1 -g -std=c++17 -fsanitize=address,undefined -I$(SRC_DIR) $(SRC_DIR)/voice_protocol.cpp $(SRC_DIR)/voice_fragments.cpp voice_protocol_fuzz.cpp voice_mutation_main.cpp -o $(BUILD)/voice_mutation
+	./$(BUILD)/voice_mutation fixtures/voice_snapshot.json
+.PHONY: test-voice-mutation
+
+$(BUILD)/voice_latency_test.o: voice_latency_test.cpp $(SRC_DIR)/voice_push_client.h $(SRC_DIR)/ui_voice.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/voice_latency_test: $(BUILD)/voice_latency_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-voice-latency: $(BUILD)/voice_latency_test
+	./$(BUILD)/voice_latency_test
+.PHONY: test-voice-latency
+
+.PHONY: test-voice-reset
+test-voice-reset:
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) voice_reset_test.cpp $(SRC_DIR)/voice_reset.cpp -o $(BUILD)/voice_reset_test
+	./$(BUILD)/voice_reset_test

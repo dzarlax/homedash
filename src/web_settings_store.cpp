@@ -293,7 +293,7 @@ bool web_settings_store_recover_on_boot(const char *boot_id, const char *firmwar
     return web_settings_store_command_finish(id, "failed", "interrupted_before_result");
 }
 
-bool web_settings_store_complete_reset_after_recovery(void) {
+bool web_settings_store_complete_reset_after_recovery(bool (*before_complete)()) {
     nvs_handle_t h;
     if (nvs_open("webprefs", NVS_READONLY, &h) != ESP_OK) return false;
     char id[65] = {}, state[16] = {}, action[24] = {};
@@ -302,7 +302,9 @@ bool web_settings_store_complete_reset_after_recovery(void) {
                     read_string(h, "cmd_action", action, sizeof(action)) &&
                     !strcmp(state, "accepted") && !strcmp(action, "reset");
     nvs_close(h);
-    return !is_reset || web_settings_store_command_finish(id, "succeeded", nullptr);
+    if (!is_reset) return true;
+    if (before_complete && !before_complete()) return false;
+    return web_settings_store_command_finish(id, "succeeded", nullptr);
 }
 
 bool web_settings_store_network_trial_begin(const device_config_t *old_config,

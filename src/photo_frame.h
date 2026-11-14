@@ -11,9 +11,13 @@ void photo_frame_apply_web_preferences(bool enabled, int idle_seconds,
 // Call from the LVGL thread to bypass the idle delay for this session.
 bool photo_frame_start_now(void);
 bool photo_frame_touch(bool pressed);
+// Call before wake-touch filtering on every input sample.
+void photo_frame_observe_raw_touch(bool pressed);
 void photo_frame_filter_touch(bool pressed, uint16_t x, uint16_t y,
                               lv_indev_data_t *data);
 void photo_frame_reader_closed(void);
+// LVGL thread: suspend photo updates and preserve the current frame beneath voice.
+void photo_frame_set_voice_active(bool active);
 bool photo_frame_pause_for_ota(void);
 void photo_frame_resume_after_ota(void);
 

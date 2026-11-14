@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "type": "voice.snapshot",
+  "lease_id": "fixture-lease",
+  "revision": 1,
+  "session_id": "fixture-session",
+  "turn_id": "fixture-session:1",
+  "phase": "answer",
+  "backend_active": false,
+  "playback": "unknown",
+  "text": "Привет!\n— Прервано —\nПродолжим.",
+  "text_truncated": false,
+  "interrupted": false,
+  "active": true,
+  "ttl_ms": 25000,
+  "replay": true
+}
