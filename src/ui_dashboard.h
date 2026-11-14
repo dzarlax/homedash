@@ -6,6 +6,8 @@
 
 void ui_dashboard_create(void);
 // Call only while holding the LVGL lock.
+void ui_dashboard_set_voice_active(bool active);
+// Call only while holding the LVGL lock.
 void ui_dashboard_open_settings(void);
 void ui_dashboard_hide_sensitive(void);
 void ui_dashboard_cancel_brightness_test(void);

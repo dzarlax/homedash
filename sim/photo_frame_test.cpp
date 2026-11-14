@@ -12,6 +12,7 @@ static bool pointer_down = false;
 static int pointer_x = 10, pointer_y = 10;
 static int clicks = 0;
 static void pointer_read(lv_indev_t *, lv_indev_data_t *data) {
+  photo_frame_observe_raw_touch(pointer_down);
   photo_frame_filter_touch(pointer_down, pointer_x, pointer_y, data);
 }
 static void clicked(lv_event_t *) { clicks++; }
@@ -126,6 +127,57 @@ int main() {
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, pointer_read);
+  // Before the first input poll, assume an ongoing touch until release.
+  photo_frame_set_voice_active(true);
+  pointer(indev, true, 10, 10); pointer(indev, false, 0, 0);
+  assert(clicks == 0);
+  pointer(indev, true, 10, 10); pointer(indev, false, 0, 0);
+  assert(clicks == 1);
+  photo_frame_set_voice_active(false);
+  clicks = 0;
+  // Cancel a dashboard press before showing voice: a synthetic release must
+  // not click the previously pressed LVGL object.
+  pointer(indev, true, 10, 10);
+  photo_frame_set_voice_active(true);
+  pointer(indev, true, 10, 10);
+  pointer(indev, false, 0, 0);
+  assert(clicks == 0);
+  photo_frame_set_voice_active(false);
+  pointer(indev, true, 10, 10);
+  pointer(indev, false, 0, 0);
+  assert(clicks == 1);
+  clicks = 0;
+  // Closing voice mid-press cancels the old target and cannot click the
+  // dashboard beneath it; a fresh tap after release still works.
+  lv_obj_t *voice_test_button = lv_button_create(lv_screen_active());
+  lv_obj_set_pos(voice_test_button, 0, 0);
+  lv_obj_set_size(voice_test_button, 100, 100);
+  lv_obj_add_event_cb(voice_test_button, clicked, LV_EVENT_CLICKED, nullptr);
+  lv_obj_move_foreground(voice_test_button);
+  lv_obj_update_layout(lv_screen_active());
+  photo_frame_set_voice_active(true);
+  pointer(indev, true, 10, 10);
+  photo_frame_set_voice_active(false);
+  lv_obj_add_flag(voice_test_button, LV_OBJ_FLAG_HIDDEN);
+  pointer(indev, true, 10, 10);
+  pointer(indev, false, 0, 0);
+  assert(clicks == 0);
+  pointer(indev, true, 10, 10); pointer(indev, false, 0, 0);
+  assert(clicks == 1);
+  // Rapid close/open while held also cancels the original press.
+  clicks = 0;
+  lv_obj_clear_flag(voice_test_button, LV_OBJ_FLAG_HIDDEN);
+  photo_frame_set_voice_active(true);
+  pointer(indev, true, 10, 10);
+  photo_frame_set_voice_active(false);
+  photo_frame_set_voice_active(true);
+  pointer(indev, true, 10, 10); pointer(indev, false, 0, 0);
+  assert(clicks == 0);
+  pointer(indev, true, 10, 10); pointer(indev, false, 0, 0);
+  assert(clicks == 1);
+  photo_frame_set_voice_active(false);
+  lv_obj_delete(voice_test_button);
+  clicks = 0;
   fake_seconds = 299;
   tick(nullptr);
   assert(!busy.load());
@@ -361,6 +413,80 @@ int main() {
 
   complete_context_404();
   assert(lv_tileview_get_tile_active(tileview) == nav_tiles[2]);
+  // A held photo touch must never click a voice control that appears under it.
+  int voice_clicks_before = clicks;
+  pointer(indev, true, 740, 20);
+  photo_frame_set_voice_active(true);
+  lv_obj_t *voice_button = lv_btn_create(lv_screen_active());
+  lv_obj_set_pos(voice_button, 700, 0);
+  lv_obj_set_size(voice_button, 100, 80);
+  lv_obj_add_event_cb(voice_button, clicked, LV_EVENT_CLICKED, nullptr);
+  lv_obj_move_foreground(voice_button);
+  lv_obj_update_layout(lv_screen_active());
+  pointer(indev, true, 740, 20);
+  pointer(indev, false, 0, 0);
+  assert(clicks == voice_clicks_before);
+  // A new touch after the physical release must reach the voice control.
+  pointer(indev, true, 740, 20);
+  pointer(indev, false, 0, 0);
+  assert(clicks == voice_clicks_before + 1);
+  lv_obj_delete(voice_button);
+  photo_frame_set_voice_active(false);
+  // Opening voice interrupts a held photo gesture without completing it.
+  pointer(indev, true, 740, 20);
+  assert(physical_down && touch_started_in_photo);
+  photo_frame_set_voice_active(true);
+  lv_indev_data_t voice_data = {};
+  photo_frame_observe_raw_touch(true);
+  photo_frame_filter_touch(true, 300, 200, &voice_data);
+  assert(voice_data.state == LV_INDEV_STATE_RELEASED);
+  photo_frame_observe_raw_touch(false);
+  photo_frame_filter_touch(false, 0, 0, &voice_data);
+  assert(voice_data.state == LV_INDEV_STATE_RELEASED);
+  photo_frame_set_voice_active(false);
+  pointer(indev, false, 0, 0);
+  assert(overlay && !physical_down && !touch_started_in_photo);
+  tick(nullptr);
+  assert(overlay);
+  // Closing voice during a touch consumes the rest of that touch.
+  photo_frame_set_voice_active(true);
+  photo_frame_observe_raw_touch(true);
+  photo_frame_filter_touch(true, 740, 20, &voice_data);
+  assert(voice_data.state == LV_INDEV_STATE_PRESSED);
+  photo_frame_set_voice_active(false);
+  photo_frame_observe_raw_touch(true);
+  photo_frame_filter_touch(true, 740, 20, &voice_data);
+  assert(voice_data.state == LV_INDEV_STATE_RELEASED && !physical_down);
+  photo_frame_observe_raw_touch(false);
+  photo_frame_filter_touch(false, 0, 0, &voice_data);
+  assert(voice_data.state == LV_INDEV_STATE_RELEASED && overlay && !physical_down);
+  // Voice can open and close before another input poll during a photo press.
+  pointer(indev, true, 740, 20);
+  assert(physical_down);
+  photo_frame_set_voice_active(true);
+  photo_frame_set_voice_active(false);
+  photo_frame_observe_raw_touch(true);
+  photo_frame_filter_touch(true, 740, 20, &voice_data);
+  assert(voice_data.state == LV_INDEV_STATE_RELEASED && !physical_down);
+  photo_frame_observe_raw_touch(false);
+  photo_frame_filter_touch(false, 0, 0, &voice_data);
+  assert(voice_data.state == LV_INDEV_STATE_RELEASED && overlay && !physical_down);
+  pointer(indev, false, 0, 0);
+  // The wake filter can consume the press before photo sees any samples.
+  ui_screen_off = true; wake_swallow_until_release = false;
+  lv_indev_data_t wake_data = {};
+  photo_frame_observe_raw_touch(true);
+  assert(ui_dashboard_filter_wake_touch(true, &wake_data));
+  photo_frame_set_voice_active(true);
+  photo_frame_set_voice_active(false);
+  photo_frame_observe_raw_touch(true);
+  assert(ui_dashboard_filter_wake_touch(true, &wake_data));
+  photo_frame_observe_raw_touch(false);
+  assert(ui_dashboard_filter_wake_touch(false, &wake_data));
+  // A release consumed by the wake filter still clears the pending guard.
+  photo_frame_observe_raw_touch(false);
+  photo_frame_filter_touch(false, 0, 0, &voice_data);
+  assert(voice_data.state == LV_INDEV_STATE_RELEASED && overlay && !physical_down);
   // Exit is explicit, and the same gesture cannot relaunch the frame.
   pointer(indev, true, 740, 20);
   pointer(indev, false, 0, 0);

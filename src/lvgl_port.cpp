@@ -1,3 +1,4 @@
+#include "voice_push_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -123,6 +124,8 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
     esp_lcd_touch_read_data(tp);
     bool touchpad_pressed = esp_lcd_touch_get_coordinates(tp, &touchpad_x, &touchpad_y, NULL, &touchpad_cnt, 1);
     bool pressed = touchpad_pressed && touchpad_cnt > 0;
+    photo_frame_observe_raw_touch(pressed);
+    if (pressed) voice_push_touch();
     if (ui_dashboard_filter_wake_touch(pressed, data)) return;
     photo_frame_filter_touch(pressed, touchpad_x, touchpad_y, data);
 }

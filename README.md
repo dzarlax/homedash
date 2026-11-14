@@ -71,6 +71,33 @@ changing the browser language.
 
 Use the Bridge web settings page for managed display preferences, including language. The fourth display tab, Settings, provides a public web link/QR, device status and manual OTA check. Local recovery starts only from its explicit button (or automatically when initial network configuration is missing). The temporary protected setup network lasts ten minutes and can be stopped explicitly. Its password stays masked until tapped, is revealed for 15 seconds, and hides on navigation, screen off, photo mode or a language change. Leaving Settings keeps the network active for phone setup. Network changes are tried before they are committed, and an interrupted trial restores the previous NVS configuration on boot.
 
+### Voice display push
+
+Voice push is disabled until the owner saves a pair in the time-limited,
+password-protected local recovery AP. The pair is stored as one versioned blob
+in private NVS namespace `voice_push` and takes effect after the next restart. `base_url` is a `wss://` origin (host and optional
+port, with no path, query, or user information); the firmware appends
+`/api/voice/v1/events`. `token` is the display-specific subscriber bearer,
+not the existing Bridge API key. The token is sent only as an Authorization
+header; it must not be placed in a URL, source file, firmware image, or log.
+The recovery page does not display a saved credential; it can replace or disable
+the pair without overwriting the existing NVS partition. Device reset clears
+this namespace. Empty or invalid settings leave voice push off. TLS
+uses the ESP certificate bundle and hostname verification.
+
+The push client uses an independent task and does not replace dashboard or
+settings polling. The display labels captions as assistant speech from the
+current Live session, not as an answer proven to belong to a particular PTT.
+Interruptions appear as separators in that stream; captions can precede audio.
+Voice return dismisses the local overlay only; confirmation of mutating
+operations remains on the microphone. Bridge WebSocket snapshots must carry
+the v1 revision 2 `replay` delivery flag. A new live active turn can open the
+overlay even when its listening snapshot was coalesced; a replay does not reopen
+an expired or dismissed turn. OTA, recovery and network
+trials take display priority. Local checks: `make -C sim test-voice-protocol
+test-voice-overlay test-voice-integration test-voice-wss`. The WSS test uses
+loopback and a synthetic credential and requires permission to bind locally.
+
 ### Dual-Core Layout
 
 | Core | Task | Responsibility |

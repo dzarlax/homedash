@@ -361,7 +361,10 @@ int main() {
     assert(!db["webprefs"].count("ota_target"));
     assert(web_settings_store_command_begin("reset-1", "reset", "boot-c", "1.0.21"));
     assert(!web_settings_store_recover_on_boot("boot-d", "1.0.21", false));
-    assert(web_settings_store_complete_reset_after_recovery());
+    assert(!web_settings_store_complete_reset_after_recovery([](){ return false; }));
+    assert(web_settings_store_command_result(id, sizeof(id), state, sizeof(state), error, sizeof(error)));
+    assert(!strcmp(state,"accepted"));
+    assert(web_settings_store_complete_reset_after_recovery([](){ return true; }));
     assert(web_settings_store_command_result(id, sizeof(id), state, sizeof(state), error, sizeof(error)));
     assert(!strcmp(state, "succeeded"));
 

@@ -1,3 +1,4 @@
+#include "voice_push_client.h"
 #include "ota.h"
 #include "config.h"
 #include "wifi_manager.h"
@@ -128,8 +129,10 @@ bool ota_install_available(void)
 {
     if (!s_update_available || !wifi_is_connected() || s_url[0] == '\0') return false;
     ESP_LOGI(TAG, "Starting managed OTA install: %s", s_available_version);
+    voice_push_priority(VOICE_PRIORITY_OTA, true);
     // Pause the photo worker only when a real firmware download will start.
     if (!photo_frame_pause_for_ota()) {
+        voice_push_priority(VOICE_PRIORITY_OTA, false);
         ESP_LOGW(TAG, "Photo worker is busy; postponing OTA");
         return false;
     }
@@ -153,11 +156,13 @@ bool ota_install_available(void)
         ESP_LOGI(TAG, "OTA image installed; caller will reboot");
         s_update_available = false;
         photo_frame_resume_after_ota();
+        voice_push_priority(VOICE_PRIORITY_OTA, false);
         return true;
     } else {
         ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(err));
     }
     photo_frame_resume_after_ota();
+    voice_push_priority(VOICE_PRIORITY_OTA, false);
     return false;
 }
 

@@ -1,9 +1,13 @@
+#include "voice_push_client.h"
+#include "voice_config.h"
+#include "voice_recovery_request.h"
 #include "recovery_ap.h"
 
 #include <stdio.h>
 #include <string.h>
 #include "cJSON.h"
 #include "esp_http_server.h"
+#include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"
 #include "esp_random.h"
@@ -90,11 +94,19 @@ static esp_err_t page_handler(httpd_req_t *request) {
         "<label>Bridge address<input id='u' maxlength='127' required placeholder='https://bridge.example'></label>"
         "<label>Bridge API key<input id='k' type='password' maxlength='63' required autocomplete='new-password'></label>"
         "<button>Validate and save</button></form><p id='m' role='status'></p>"
+        "<h2>Voice display pairing</h2><p>Use the display subscriber credential. Changes take effect after restart.</p>"
+        "<form id='vf'><label>Voice WSS origin<input id='vu' maxlength='159' placeholder='wss://bridge.example' autocomplete='off'></label>"
+        "<label>Subscriber credential<input id='vt' type='password' maxlength='255' autocomplete='new-password'></label>"
+        "<button>Save voice pairing</button><button type='button' id='vd'>Disable voice</button></form><p id='vm' role='status'></p>"
         "<script>const csrfToken='%s';f.onsubmit=async e=>{e.preventDefault();m.textContent='Validating Bridge access…';"
         "try{let r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},"
         "body:JSON.stringify({wifi_ssid:s.value,wifi_password:p.value,bridge_url:u.value,bridge_key:k.value})});"
-        "m.textContent=await r.text()}catch(_){m.textContent='Connection lost; check the display status.'}};</script></html>";
-    char page[2200];
+        "m.textContent=await r.text()}catch(_){m.textContent='Connection lost; check the display status.'}};"
+        "async function voice(disable){try{let r=await fetch('/voice',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},"
+        "body:JSON.stringify({disable:disable,base_url:disable?'':vu.value,token:disable?'':vt.value})});vm.textContent=await r.text();vt.value=''}"
+        "catch(_){vm.textContent='Connection lost; check the display status.';vt.value=''}}"
+        "vf.onsubmit=e=>{e.preventDefault();voice(false)};vd.onclick=()=>voice(true);</script></html>";
+    char page[2560];
     int page_length = snprintf(page, sizeof(page), page_template, s_csrf_token);
     if (page_length < 0 || static_cast<size_t>(page_length) >= sizeof(page))
         return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Page unavailable");
@@ -176,6 +188,27 @@ static esp_err_t config_handler(httpd_req_t *request) {
     return ESP_OK;
 }
 
+// Accessible only through the time-limited, password-protected local AP.
+// Never echo or log request contents; one NVS blob commits the pair together.
+static esp_err_t voice_handler(httpd_req_t *request) {
+    if (!request_authorized(request, true)) return reject_request(request);
+    if (request->content_len <= 0 || request->content_len > 1024) return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid request");
+    char body[1025]={}; int used=0;
+    while (used<request->content_len) {
+        int n=httpd_req_recv(request,body+used,request->content_len-used);
+        if (n<=0) { voice_secure_zero(body,sizeof(body)); return httpd_resp_send_err(request,HTTPD_400_BAD_REQUEST,"Invalid request"); }
+        used+=n;
+    }
+    VoiceProvision provision={}; bool disable=false;
+    bool valid=voice_recovery_parse(body,(size_t)used,provision,disable);
+    voice_secure_zero(body,sizeof(body));
+    bool saved=valid && (disable ? voice_push_forget() : voice_push_provision(provision.base_url,provision.token));
+    voice_secure_zero(&provision,sizeof(provision));
+    httpd_resp_set_hdr(request,"Cache-Control","no-store");
+    if (!saved) { httpd_resp_set_status(request,"422 Unprocessable Entity"); return httpd_resp_sendstr(request,"Could not confirm voice pairing; check values and saved state."); }
+    return httpd_resp_sendstr(request,disable ? "Voice pairing disabled." : "Voice pairing saved. Restart the display when ready.");
+}
+
 static void stop_if_generation(uint32_t generation) {
     if (!s_lock) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -188,6 +221,7 @@ static void stop_if_generation(uint32_t generation) {
         s_active = false;
         s_ssid[0] = s_password[0] = 0;
         show_status(false);
+        voice_push_priority(VOICE_PRIORITY_RECOVERY, false);
     }
     xSemaphoreGive(s_lock);
 }
@@ -201,6 +235,11 @@ static void expiry_task(void *arg) {
 }
 
 bool recovery_ap_start(void) {
+    // HTTP server debug/purge logs can contain request content or CSRF headers.
+    // Recovery accepts secrets, so fail closed if those tags cannot be muted.
+    esp_log_level_set("httpd_parse",ESP_LOG_NONE);
+    esp_log_level_set("httpd_txrx",ESP_LOG_NONE);
+    if (esp_log_level_get("httpd_parse")!=ESP_LOG_NONE || esp_log_level_get("httpd_txrx")!=ESP_LOG_NONE) return false;
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
     if (!s_lock) return false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -208,6 +247,7 @@ bool recovery_ap_start(void) {
         xSemaphoreGive(s_lock);
         return true;
     }
+    voice_push_priority(VOICE_PRIORITY_RECOVERY, true);
     uint8_t mac[6] = {};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(s_ssid, sizeof(s_ssid), "HomeDash-Setup-%02X%02X", mac[4], mac[5]);
@@ -217,6 +257,7 @@ bool recovery_ap_start(void) {
     for (size_t i = 0; i < 32; ++i)
         snprintf(&s_csrf_token[i * 2], 3, "%02x", (unsigned)(esp_random() & 0xff));
     if (!wifi_start_recovery_ap(s_ssid, s_password)) {
+        voice_push_priority(VOICE_PRIORITY_RECOVERY, false);
         xSemaphoreGive(s_lock);
         return false;
     }
@@ -227,6 +268,7 @@ bool recovery_ap_start(void) {
     config.stack_size = 6144;
     if (httpd_start(&s_server, &config) != ESP_OK) {
         wifi_stop_recovery_ap();
+        voice_push_priority(VOICE_PRIORITY_RECOVERY, false);
         xSemaphoreGive(s_lock);
         return false;
     }
@@ -234,11 +276,15 @@ bool recovery_ap_start(void) {
     root.uri = "/"; root.method = HTTP_GET; root.handler = page_handler;
     httpd_uri_t setup = {};
     setup.uri = "/config"; setup.method = HTTP_POST; setup.handler = config_handler;
+    httpd_uri_t voice = {};
+    voice.uri = "/voice"; voice.method = HTTP_POST; voice.handler = voice_handler;
     if (httpd_register_uri_handler(s_server, &root) != ESP_OK ||
-        httpd_register_uri_handler(s_server, &setup) != ESP_OK) {
+        httpd_register_uri_handler(s_server, &setup) != ESP_OK ||
+        httpd_register_uri_handler(s_server, &voice) != ESP_OK) {
         httpd_stop(s_server);
         s_server = nullptr;
         wifi_stop_recovery_ap();
+        voice_push_priority(VOICE_PRIORITY_RECOVERY, false);
         xSemaphoreGive(s_lock);
         return false;
     }
@@ -255,6 +301,7 @@ bool recovery_ap_start(void) {
         s_active = false;
         s_ssid[0] = s_password[0] = 0;
         show_status(false);
+        voice_push_priority(VOICE_PRIORITY_RECOVERY, false);
         xSemaphoreGive(s_lock);
         return false;
     }
@@ -273,6 +320,7 @@ void recovery_ap_stop(void) {
     s_active = false;
     s_ssid[0] = s_password[0] = 0;
     show_status(false);
+    voice_push_priority(VOICE_PRIORITY_RECOVERY, false);
     xSemaphoreGive(s_lock);
 }
 

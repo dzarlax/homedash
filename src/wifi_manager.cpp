@@ -1,3 +1,4 @@
+#include "voice_push_client.h"
 #include "wifi_manager.h"
 
 #include <string.h>
@@ -148,6 +149,7 @@ bool wifi_begin_trial(const char *ssid, const char *password, uint32_t timeout_m
     if (!s_wifi_stack_ready || !ssid || !ssid[0] || strlen(ssid) > 32 ||
         !password || strlen(password) > 64 || s_trial_active) return false;
     if (esp_wifi_get_config(WIFI_IF_STA, &s_trial_previous) != ESP_OK) return false;
+    voice_push_priority(VOICE_PRIORITY_NETWORK_TRIAL, true);
     wifi_config_t candidate = {};
     memcpy(candidate.sta.ssid, ssid, strlen(ssid));
     memcpy(candidate.sta.password, password, strlen(password));
@@ -161,6 +163,7 @@ bool wifi_begin_trial(const char *ssid, const char *password, uint32_t timeout_m
         esp_wifi_set_config(WIFI_IF_STA, &s_trial_previous);
         s_sta_configured = s_trial_previous.sta.ssid[0] != 0;
         if (s_sta_configured) esp_wifi_connect();
+        voice_push_priority(VOICE_PRIORITY_NETWORK_TRIAL, false);
         return false;
     }
     s_wifi_started = true;
@@ -184,11 +187,13 @@ void wifi_rollback_trial(void)
     s_sta_configured = s_trial_previous.sta.ssid[0] != 0;
     if (err == ESP_OK && s_sta_configured) esp_wifi_connect();
     s_trial_active = false;
+    voice_push_priority(VOICE_PRIORITY_NETWORK_TRIAL, false);
 }
 
 void wifi_confirm_trial(void)
 {
     s_trial_active = false;
+    voice_push_priority(VOICE_PRIORITY_NETWORK_TRIAL, false);
     memset(&s_trial_previous, 0, sizeof(s_trial_previous));
 }
 
