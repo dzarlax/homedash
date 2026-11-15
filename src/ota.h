@@ -11,3 +11,7 @@ void ota_check_and_update(void);
 bool ota_check_available(bool *available);
 bool ota_install_available(void);
 const char *ota_available_version(void);
+
+// Confirm the running image only after a successful Bridge data fetch.
+// Failure is reported and must remain retryable by the caller.
+bool ota_mark_running_valid(void);

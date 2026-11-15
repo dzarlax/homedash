@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <cmath>
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "heap_diagnostics.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
@@ -124,6 +126,17 @@ static bool http_get(const char *url, http_buf_t *buf, char *err_out, size_t err
     }
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
+    if (err != ESP_OK) {
+        constexpr uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+        constexpr uint32_t dma = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA;
+        ESP_LOGE(TAG, "TLS diagnostic: internal free=%u largest=%u minimum=%u; DMA free=%u largest=%u minimum=%u",
+                 (unsigned)heap_caps_get_free_size(internal),
+                 (unsigned)heap_caps_get_largest_free_block(internal),
+                 (unsigned)heap_caps_get_minimum_free_size(internal),
+                 (unsigned)heap_caps_get_free_size(dma),
+                 (unsigned)heap_caps_get_largest_free_block(dma),
+                 (unsigned)heap_caps_get_minimum_free_size(dma));
+    }
     esp_http_client_cleanup(client);
 
     if (err != ESP_OK || status != 200) {
@@ -449,6 +462,11 @@ void bridge_fetch_and_update(void)
         return;
     }
 
+    static bool first_dashboard_logged = false;
+    if (!first_dashboard_logged) {
+        first_dashboard_logged = true;
+        log_heap_snapshot("bridge_success");
+    }
     cJSON *root = cJSON_Parse(resp.data);
     free(resp.data);
     if (!cJSON_IsObject(root)) {

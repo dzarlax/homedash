@@ -3,7 +3,9 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include "brightness_fixture.h"
 
+extern void sim_set_connection_status(const char *, const char *);
 static int64_t now_us = 1000000;
 static int starts = 0, stops = 0;
 extern "C" int64_t esp_timer_get_time() { return now_us; }
@@ -29,6 +31,62 @@ int main() {
     assert(bindings < MAX_STATIC_UI_LABELS);
     ui_dashboard_open_settings();
     assert(settings_is_active() && starts == 0 && stops == 0);
+    // Offline diagnostics use only locally generated codes, and fit within
+    // the device card without overlapping the update controls/navigation.
+    sim_set_connection_status("ESP_OK/403", "Sync:ESP_ERR_HTTP_CONNECT tls=8001/ffffd900/8 e=111");
+    refresh_settings(); lv_obj_update_layout(lv_screen_active());
+    const char *diagnostics = lv_label_get_text(settings_device_status);
+    assert(strstr(diagnostics, "Sync:ESP_ERR_HTTP_CONNECT"));
+    assert(strstr(diagnostics, "TLS:8001/ffffd900/8 e=111"));
+    assert(strstr(diagnostics, "Br: ESP_OK/403"));
+    assert(strstr(diagnostics, "RAM total/internal: 128/78 KB"));
+    lv_area_t area; lv_obj_get_coords(settings_device_status, &area);
+    assert(area.x1 >= 0 && area.x2 < 620 && area.y1 >= 352 && area.y2 < 540);
+    lv_point_t text_size = {};
+    lv_text_get_size(&text_size, diagnostics, lv_obj_get_style_text_font(settings_device_status, 0),
+                     lv_obj_get_style_text_letter_space(settings_device_status, 0),
+                     lv_obj_get_style_text_line_space(settings_device_status, 0),
+                     lv_obj_get_width(settings_device_status), LV_TEXT_FLAG_NONE);
+    assert(text_size.y <= lv_obj_get_height(settings_device_status));
+    sim_set_connection_status("ESP_MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/403", "Sync:ESP_MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM tls=ffffffff/ffffffff/ffffffff e=-2147483647");
+    refresh_settings(); diagnostics = lv_label_get_text(settings_device_status);
+    lv_text_get_size(&text_size, diagnostics, lv_obj_get_style_text_font(settings_device_status, 0),
+                     lv_obj_get_style_text_letter_space(settings_device_status, 0),
+                     lv_obj_get_style_text_line_space(settings_device_status, 0),
+                     lv_obj_get_width(settings_device_status), LV_TEXT_FLAG_NONE);
+    assert(text_size.y <= lv_obj_get_height(settings_device_status));
+    assert(strstr(diagnostics, "...\nTLS:ffffffff/ffffffff/ffffffff e=-2147483647"));
+    assert(strstr(diagnostics, ".../403"));
+    brightness_fixture::preview = true; refresh_settings();
+    diagnostics = lv_label_get_text(settings_device_status);
+    assert(strstr(diagnostics, "TLS:ffffffff/ffffffff/ffffffff e=-2147483647"));
+    assert(strstr(diagnostics, "RAM total/internal: 128/78 KB"));
+    assert(strstr(diagnostics, "Временная яркость. Доступен возврат."));
+    lv_text_get_size(&text_size, diagnostics, lv_obj_get_style_text_font(settings_device_status, 0),
+                     lv_obj_get_style_text_letter_space(settings_device_status, 0),
+                     lv_obj_get_style_text_line_space(settings_device_status, 0),
+                     lv_obj_get_width(settings_device_status), LV_TEXT_FLAG_NONE);
+    assert(text_size.y <= lv_obj_get_height(settings_device_status));
+    for (const char *locale : {"en", "sr-Latn", "ru"}) {
+        ui_strings_set_locale(locale); refresh_settings();
+        diagnostics = lv_label_get_text(settings_device_status);
+        assert(strstr(diagnostics, "TLS:ffffffff/ffffffff/ffffffff e=-2147483647"));
+        assert(strstr(diagnostics, ".../403"));
+        assert(strstr(diagnostics, "RAM total/internal: 128/78 KB"));
+        assert(strstr(diagnostics, ui_text("Временная яркость. Доступен возврат.")));
+        lv_text_get_size(&text_size, diagnostics, lv_obj_get_style_text_font(settings_device_status, 0),
+                         lv_obj_get_style_text_letter_space(settings_device_status, 0),
+                         lv_obj_get_style_text_line_space(settings_device_status, 0),
+                         lv_obj_get_width(settings_device_status), LV_TEXT_FLAG_NONE);
+        assert(text_size.y <= lv_obj_get_height(settings_device_status));
+    }
+    brightness_fixture::preview = false;
+    sim_set_connection_status("https://example/secret", "Sync:token secret");
+    refresh_settings(); diagnostics = lv_label_get_text(settings_device_status);
+    assert(!strstr(diagnostics, "secret") && !strstr(diagnostics, "https"));
+    assert(strstr(diagnostics, "unavailable"));
+    sim_set_connection_status("OK", "Sync:OK"); refresh_settings();
+    assert(!strstr(lv_label_get_text(settings_device_status), "RAM total/internal:"));
     recovery_toggle_cb(nullptr); assert(starts == 1);
     ui_dashboard_update_recovery("HomeDash-Setup-DEMO", "TestOnlyPassword", "http://192.168.4.1");
     masked();

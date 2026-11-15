@@ -2439,6 +2439,54 @@ static bool public_settings_url(const char *url)
     return true;
 }
 
+// Restrict diagnostics to known locally generated status formats. Never show
+// arbitrary response text, URLs or credentials in Settings.
+static void settings_safe_diagnostic(const char *value, bool sync, char *out, size_t size)
+{
+    if (!out || !size) return;
+    snprintf(out, size, "%s", "unavailable");
+    if (!value || !*value || strstr(value, "://")) return;
+    const char *known_sync[] = {"Sync:OK", "Sync:waiting", "Sync:connecting", "Sync:response OOM", "Sync:client OOM", "Sync:payload unavailable", "Sync:identity unavailable", "Sync:invalid JSON", "Sync:invalid envelope", "Sync:response too large"};
+    const char *known_bridge[] = {"OK", "Waiting...", "Fetching...", "No WiFi", "OOM", "JSON parse error"};
+    const char *const *known = sync ? known_sync : known_bridge;
+    const size_t count = sync ? sizeof(known_sync)/sizeof(*known_sync) : sizeof(known_bridge)/sizeof(*known_bridge);
+    for (size_t i = 0; i < count; ++i) {
+        if (!strcmp(value, known[i])) { snprintf(out, size, "%s", value); return; }
+    }
+    const char *p = value;
+    if (sync) {
+        if (strncmp(p, "Sync:", 5)) return;
+        p += 5;
+        int code = 0, consumed = 0;
+        if (sscanf(p, "HTTP %d%n", &code, &consumed) == 1 &&
+            consumed > 0 && !p[consumed] && code >= 0 && code <= 999) {
+            snprintf(out, size, "Sync:HTTP %d", code);
+            return;
+        }
+    }
+    if (strncmp(p, "ESP_", 4)) return;
+    const char *name = p;
+    while ((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_') ++p;
+    const int length = static_cast<int>(p - name);
+    if (length < 5 || length > 48) return;
+    if (sync) {
+        unsigned tls_error = 0, tls_code = 0, tls_flags = 0;
+        int socket_error = 0, consumed = 0;
+        if (sscanf(p, " tls=%x/%x/%x e=%d%n", &tls_error, &tls_code,
+                   &tls_flags, &socket_error, &consumed) != 4 ||
+            consumed <= 0 || p[consumed]) return;
+        const int shown = length > 25 ? 25 : length;
+        snprintf(out, size, "Sync:%.*s%s\nTLS:%x/%x/%x e=%d", shown, name,
+                 length > shown ? "..." : "", tls_error, tls_code, tls_flags, socket_error);
+    } else {
+        int status = 0, consumed = 0;
+        if (sscanf(p, "/%d%n", &status, &consumed) != 1 || consumed <= 0 ||
+            p[consumed] || status < 0 || status > 999) return;
+        const int shown = length > 25 ? 25 : length;
+        snprintf(out, size, "%.*s%s/%d", shown, name, length > shown ? "..." : "", status);
+    }
+}
+
 static void refresh_settings(void)
 {
     if (!settings_web_link) return;
@@ -2477,12 +2525,12 @@ static void refresh_settings(void)
         set_static_ui_label(settings_ap_button_label, "Включить на 10 минут");
         set_static_ui_label(settings_ap_help, "Для восстановления Wi-Fi или связи с Bridge.");
     }
-    char status[256], sync[96] = {}, data[64] = {};
+    char status[320], sync[96] = {}, data[64] = {};
     web_sync_copy_diagnostic(sync, sizeof(sync));
     bridge_copy_last_error(data, sizeof(data));
     const bool bridge_online = wifi_is_connected() && !strcmp(sync, "Sync:OK") &&
         (!strcmp(data, "OK") || (!strcmp(data, "Fetching...") && bridge_has_data()));
-    snprintf(status, sizeof(status), ui_text("Wi-Fi: %s\nBridge: %s"),
+    snprintf(status, sizeof(status), "Wi-Fi: %s  Bridge: %s",
              ui_text(wifi_is_connected() ? "Подключён" : "Нет связи"),
              ui_text(bridge_online ? "На связи" : "Нет связи"));
     const auto backlight = brightness_runtime_report();
@@ -2491,8 +2539,18 @@ static void refresh_settings(void)
         if (temporary || backlight.error[0]) lv_obj_clear_flag(settings_backlight_restore, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(settings_backlight_restore, LV_OBJ_FLAG_HIDDEN);
     }
+    if (!bridge_online) {
+        char safe_sync[128] = {}, safe_bridge[64] = {};
+        settings_safe_diagnostic(sync, true, safe_sync, sizeof(safe_sync));
+        settings_safe_diagnostic(data, false, safe_bridge, sizeof(safe_bridge));
+        const size_t used = strlen(status);
+        snprintf(status + used, sizeof(status) - used, "\n%s\nBr: %s\nRAM total/internal: %lu/%lu KB",
+                 safe_sync, safe_bridge,
+                 static_cast<unsigned long>(esp_get_free_heap_size() / 1024),
+                 static_cast<unsigned long>(esp_get_free_internal_heap_size() / 1024));
+    }
     if (temporary) {
-        size_t used = strlen(status);
+        const size_t used = strlen(status);
         snprintf(status + used, sizeof(status) - used, "\n%s", ui_text("Временная яркость. Доступен возврат."));
     }
     if (settings_device_status) lv_label_set_text(settings_device_status, status);
@@ -2692,7 +2750,7 @@ static void create_settings_page(lv_obj_t *tile)
     settings_button(local, 242, 158, 242, "Включить на 10 минут", recovery_toggle_cb, &settings_ap_button_label);
     settings_ap_help = settings_text(local, 16, 214, 470, 44, "");
 
-    lv_obj_t *system = make_card(tile, 14, 364, 996, 160);
+    lv_obj_t *system = make_card(tile, 14, 352, 996, 188);
     if (HOMEDASH_BRIGHTNESS_REFERENCE_TEST) {
         settings_text(system, 16, 12, 930, 28, "Тест подсветки", true);
         settings_text(system, 16, 54, 570, 80, "Пошаговый подбор с возвратом на 50");
@@ -2722,7 +2780,7 @@ static void create_settings_page(lv_obj_t *tile)
         lv_obj_add_flag(settings_reference_panel, LV_OBJ_FLAG_HIDDEN);
     } else {
         settings_text(system, 16, 12, 930, 28, "Устройство", true);
-        settings_device_status = settings_text(system, 16, 54, 570, 90, "");
+        settings_device_status = settings_text(system, 16, 42, 570, 140, "");
         settings_button(system, 620, 46, 350, "Проверить обновление", ota_btn_cb);
         settings_backlight_restore = settings_button(system, 620, 100, 350, "Вернуть яркость", local_backlight_restore_cb);
         lv_obj_add_flag(settings_backlight_restore, LV_OBJ_FLAG_HIDDEN);

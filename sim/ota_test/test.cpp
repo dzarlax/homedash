@@ -13,6 +13,8 @@ static mock_http client;
 static std::string body;
 static int status=200, pauses=0,resumes=0,flashes=0,reboots=0;
 static bool connected=true,may_pause=true,paused=false,voice_blocked=false;
+static esp_err_t mark_result=ESP_FAIL; static int mark_calls=0;
+esp_err_t esp_ota_mark_app_valid_cancel_rollback(){++mark_calls;return mark_result;}
 void voice_push_priority(VoicePriority reason,bool enabled) { assert(reason==VOICE_PRIORITY_OTA); voice_blocked=enabled; }
 bool wifi_is_connected(){return connected;}
 bool photo_frame_pause_for_ota(){assert(voice_blocked);++pauses;paused=may_pause;return may_pause;}
@@ -31,6 +33,9 @@ esp_err_t esp_https_ota(const esp_https_ota_config_t *config){assert(paused);cli
 static void reset(const char *response){body=response;status=200;pauses=resumes=flashes=reboots=0;connected=true;may_pause=true;paused=false;voice_blocked=false;client.headers.clear();}
 int main(){
  ota_init("https://bridge.test","test-key");
+ // A failed confirmation must remain retryable; only ESP_OK is success.
+ assert(!ota_mark_running_valid() && mark_calls==1);
+ mark_result=ESP_OK; assert(ota_mark_running_valid() && mark_calls==2);
  for(const char *response:{"{\"update\":false}","not json"}){reset(response);ota_check_and_update();assert(client.headers["X-Device-ID"]=="0123456789abcdef0123456789abcdef");assert(pauses==0&&resumes==0&&flashes==0);}
  reset("{\"update\":true,\"version\":\"1.0.21\"}");status=503;ota_check_and_update();assert(pauses==0&&flashes==0);
  reset("{\"update\":true,\"version\":\"1.0.21\"}");may_pause=false;ota_check_and_update();assert(pauses==1&&flashes==0&&!voice_blocked);
