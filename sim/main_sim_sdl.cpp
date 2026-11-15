@@ -13,6 +13,7 @@
 #include "web_settings.h"
 #include "ui_dashboard.h"
 #include "ui_strings.h"
+#include "brightness_fixture.h"
 #include <cstdlib>
 
 static constexpr int DISP_W = 1024;
@@ -25,6 +26,7 @@ void ui_dashboard_update_ha_calendar(const bridge_cal_data_t *data);
 void ui_dashboard_update_transport(const bridge_transport_t *data);
 void ui_dashboard_update_bridge(const bridge_data_t *data);
 void ui_dashboard_update_ha(const bridge_data_t *data);
+extern void sim_set_connection_status(const char *, const char *);
 extern "C" void sim_init_fixtures(void);
 extern "C" void sim_set_locale_test_fixtures(void);
 extern "C" void sim_set_settings_test_fixtures(void);
@@ -253,6 +255,11 @@ int main()
                 partial.valid = true; partial.sources_partial = true; partial.completeness_known = true;
                 partial.count = 0; partial.events.clear();
                 ui_dashboard_update_ha_calendar(&partial);
+            }
+            if (std::getenv("HOMEDASH_SIM_DIAGNOSTICS")) {
+                if (std::getenv("HOMEDASH_SIM_BRIGHTNESS_PREVIEW")) brightness_fixture::preview = true;
+                sim_set_connection_status("ESP_OK/403", "Sync:ESP_ERR_HTTP_CONNECT tls=8001/ffffd900/8 e=111");
+                ui_dashboard_update_time();
             }
             ui_dashboard_sim_set_page(page_env ? std::atoi(page_env) : 0);
             ui_dashboard_sim_refresh_feedback();

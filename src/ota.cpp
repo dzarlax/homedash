@@ -170,6 +170,17 @@ const char *ota_available_version(void) {
     return s_update_available ? s_available_version : "";
 }
 
+bool ota_mark_running_valid(void)
+{
+    const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mark app valid: %s", esp_err_to_name(err));
+        return false;
+    }
+    ESP_LOGI(TAG, "App marked valid (rollback cancelled)");
+    return true;
+}
+
 void ota_check_and_update(void)
 {
     bool available = false;

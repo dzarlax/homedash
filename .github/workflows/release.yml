@@ -43,6 +43,23 @@ jobs:
           python tools/check_network_stack.py --build ".pio/build/$PIO_ENV"
           python tools/check_tls_memory.py --config ".pio/build/$PIO_ENV/config/sdkconfig.h"
 
+      - name: Prepare diagnostic checksums
+        run: |
+          cd ".pio/build/$PIO_ENV"
+          test -f config/sdkconfig.json
+          sha256sum firmware.bin firmware.elf homedash.map > SHA256SUMS.txt
+
+      - name: Upload diagnostic build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-diagnostics-${{ github.ref_name }}
+          if-no-files-found: error
+          path: |
+            .pio/build/${{ env.PIO_ENV }}/firmware.elf
+            .pio/build/${{ env.PIO_ENV }}/homedash.map
+            .pio/build/${{ env.PIO_ENV }}/config/sdkconfig.json
+            .pio/build/${{ env.PIO_ENV }}/SHA256SUMS.txt
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:

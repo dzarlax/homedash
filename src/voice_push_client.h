@@ -12,6 +12,8 @@ enum VoicePriority : uint32_t { VOICE_PRIORITY_OTA=1, VOICE_PRIORITY_RECOVERY=2,
 void voice_push_priority(VoicePriority reason, bool enabled);
 
 #ifdef SIMULATOR
+void voice_push_sim_startup_mode(int mode);
+void voice_push_sim_startup_stats(unsigned *out);
 void voice_push_sim_connected();
 void voice_push_sim_disconnected();
 void voice_push_sim_advance(uint64_t ms);

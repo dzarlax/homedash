@@ -676,9 +676,7 @@ static void network_task(void *param)
             // Mark app as valid after first successful bridge fetch (rollback protection)
             bool has_data = bridge_has_data();
             if (!app_validated && has_data) {
-                esp_ota_mark_app_valid_cancel_rollback();
-                app_validated = true;
-                ESP_LOGI(TAG, "App marked valid (rollback cancelled)");
+                if (ota_mark_running_valid()) app_validated = true;
             }
 
             // Fetch today's calendar after first successful bridge update
@@ -753,16 +751,22 @@ extern "C" void app_main(void)
     if (lvgl_port_lock(-1)) {
         ui_dashboard_create();
         photo_frame_ui_init();
-        voice_push_ui_init();
         lvgl_port_unlock();
     }
 
     // 3. Start LVGL render loop
     lvgl_port_task_start();
-    voice_push_start();
 
     // 4. Network task on core 0
     s_request_queue = xQueueCreate(8, sizeof(network_request_t));
     configASSERT(s_request_queue);
-    xTaskCreatePinnedToCore(network_task, "network", 32 * 1024, NULL, 1, NULL, 0);
+    if (xTaskCreatePinnedToCore(network_task, "network", 32 * 1024, NULL, 1, NULL, 0) != pdPASS) {
+        ESP_LOGE(TAG, "Network task creation failed");
+        return;
+    }
+    if (lvgl_port_lock(-1)) {
+        voice_push_ui_init();
+        lvgl_port_unlock();
+    }
+    voice_push_start();
 }

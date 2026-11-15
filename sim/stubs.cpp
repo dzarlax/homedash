@@ -62,7 +62,7 @@ void wavesahre_rgb_lcd_bl_off() {}
 
 static bridge_data_t s_data = {};
 static bridge_cal_data_t s_calendar = {};
-static char s_last_error[32] = "OK";
+static char s_last_error[64] = "OK";
 static char s_sync_diagnostic[96] = "Sync:OK";
 void sim_set_connection_status(const char *data, const char *sync)
 {

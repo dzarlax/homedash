@@ -318,7 +318,7 @@ $(BUILD)/voice_screenshots.o: voice_screenshots.cpp $(SRC_DIR)/ui_voice.h $(SRC_
 $(BUILD)/voice_screenshots: $(BUILD)/voice_screenshots.o $(BUILD)/ui_voice.o $(BUILD)/ui_strings.o $(FONT_OBJS) $(LVGL_OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
-$(BUILD)/voice_push_client_sim.o: $(SRC_DIR)/voice_push_client.cpp $(SRC_DIR)/voice_push_client.h $(SRC_DIR)/voice_view_model.h $(SRC_DIR)/voice_protocol.h $(SRC_DIR)/voice_fragments.h $(SRC_DIR)/voice_config.h $(SRC_DIR)/voice_backoff.h $(SRC_DIR)/ui_voice.h
+$(BUILD)/voice_push_client_sim.o: $(SRC_DIR)/voice_push_client.cpp $(SRC_DIR)/voice_push_client.h $(SRC_DIR)/voice_view_model.h $(SRC_DIR)/voice_protocol.h $(SRC_DIR)/voice_fragments.h $(SRC_DIR)/voice_config.h $(SRC_DIR)/voice_backoff.h $(SRC_DIR)/voice_startup.h $(SRC_DIR)/ui_voice.h
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 $(BUILD)/voice_protocol_sim.o: $(SRC_DIR)/voice_protocol.cpp $(SRC_DIR)/voice_protocol.h $(SRC_DIR)/voice_view_model.h
@@ -365,3 +365,14 @@ test-voice-reset:
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) voice_reset_test.cpp $(SRC_DIR)/voice_reset.cpp -o $(BUILD)/voice_reset_test
 	./$(BUILD)/voice_reset_test
+
+$(BUILD)/voice_startup_test.o: voice_startup_test.cpp $(SRC_DIR)/voice_push_client.h $(SRC_DIR)/ui_voice.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/voice_startup_test: $(BUILD)/voice_startup_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-voice-startup: $(BUILD)/voice_startup_test
+	@for mode in 0 1 2 3 4 5; do ./$(BUILD)/voice_startup_test $$mode || exit $$?; done
+.PHONY: test-voice-startup
