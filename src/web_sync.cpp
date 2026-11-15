@@ -2,6 +2,7 @@
 #include "config.h"
 #include "wifi_manager.h"
 #include "web_sync.h"
+#include "web_sync_clear.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -417,7 +418,8 @@ static bool extract_network(cJSON *preferences, web_network_update_t *out) {
         strncmp(out->bridge_url, "https://", 8)) return false;
     return true;
 }
-}
+
+} // namespace
 
 bool web_sync_poll(const char *url, const char *key, const char *firmware,
                    const char *boot_id, web_sync_response_t *out) {
@@ -464,6 +466,7 @@ bool web_sync_poll(const char *url, const char *key, const char *firmware,
         }
     }
     if (ok) {
+        out->has_voice_clear = extract_voice_clear(response->data, response->used, decoded, &out->voice_clear);
         cJSON *screen = cJSON_GetObjectItemCaseSensitive(prefs, "screen");
         s_locale_report_supported = cJSON_HasObjectItem(screen, "locale");
         cJSON *backlight_version = cJSON_GetObjectItemCaseSensitive(decoded, "backlight_report_version");

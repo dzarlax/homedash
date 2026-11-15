@@ -1,7 +1,7 @@
 #pragma once
 
 // --- Firmware version (bump before each release) ---
-#define FW_VERSION  "1.0.42"
+#define FW_VERSION  "1.0.43"
 
 #ifndef HOMEDASH_BRIGHTNESS_REFERENCE_TEST
 #define HOMEDASH_BRIGHTNESS_REFERENCE_TEST 0

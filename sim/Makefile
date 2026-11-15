@@ -29,7 +29,7 @@ LVGL_SRCS = $(shell find $(LVGL_DIR)/src -name '*.c' | grep -v 'lv_demo\|lv_exam
 LVGL_OBJS = $(patsubst $(LVGL_DIR)/%.c,$(BUILD)/lvgl/%.o,$(LVGL_SRCS))
 
 # App C++ sources
-CXX_SRCS = main_sim_sdl.cpp stubs.cpp photo_frame_runtime.cpp $(SRC_DIR)/web_settings.cpp $(SRC_DIR)/photo_frame.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/ui_strings.cpp $(SRC_DIR)/weather_icons.cpp
+CXX_SRCS = main_sim_sdl.cpp stubs.cpp photo_frame_runtime.cpp $(SRC_DIR)/web_settings.cpp $(SRC_DIR)/photo_frame.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/ui_voice_pair.cpp $(SRC_DIR)/ui_strings.cpp $(SRC_DIR)/weather_icons.cpp
 CXX_OBJS = $(patsubst %.cpp,$(BUILD)/%.o,$(notdir $(CXX_SRCS)))
 
 # Font + cJSON C sources
@@ -106,7 +106,7 @@ $(BUILD)/calendar_scroll_test.o: calendar_scroll_test.cpp $(SRC_DIR)/ui_dashboar
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/calendar_scroll_test: $(BUILD)/calendar_scroll_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/calendar_scroll_test: $(BUILD)/calendar_scroll_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-calendar: $(BUILD)/calendar_scroll_test
@@ -118,7 +118,7 @@ $(BUILD)/network_status_test.o: network_status_test.cpp $(SRC_DIR)/ui_dashboard.
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/network_status_test: $(BUILD)/network_status_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/network_status_test: $(BUILD)/network_status_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-network: $(BUILD)/network_status_test
@@ -134,7 +134,7 @@ $(BUILD)/light_sensor_mapping_test.o: light_sensor_mapping_test.cpp $(SRC_DIR)/u
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/light_sensor_mapping_test: $(BUILD)/light_sensor_mapping_test.o $(LVGL_OBJS) $(BUILD)/stubs_home_test.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/light_sensor_mapping_test: $(BUILD)/light_sensor_mapping_test.o $(LVGL_OBJS) $(BUILD)/stubs_home_test.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-home: $(BUILD)/light_sensor_mapping_test
@@ -150,7 +150,7 @@ $(BUILD)/photo_frame_test.o: photo_frame_test.cpp $(SRC_DIR)/photo_frame.cpp $(S
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -DPHOTO_FRAME_TEST -c $< -o $@
 
-$(BUILD)/photo_frame_test: $(BUILD)/photo_frame_test.o $(LVGL_OBJS) $(BUILD)/stubs_photo_test.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/photo_frame_test: $(BUILD)/photo_frame_test.o $(LVGL_OBJS) $(BUILD)/stubs_photo_test.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-photo-frame: $(BUILD)/photo_frame_test
@@ -188,7 +188,7 @@ $(BUILD)/settings_tab_test.o: settings_tab_test.cpp $(SRC_DIR)/ui_dashboard.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/settings_tab_test: $(BUILD)/settings_tab_test.o $(LVGL_OBJS) $(BUILD)/stubs_settings_tab.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/settings_tab_test: $(BUILD)/settings_tab_test.o $(LVGL_OBJS) $(BUILD)/stubs_settings_tab.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-settings-tab: $(BUILD)/settings_tab_test
@@ -208,7 +208,7 @@ $(BUILD)/action_feedback_ui_test.o: action_feedback_ui_test.cpp $(SRC_DIR)/ui_da
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/action_feedback_ui_test: $(BUILD)/action_feedback_ui_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/action_feedback_ui_test: $(BUILD)/action_feedback_ui_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-action-feedback-ui: $(BUILD)/action_feedback_ui_test
@@ -231,7 +231,7 @@ $(BUILD)/brightness_reference_ui_test.o: brightness_reference_ui_test.cpp $(SRC_
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/brightness_reference_ui_test: $(BUILD)/brightness_reference_ui_test.o $(LVGL_OBJS) $(BUILD)/stubs_reference.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/brightness_reference_ui_test: $(BUILD)/brightness_reference_ui_test.o $(LVGL_OBJS) $(BUILD)/stubs_reference.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-brightness-reference-ui: $(BUILD)/brightness_reference_ui_test
@@ -243,7 +243,7 @@ $(BUILD)/day_test.o: day_test.cpp $(SRC_DIR)/ui_dashboard.cpp $(SRC_DIR)/bridge.
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/day_test: $(BUILD)/day_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/day_test: $(BUILD)/day_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-day: $(BUILD)/day_test
@@ -258,7 +258,7 @@ $(BUILD)/day_night_ui_test.o: day_night_ui_test.cpp $(SRC_DIR)/ui_dashboard.cpp 
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/day_night_ui_test: $(BUILD)/day_night_ui_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/day_night_ui_test: $(BUILD)/day_night_ui_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 .PHONY: test-day-night
@@ -269,7 +269,7 @@ $(BUILD)/summary_test.o: summary_test.cpp $(SRC_DIR)/ui_dashboard.cpp
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/summary_test: $(BUILD)/summary_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ)
+$(BUILD)/summary_test: $(BUILD)/summary_test.o $(LVGL_OBJS) $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 .PHONY: test-summary
@@ -290,6 +290,25 @@ $(BUILD)/voice_overlay_test: $(BUILD)/voice_overlay_test.o $(BUILD)/ui_voice.o $
 test-voice-overlay: $(BUILD)/voice_overlay_test
 	./$(BUILD)/voice_overlay_test
 
+$(BUILD)/ui_voice_pair.o: $(SRC_DIR)/ui_voice_pair.cpp $(SRC_DIR)/ui_voice_pair.h $(SRC_DIR)/ui_strings.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/voice_pair_ui_test.o: voice_pair_ui_test.cpp $(SRC_DIR)/ui_voice_pair.h $(SRC_DIR)/ui_strings.h
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+$(BUILD)/voice_pair_ui_test: $(BUILD)/voice_pair_ui_test.o $(BUILD)/ui_voice_pair.o $(BUILD)/ui_strings.o $(FONT_OBJS) $(LVGL_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+
+test-voice-pair-ui: $(BUILD)/voice_pair_ui_test
+	./$(BUILD)/voice_pair_ui_test
+
+test-voice-sync-clear: $(CJSON_OBJ)
+	$(CXX) $(CXXFLAGS) -Iesp_stubs -I$(SRC_DIR) web_sync_clear_test.cpp $(SRC_DIR)/web_sync_clear.cpp $(CJSON_OBJ) -o $(BUILD)/web_sync_clear_test
+	./$(BUILD)/web_sync_clear_test
+.PHONY: test-voice-sync-clear
+
 VOICE_FIXTURE ?= fixtures/voice_snapshot.json
 
 test-voice-protocol: $(CJSON_OBJ)
@@ -309,7 +328,7 @@ test-voice-protocol: $(CJSON_OBJ)
 	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) voice_backoff_test.cpp -o $(BUILD)/voice_backoff_test
 	./$(BUILD)/voice_backoff_test
 
-.PHONY: test-voice-overlay test-voice-protocol
+.PHONY: test-voice-overlay test-voice-protocol test-voice-pair-ui
 
 $(BUILD)/voice_screenshots.o: voice_screenshots.cpp $(SRC_DIR)/ui_voice.h $(SRC_DIR)/ui_strings.h
 	@mkdir -p $(BUILD)
@@ -331,12 +350,25 @@ $(BUILD)/voice_view_model_sim.o: $(SRC_DIR)/voice_view_model.cpp $(SRC_DIR)/voic
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 $(BUILD)/voice_integration_test.o: voice_integration_test.cpp $(SRC_DIR)/voice_push_client.h $(SRC_DIR)/ui_voice.h
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-$(BUILD)/voice_integration_test: $(BUILD)/voice_integration_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS)
+$(BUILD)/voice_integration_test: $(BUILD)/voice_integration_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-voice-integration: $(BUILD)/voice_integration_test
 	./$(BUILD)/voice_integration_test
 .PHONY: test-voice-integration
+
+$(BUILD)/voice_push_stop_test.o: voice_push_stop_test.cpp $(SRC_DIR)/voice_push_client.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/voice_push_stop_test: $(BUILD)/voice_push_stop_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS) $(BUILD)/ui_voice_pair.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
+test-voice-stop: $(BUILD)/voice_push_stop_test
+	./$(BUILD)/voice_push_stop_test
+	./$(BUILD)/voice_push_stop_test idle
+test-voice-boot-policy:
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) voice_push_boot_policy_test.cpp -o $(BUILD)/voice_push_boot_policy_test
+	./$(BUILD)/voice_push_boot_policy_test
+.PHONY: test-voice-stop test-voice-boot-policy
 
 test-voice-wss:
 	@mkdir -p $(BUILD)
@@ -353,7 +385,7 @@ test-voice-mutation:
 
 $(BUILD)/voice_latency_test.o: voice_latency_test.cpp $(SRC_DIR)/voice_push_client.h $(SRC_DIR)/ui_voice.h
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-$(BUILD)/voice_latency_test: $(BUILD)/voice_latency_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS)
+$(BUILD)/voice_latency_test: $(BUILD)/voice_latency_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-voice-latency: $(BUILD)/voice_latency_test
@@ -370,7 +402,7 @@ $(BUILD)/voice_startup_test.o: voice_startup_test.cpp $(SRC_DIR)/voice_push_clie
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/voice_startup_test: $(BUILD)/voice_startup_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS)
+$(BUILD)/voice_startup_test: $(BUILD)/voice_startup_test.o $(BUILD)/voice_push_client_sim.o $(BUILD)/voice_protocol_sim.o $(BUILD)/voice_fragments_sim.o $(BUILD)/voice_view_model_sim.o $(BUILD)/voice_config_sim.o $(BUILD)/ui_voice.o $(BUILD)/ui_dashboard.o $(BUILD)/stubs.o $(BUILD)/photo_frame.o $(BUILD)/photo_frame_runtime.o $(BUILD)/web_settings.o $(BUILD)/ui_strings.o $(BUILD)/weather_icons.o $(FONT_OBJS) $(CJSON_OBJ) $(LVGL_OBJS) $(BUILD)/ui_voice_pair.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lm -lpthread
 
 test-voice-startup: $(BUILD)/voice_startup_test
