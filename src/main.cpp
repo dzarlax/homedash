@@ -32,6 +32,7 @@
 #include "voice_push_client.h"
 #include "voice_pair_runtime.h"
 #include "voice_pair_signals.h"
+#include "voice_pair_policy.h"
 #include "ui_voice_pair.h"
 #include "ui_strings.h"
 #include "voice_reset.h"
@@ -277,11 +278,7 @@ static void halt_if_settings_fail_closed(void)
 
 struct VoiceNetworkGuard {
     bool enabled;
-    VoiceNetworkGuard(const web_network_update_t &u, const device_config_t &c) : enabled(
-        (u.has_wifi_ssid && strcmp(u.wifi_ssid,c.wifi_ssid)) ||
-        (u.has_wifi_password && strcmp(u.wifi_password,c.wifi_pass)) ||
-        (u.has_bridge_url && strcmp(u.bridge_url,c.bridge_url)) ||
-        (u.has_bridge_key && strcmp(u.bridge_key,c.bridge_key))) {
+    VoiceNetworkGuard(const web_network_update_t &u, const device_config_t &c) : enabled(voice_pair_policy::network_changed(u, c)) {
         if (enabled) voice_push_priority(VOICE_PRIORITY_NETWORK_UPDATE,true);
     }
     ~VoiceNetworkGuard() { if (enabled) voice_push_priority(VOICE_PRIORITY_NETWORK_UPDATE,false); }
@@ -663,9 +660,10 @@ static void network_task(void *param)
         if((pair_state==voice_pair_runtime::Status::AwaitingApproval||pair_state==voice_pair_runtime::Status::AwaitingAck)&&pair_now-s_pair_last_poll>=5000&&!s_has_pending_clear){
             char origin[160]={};if(!canonical_pair_origin(cfg.bridge_url,origin)){s_pair_signals.cancel();s_pair_session.cancel();pair_hide();}else {
                 auto result=s_pair_session.poll(origin,strlen(origin),s_pair_signals.cancel_flag());s_pair_last_poll=pair_now;
+                if(voice_pair_policy::stop_after_poll(pair_state,result))voice_push_request_stop();
                 if(result==voice_pair_runtime::Status::AwaitingAck)pair_status("Сохранено; ожидание подтверждения");
-                else if(result==voice_pair_runtime::Status::Complete){voice_push_request_stop();s_pair_code_visible.store(false);if(lvgl_port_lock(-1)){ui_voice_pair_finish(ui_text("Подключено. Перезагрузите дисплей"));lvgl_port_unlock();}}
-                else if(result==voice_pair_runtime::Status::Expired||result==voice_pair_runtime::Status::Cancelled||result==voice_pair_runtime::Status::Failed){if(pair_state==voice_pair_runtime::Status::AwaitingAck)voice_push_request_stop();pair_hide_unless_new_start();}
+                else if(result==voice_pair_runtime::Status::Complete){s_pair_code_visible.store(false);if(lvgl_port_lock(-1)){ui_voice_pair_finish(ui_text("Подключено. Перезагрузите дисплей"));lvgl_port_unlock();}}
+                else if(result==voice_pair_runtime::Status::Expired||result==voice_pair_runtime::Status::Cancelled||result==voice_pair_runtime::Status::Failed){pair_hide_unless_new_start();}
             }
         }
         if(s_has_pending_clear && voice_push_is_stopped()) {
@@ -701,8 +699,8 @@ static void network_task(void *param)
                     run_web_command(&sync_response.command, &cfg, s_boot_id);
                     sync_elapsed = 0;
                 } else {
-                if(sync_response.network.has_bridge_url || sync_response.network.has_wifi_ssid || sync_response.network.has_wifi_password || sync_response.network.has_bridge_key) { bool staged=s_pair_session.status()==voice_pair_runtime::Status::AwaitingAck;s_pair_signals.cancel();s_pair_session.cancel();pair_hide();if(staged)voice_push_request_stop(); }
                 VoiceNetworkGuard guard(sync_response.network, cfg);
+                if(guard.enabled) { bool staged=s_pair_session.status()==voice_pair_runtime::Status::AwaitingAck;s_pair_signals.cancel();s_pair_session.cancel();pair_hide();if(staged)voice_push_request_stop(); }
                 device_config_t candidate = cfg;
                 bool network_changed = false, wifi_trial = false;
                 char target_bridge_id[33] = {};

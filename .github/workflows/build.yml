@@ -43,6 +43,11 @@ jobs:
       - name: Build firmware
         run: pio run -e "$PIO_ENV"
 
+      - name: Check pairing lifecycle policy
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -Isrc sim/voice_pair_policy_test.cpp -o /tmp/voice_pair_policy_test
+          /tmp/voice_pair_policy_test
+
       - name: Check RGB cache guard
         run: |
           python -m unittest discover -s tools -p "test_check_rgb_cache.py"
