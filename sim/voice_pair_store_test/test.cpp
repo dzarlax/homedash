@@ -2,6 +2,7 @@
 #include "voice_pair_protocol.h"
 #include "voice_pair_runtime.h"
 #include "voice_pair_signals.h"
+#include "voice_pair_policy.h"
 #include "nvs.h"
 #include "mbedtls/sha256.h"
 #include "mbedtls/ecp.h"
@@ -19,12 +20,13 @@ void voice_pair_test_entropy_fail(bool);
 using Blob=std::vector<unsigned char>;
 static std::map<std::string,Blob> disk,pending,legacy_disk;
 static int step=0,fail_step=0; static std::vector<std::string> erased; static bool fail_after_commit=false;
+static bool fail_next_commit=false;
 static bool fail() { ++step; return fail_step && step==fail_step; }
 extern "C" esp_err_t nvs_open(const char *ns,int mode,nvs_handle_t *h) { if(fail())return 9; if(!strcmp(ns,"voice_push")){if(mode==NVS_READONLY&&legacy_disk.empty())return ESP_ERR_NVS_NOT_FOUND;*h=2;return ESP_OK;} assert(!strcmp(ns,"voice_pair_v1")); if(mode==NVS_READONLY&&disk.empty()) return ESP_ERR_NVS_NOT_FOUND; *h=1;return ESP_OK; }
 extern "C" esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *buf,size_t *n) { if(fail())return 9; auto &source=h==2?legacy_disk:disk; auto it=source.find(key); if(it==source.end())return ESP_ERR_NVS_NOT_FOUND; if(!buf){*n=it->second.size();return ESP_OK;} if(*n<it->second.size())return 9; *n=it->second.size();memcpy(buf,it->second.data(),*n);return ESP_OK; }
 extern "C" esp_err_t nvs_set_blob(nvs_handle_t,const char *key,const void *buf,size_t n) { if(fail())return 9; pending[key]=Blob((const unsigned char *)buf,(const unsigned char *)buf+n);return ESP_OK; }
 extern "C" esp_err_t nvs_erase_key(nvs_handle_t,const char *key) { if(fail())return 9; if(!disk.count(key))return ESP_ERR_NVS_NOT_FOUND; erased.push_back(key);return ESP_OK; }
-extern "C" esp_err_t nvs_commit(nvs_handle_t) { bool f=fail(); if(!f||fail_after_commit) {for(auto &p:pending)disk[p.first]=p.second;for(const auto &key:erased)disk.erase(key);} pending.clear();erased.clear(); return f?9:ESP_OK; }
+extern "C" esp_err_t nvs_commit(nvs_handle_t) { bool f=fail();if(fail_next_commit){fail_next_commit=false;f=true;} if(!f||fail_after_commit) {for(auto &p:pending)disk[p.first]=p.second;for(const auto &key:erased)disk.erase(key);} pending.clear();erased.clear(); return f?9:ESP_OK; }
 extern "C" void nvs_close(nvs_handle_t) { pending.clear();erased.clear(); }
 struct mock_http_client {esp_http_client_config_t cfg;std::string url,body;};
 static std::string challenge_response,deliver_response;static bool drop_ack=false,drop_clear_ack=false,expire_in_challenge=false,server_promoted=false;static std::atomic<bool> *cancel_in_challenge=nullptr;static VoicePairSignals *signals_in_challenge=nullptr;static int requests=0;static int64_t mock_time_us=1000*1000;
@@ -148,6 +150,16 @@ int main(){
  for(int after=0;after<2;++after)for(int fault=1;fault<=finish_steps;++fault){baseline(a);reboot();assert(retire_for_reset()==Result::Ok);legacy_disk.clear();reboot();fail_step=fault;fail_after_commit=after;Result fr=finish_reset();(void)fr;reboot();if(disk.count("reset")){assert(load(erased_state,offline)==Result::Reset);assert(finish_reset()==Result::Ok);}else{assert(!disk.count("slot0")&&!disk.count("slot1")&&!legacy_disk.count("config"));}reboot();assert(load(erased_state,ready)==Result::Empty);}
  // Cancel then Start during the old HTTP response cannot clear cancellation.
  disk.clear();reboot();voice_pair_runtime::Session race;mock_time_us=1000*1000;assert(race.begin(a.bridge,a.device,origin,strlen(origin),1000,ready));VoicePairSignals signals;signals_in_challenge=&signals;requests=0;assert(race.poll(origin,strlen(origin),signals.cancel_flag())==voice_pair_runtime::Status::Cancelled);assert(requests==1&&!signals.should_hide_cancelled());assert(signals.take_cancel()&&!signals.should_hide_cancelled());assert(signals.take_start()&&signals.should_hide_cancelled());signals_in_challenge=nullptr;
+ // A committed candidate with an error result must stop cached access even
+ // when re-pairing started with a healthy active credential.
+ baseline(a);reboot();voice_pair_runtime::Session faulted_pair;mock_time_us=1000*1000;
+ assert(faulted_pair.begin(a.bridge,a.device,origin,strlen(origin),1000,ready));
+ snprintf(json,sizeof(json),"{\"generation\":\"04000000000000000000000000000000\",\"wss_base\":\"wss://bridge.example:443\",\"token\":\"%s\",\"server_signing_key\":\"%s\"}",b64,key64);deliver_response=json;
+ fail_next_commit=true;fail_after_commit=true;cancelled=false;
+ auto before_failure=faulted_pair.status();auto after_failure=faulted_pair.poll(origin,strlen(origin),cancelled);
+ assert(before_failure==voice_pair_runtime::Status::AwaitingApproval&&after_failure==voice_pair_runtime::Status::Failed);
+ assert(voice_pair_policy::stop_after_poll(before_failure,after_failure));
+ State unresolved{};assert(load(unresolved,ready)==Result::StorageError);reboot();s=state();assert(s.has_active&&s.has_candidate);
  // Legacy is only inspected by finish_reset; it is never changed here.
  return 0;
 }

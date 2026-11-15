@@ -370,6 +370,12 @@ test-voice-boot-policy:
 	./$(BUILD)/voice_push_boot_policy_test
 .PHONY: test-voice-stop test-voice-boot-policy
 
+test-voice-pair-policy:
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) voice_pair_policy_test.cpp -o $(BUILD)/voice_pair_policy_test
+	./$(BUILD)/voice_pair_policy_test
+.PHONY: test-voice-pair-policy
+
 test-voice-wss:
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) $(SRC_DIR)/voice_protocol.cpp $(SRC_DIR)/voice_fragments.cpp $(SRC_DIR)/voice_view_model.cpp voice_wss_replay.cpp -o $(BUILD)/voice_wss_replay
