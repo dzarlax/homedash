@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <time.h>
 #include <string.h>
+#include <atomic>
+#include <new>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -28,6 +30,10 @@
 #include "web_identity.h"
 #include "recovery_ap.h"
 #include "voice_push_client.h"
+#include "voice_pair_runtime.h"
+#include "voice_pair_signals.h"
+#include "ui_voice_pair.h"
+#include "ui_strings.h"
 #include "voice_reset.h"
 #include "esp_timer.h"
 #include "action_feedback_runtime.h"
@@ -37,7 +43,7 @@ static const char *TAG = "main";
 
 // Network task handle for cross-core notification
 struct recovery_job_t { web_network_update_t update; SemaphoreHandle_t done; bool result; };
-enum request_kind_t { REQUEST_CALENDAR, REQUEST_TOGGLE, REQUEST_CLIMATE, REQUEST_OTA, REQUEST_RECOVERY, REQUEST_RECOVERY_STOP, REQUEST_RECOVERY_CONFIG };
+enum request_kind_t { REQUEST_CALENDAR, REQUEST_TOGGLE, REQUEST_CLIMATE, REQUEST_OTA, REQUEST_RECOVERY, REQUEST_RECOVERY_STOP, REQUEST_RECOVERY_CONFIG, REQUEST_PAIR_WAKE };
 struct network_request_t { request_kind_t kind; int year, month, day; char entity[48]; char action[20]; char mode[16]; float temperature; recovery_job_t *recovery; uint32_t action_id; };
 static QueueHandle_t s_request_queue = NULL;
 static device_config_t s_runtime_config = {};
@@ -47,6 +53,44 @@ static volatile bool s_settings_fail_closed = false;
 static device_config_t s_pending_old_config = {};
 static device_config_t s_pending_new_config = {};
 
+// The network worker exclusively owns the session and all NVS/HTTP calls.
+// The LVGL thread only signals it and erases the displayed QR on deadline.
+static voice_pair_runtime::Session s_pair_session;
+static VoicePairSignals s_pair_signals;
+static std::atomic<bool> s_pair_code_visible{false};
+static std::atomic<uint32_t> s_pair_ui_started{0};
+static bool s_pair_start_waiting=false;
+static voice_pair::Clear s_pending_clear{};
+static bool s_has_pending_clear=false, s_clear_boot_checked=false;
+static uint64_t s_pair_last_poll=0, s_clear_last_poll=0;
+static uint32_t pair_now_ms() { return static_cast<uint32_t>(esp_timer_get_time()/1000); }
+static void pair_wake() { network_request_t req{};req.kind=REQUEST_PAIR_WAKE;if(s_request_queue)xQueueSend(s_request_queue,&req,0); }
+void request_voice_pair_start(void) { s_pair_signals.start();pair_wake(); }
+void request_voice_pair_cancel(void) { s_pair_signals.cancel();s_pair_code_visible.store(false);pair_wake(); }
+static void pair_ui_timer(lv_timer_t *) {
+    if (s_pair_code_visible.load() && static_cast<uint32_t>(pair_now_ms()-s_pair_ui_started.load())>=120000) {
+        s_pair_code_visible.store(false);s_pair_signals.cancel();ui_voice_pair_hide();pair_wake();
+    }
+}
+static void pair_hide() { s_pair_code_visible.store(false);if(lvgl_port_lock(-1)){ui_voice_pair_hide();lvgl_port_unlock();} }
+static void pair_hide_unless_new_start() { if(lvgl_port_lock(-1)){if(s_pair_signals.should_hide_cancelled()){s_pair_code_visible.store(false);ui_voice_pair_hide();}lvgl_port_unlock();} }
+static void pair_status(const char *text) { if(lvgl_port_lock(-1)){ui_voice_pair_set_status(ui_text(text),"");lvgl_port_unlock();} }
+static void pair_error(const char *text) { if(lvgl_port_lock(-1)){ui_voice_pair_error(ui_text(text));lvgl_port_unlock();} }
+static bool canonical_pair_origin(const char *url,char out[160]) {
+    if(!url||strncmp(url,"https://",8))return false;size_t n=strnlen(url,160);if(n<9||n>=160)return false;
+    memcpy(out,url,n);out[n]=0;for(size_t i=8;i<n;++i)if(out[i]>='A'&&out[i]<='Z')out[i]=static_cast<char>(out[i]-'A'+'a');
+    bool has_port=false;if(out[8]=='['){char *close=strchr(out+9,']');if(!close)return false;has_port=close[1]==':';if(close[1]&&close[1]!=':')return false;}else has_port=strchr(out+8,':')!=nullptr;
+    if(!has_port){if(n+4>=160)return false;memcpy(out+n,":443",5);n+=4;}
+    return voice_pair::valid_origin(out,n);
+}
+static bool reset_voice_credentials() {
+    s_pair_signals.cancel();s_pair_session.cancel();pair_hide();voice_push_request_stop();voice_pair::wipe(&s_pending_clear,sizeof(s_pending_clear));s_has_pending_clear=false;
+    uint64_t start=static_cast<uint64_t>(esp_timer_get_time()/1000);
+    while(!voice_push_is_stopped()){if(static_cast<uint64_t>(esp_timer_get_time()/1000)-start>=5000)return false;vTaskDelay(pdMS_TO_TICKS(50));}
+    if(voice_pair_store::retire_for_reset()!=voice_pair_store::Result::Ok)return false;
+    if(!voice_push_forget())return false;
+    return voice_pair_store::finish_reset()==voice_pair_store::Result::Ok;
+}
 void request_recovery_ap(void)
 {
     network_request_t req = { REQUEST_RECOVERY, 0, 0, 0, {} };
@@ -88,7 +132,7 @@ static void run_web_command(const web_command_t *command, const device_config_t 
         struct reset_context { device_config_t *config; web_preferences_t *preferences; bool had_preferences; };
         reset_context context = { &old_config, &old_preferences, had_preferences };
         const voice_reset_ops ops = {
-            [](void *) { return voice_push_forget(); },
+            [](void *) { return reset_voice_credentials(); },
             [](void *) { return web_settings_store_clear_preferences(); },
             [](void *) { return nvs_config_reset_device(); },
             [](void *) { return recovery_ap_start(); },
@@ -520,7 +564,7 @@ static void network_task(void *param)
     if (!config_present) {
         ESP_LOGW(TAG, "Device setup missing; starting protected local setup");
         if (recovery_ap_start()) {
-            if (!web_settings_store_complete_reset_after_recovery(voice_push_forget))
+            if (!web_settings_store_complete_reset_after_recovery(reset_voice_credentials))
                 ESP_LOGE(TAG, "Interrupted reset cleanup could not be confirmed");
             if (lvgl_port_lock(-1)) {
                 ui_dashboard_open_settings();
@@ -592,6 +636,46 @@ static void network_task(void *param)
     bool app_validated = false;
     for (;;) {
         halt_if_settings_fail_closed();
+        voice_push_poll_start();
+        voice_pair::EntropyReady pair_ready{wifi_is_connected(),wifi_pairing_time_is_valid()};
+        if(!s_clear_boot_checked && pair_ready.wifi_connected && pair_ready.time_valid) {
+            auto *boot=new(std::nothrow) voice_pair_store::State{};
+            if(boot){auto r=voice_pair_store::load(*boot,pair_ready);if(r==voice_pair_store::Result::Ok){if(boot->has_tombstone&&!boot->clear_acknowledged)voice_push_request_stop();s_clear_boot_checked=true;}else if(r==voice_pair_store::Result::Empty||r==voice_pair_store::Result::Reset)s_clear_boot_checked=true;voice_pair_store::wipe(boot,sizeof(*boot));delete boot;}
+        }
+        if(s_pair_signals.take_cancel()) { bool staged=s_pair_session.status()==voice_pair_runtime::Status::AwaitingAck;s_pair_session.cancel();pair_hide_unless_new_start();if(staged)voice_push_request_stop();s_pair_start_waiting=false; }
+        if(s_pair_signals.take_start())s_pair_start_waiting=true;
+        if(s_pair_start_waiting && !s_has_pending_clear && (!pair_ready.wifi_connected || !pair_ready.time_valid)) {s_pair_start_waiting=false;pair_error("Подключение недоступно");}
+        if(s_pair_start_waiting && !s_has_pending_clear) {
+            auto *stored=new(std::nothrow) voice_pair_store::State{};bool ready_to_start=stored!=nullptr;
+            if(ready_to_start){auto result=voice_pair_store::load(*stored,pair_ready);ready_to_start=result==voice_pair_store::Result::Empty||result==voice_pair_store::Result::Ok;
+                if(ready_to_start&&stored->has_candidate){voice_push_request_stop();ready_to_start=voice_push_is_stopped();}
+                if(!ready_to_start&&result!=voice_pair_store::Result::Ok){s_pair_start_waiting=false;pair_error("Подключение недоступно");}
+            }
+            if(ready_to_start){char origin[160]={},device[33]={};web_preferences_t prefs{};uint8_t bridge_id[16]={},device_id[16]={};uint64_t now=static_cast<uint64_t>(esp_timer_get_time()/1000);
+                bool ok=canonical_pair_origin(cfg.bridge_url,origin)&&web_identity_get(device,sizeof(device))&&web_settings_store_load(&prefs)&&voice_pair::decode_id(prefs.bridge_id,strlen(prefs.bridge_id),bridge_id)&&voice_pair::decode_id(device,strlen(device),device_id)&&s_pair_session.begin(bridge_id,device_id,origin,strlen(origin),now,pair_ready,voice_push_is_stopped());
+                char code[200]={};if(ok&&!s_pair_signals.cancelled()&&s_pair_session.copy_qr(code,sizeof(code),origin,strlen(origin),static_cast<uint64_t>(esp_timer_get_time()/1000),pair_ready)&&lvgl_port_lock(-1)) {bool shown=ui_voice_pair_show_code(code,199,ui_text("Ожидание подтверждения"),"");if(shown){s_pair_ui_started.store(static_cast<uint32_t>(now));s_pair_code_visible.store(true);}lvgl_port_unlock();if(!shown)s_pair_session.cancel(); }else {s_pair_session.cancel();pair_error("Подключение недоступно");}
+                voice_pair::wipe(code,sizeof(code));voice_pair::wipe(bridge_id,sizeof(bridge_id));voice_pair::wipe(device_id,sizeof(device_id));s_pair_start_waiting=false;s_pair_last_poll=0;
+            }
+            if(stored){voice_pair_store::wipe(stored,sizeof(*stored));delete stored;}
+        }
+        uint64_t pair_now=static_cast<uint64_t>(esp_timer_get_time()/1000);
+        auto pair_state=s_pair_session.status();
+        if((pair_state==voice_pair_runtime::Status::AwaitingApproval||pair_state==voice_pair_runtime::Status::AwaitingAck)&&pair_now-s_pair_last_poll>=5000&&!s_has_pending_clear){
+            char origin[160]={};if(!canonical_pair_origin(cfg.bridge_url,origin)){s_pair_signals.cancel();s_pair_session.cancel();pair_hide();}else {
+                auto result=s_pair_session.poll(origin,strlen(origin),s_pair_signals.cancel_flag());s_pair_last_poll=pair_now;
+                if(result==voice_pair_runtime::Status::AwaitingAck)pair_status("Сохранено; ожидание подтверждения");
+                else if(result==voice_pair_runtime::Status::Complete){voice_push_request_stop();s_pair_code_visible.store(false);if(lvgl_port_lock(-1)){ui_voice_pair_finish(ui_text("Подключено. Перезагрузите дисплей"));lvgl_port_unlock();}}
+                else if(result==voice_pair_runtime::Status::Expired||result==voice_pair_runtime::Status::Cancelled||result==voice_pair_runtime::Status::Failed){if(pair_state==voice_pair_runtime::Status::AwaitingAck)voice_push_request_stop();pair_hide_unless_new_start();}
+            }
+        }
+        if(s_has_pending_clear && voice_push_is_stopped()) {
+            if(voice_pair_runtime::persist_clear(s_pending_clear,true,pair_ready)){voice_pair::wipe(&s_pending_clear,sizeof(s_pending_clear));s_has_pending_clear=false;s_clear_last_poll=0;}
+        }
+        if(!s_has_pending_clear && voice_push_is_stopped() && pair_ready.wifi_connected && pair_ready.time_valid && pair_now-s_clear_last_poll>=10000) {
+            auto *stored=new(std::nothrow) voice_pair_store::State{};
+            if(stored){auto r=voice_pair_store::load(*stored,pair_ready);if(r==voice_pair_store::Result::Ok&&stored->has_tombstone&&!stored->clear_acknowledged)voice_pair_runtime::acknowledge_clear(true,pair_ready);voice_pair_store::wipe(stored,sizeof(*stored));delete stored;}
+            s_clear_last_poll=pair_now;
+        }
         network_request_t req = {};
         while (xQueueReceive(s_request_queue, &req, 0) == pdTRUE) {
             if (req.kind == REQUEST_RECOVERY_CONFIG) complete_recovery_request(&req);
@@ -600,7 +684,7 @@ static void network_task(void *param)
             else if (req.kind == REQUEST_CLIMATE) { if (req.action_id) action_run_request(req); else bridge_climate_action(req.entity, req.action, req.temperature, req.mode); }
             else if (req.kind == REQUEST_RECOVERY) recovery_ap_start();
             else if (req.kind == REQUEST_RECOVERY_STOP) recovery_ap_stop();
-            else ota_manual_check();
+            else if (req.kind == REQUEST_OTA) ota_manual_check();
         }
 
         s_action_executor.poll();
@@ -610,10 +694,14 @@ static void network_task(void *param)
             web_sync_response_t sync_response = {};
             if (web_sync_poll(cfg.bridge_url, cfg.bridge_key, FW_VERSION,
                               s_boot_id, &sync_response)) {
+                if(sync_response.has_voice_clear&&!s_has_pending_clear&&voice_pair_runtime::verify_clear_command(sync_response.voice_clear,pair_ready)) {
+                    s_pending_clear=sync_response.voice_clear;s_has_pending_clear=true;s_pair_signals.cancel();s_pair_session.cancel();pair_hide();voice_push_request_stop();
+                }
                 if (sync_response.command.id[0]) {
                     run_web_command(&sync_response.command, &cfg, s_boot_id);
                     sync_elapsed = 0;
                 } else {
+                if(sync_response.network.has_bridge_url || sync_response.network.has_wifi_ssid || sync_response.network.has_wifi_password || sync_response.network.has_bridge_key) { bool staged=s_pair_session.status()==voice_pair_runtime::Status::AwaitingAck;s_pair_signals.cancel();s_pair_session.cancel();pair_hide();if(staged)voice_push_request_stop(); }
                 VoiceNetworkGuard guard(sync_response.network, cfg);
                 device_config_t candidate = cfg;
                 bool network_changed = false, wifi_trial = false;
@@ -700,14 +788,14 @@ static void network_task(void *param)
         }
 
         TickType_t started = xTaskGetTickCount();
-        if (xQueueReceive(s_request_queue, &req, pdMS_TO_TICKS(s_action_executor.wait_ms(TICK_MS))) == pdTRUE) {
+        if (xQueueReceive(s_request_queue, &req, pdMS_TO_TICKS(s_action_executor.wait_ms((s_pair_start_waiting||s_has_pending_clear||s_pair_code_visible.load())?1000:TICK_MS))) == pdTRUE) {
             if (req.kind == REQUEST_RECOVERY_CONFIG) complete_recovery_request(&req);
             else if (req.kind == REQUEST_CALENDAR) bridge_fetch_calendar(req.year, req.month, req.day);
             else if (req.kind == REQUEST_TOGGLE) bridge_toggle_light(req.entity);
             else if (req.kind == REQUEST_CLIMATE) { if (req.action_id) action_run_request(req); else bridge_climate_action(req.entity, req.action, req.temperature, req.mode); }
             else if (req.kind == REQUEST_RECOVERY) recovery_ap_start();
             else if (req.kind == REQUEST_RECOVERY_STOP) recovery_ap_stop();
-            else ota_manual_check();
+            else if (req.kind == REQUEST_OTA) ota_manual_check();
         }
         uint32_t elapsed = (xTaskGetTickCount() - started) * portTICK_PERIOD_MS;
         bridge_elapsed += elapsed;
@@ -764,9 +852,5 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Network task creation failed");
         return;
     }
-    if (lvgl_port_lock(-1)) {
-        voice_push_ui_init();
-        lvgl_port_unlock();
-    }
-    voice_push_start();
+    if (lvgl_port_lock(-1)) { lv_timer_create(pair_ui_timer,100,nullptr); lvgl_port_unlock(); }
 }

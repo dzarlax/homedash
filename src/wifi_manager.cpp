@@ -1,9 +1,13 @@
 #include "voice_push_client.h"
 #include "wifi_manager.h"
+#include "voice_pair_entropy.h"
 
 #include <string.h>
 #include <time.h>
+#include <atomic>
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/event_groups.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -22,6 +26,9 @@ static bool s_sta_configured = false;
 static bool s_recovery_ap_started = false;
 static esp_netif_t *s_ap_netif = NULL;
 static bool s_sntp_started = false;
+static std::atomic<bool> s_sntp_synced{false};
+static SemaphoreHandle_t s_pairing_radio_mutex = nullptr;
+static void pairing_sntp_notification(struct timeval *) { s_sntp_synced.store(true, std::memory_order_release); }
 static char s_timezone[48] = {};
 static const char *s_ntp_server = NULL;
 static wifi_config_t s_trial_previous = {};
@@ -33,7 +40,8 @@ static void start_sntp_once(void)
     setenv("TZ", s_timezone[0] ? s_timezone : "UTC0", 1);
     tzset();
     esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(s_ntp_server);
-    esp_netif_sntp_init(&cfg);
+    cfg.sync_cb = pairing_sntp_notification;
+    if (esp_netif_sntp_init(&cfg) != ESP_OK) return;
     s_sntp_started = true;
     ESP_LOGI(TAG, "SNTP started");
 }
@@ -67,6 +75,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 static bool wifi_stack_init(void)
 {
     if (s_wifi_stack_ready) return true;
+    if (!s_pairing_radio_mutex) s_pairing_radio_mutex = xSemaphoreCreateMutex();
+    if (!s_pairing_radio_mutex) return false;
     s_wifi_event_group = xEventGroupCreate();
     if (!s_wifi_event_group) return false;
     esp_err_t err = esp_netif_init();
@@ -133,6 +143,20 @@ bool wifi_time_is_valid(void)
     time_t now; time(&now);
     struct tm t = {}; localtime_r(&now, &t);
     return t.tm_year >= 100;
+}
+
+bool wifi_pairing_time_is_valid(void)
+{
+    return s_sntp_synced.load(std::memory_order_acquire) && wifi_time_is_valid();
+}
+static bool pairing_radio_lock(void *) { return s_pairing_radio_mutex && xSemaphoreTake(s_pairing_radio_mutex,portMAX_DELAY)==pdTRUE; }
+static void pairing_radio_unlock(void *) { xSemaphoreGive(s_pairing_radio_mutex); }
+static bool pairing_entropy_ready(void *) { return wifi_is_connected() && wifi_pairing_time_is_valid(); }
+static void pairing_entropy_fill(void *,void *out,size_t n) { esp_fill_random(out,n); }
+bool wifi_pairing_fill_entropy(void *out, size_t len)
+{
+    const voice_pair_entropy::Ops ops{nullptr,pairing_radio_lock,pairing_radio_unlock,pairing_entropy_ready,pairing_entropy_fill};
+    return voice_pair_entropy::fill(ops,out,len);
 }
 
 void wifi_set_timezone(const char *timezone)
@@ -233,9 +257,11 @@ void wifi_stop_recovery_ap(void)
     if (!s_recovery_ap_started) return;
     if (s_sta_configured) esp_wifi_set_mode(WIFI_MODE_STA);
     else {
+        if (!s_pairing_radio_mutex || xSemaphoreTake(s_pairing_radio_mutex, portMAX_DELAY) != pdTRUE) return;
         esp_wifi_set_mode(WIFI_MODE_NULL);
         esp_wifi_stop();
         s_wifi_started = false;
+        xSemaphoreGive(s_pairing_radio_mutex);
     }
     s_recovery_ap_started = false;
 }

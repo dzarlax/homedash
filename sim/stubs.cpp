@@ -303,6 +303,8 @@ void request_ota_check(void)
 }
 
 void request_recovery_ap(void) {}
+void request_voice_pair_start(void) {}
+void request_voice_pair_cancel(void) {}
 void request_stop_recovery_ap(void) {}
 
 void bridge_init(const char *, const char *) {}

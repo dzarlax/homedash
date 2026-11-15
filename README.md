@@ -73,7 +73,26 @@ Use the Bridge web settings page for managed display preferences, including lang
 
 ### Voice display push
 
-Voice push is disabled until the owner saves a pair in the time-limited,
+Voice push supports a local owner-initiated pairing flow from Settings. The
+display shows a short-lived QR/manual code, which the owner enters in the
+selected device's authenticated Bridge panel. The code contains a one-time
+secret and should be treated as sensitive. The display proves possession of its
+device key over HTTPS with certificate and hostname verification; the Bridge
+returns a device-specific WSS credential only after the proof. The display
+stages and verifies the credential before sending a signed acknowledgement;
+the new credential takes effect after a restart. The device needs a Wi-Fi
+connection and valid time for pairing and TLS.
+
+Signed revocation closes the voice client before the local credential is
+removed and acknowledged. Interrupted writes and revocation are handled by a
+local NVS journal; the journal is not claimed to be hardware-encrypted or to
+guarantee physical erasure of flash remnants. If a pairing operation blocks
+past expiry, the visible code is cleared at expiry, while the network task's
+in-memory copy is cleared when the blocking operation returns. Hardware memory
+and power-loss behavior still require device acceptance.
+
+The older recovery method remains available for a legacy installation: the
+owner saves a pair in the time-limited,
 password-protected local recovery AP. The pair is stored as one versioned blob
 in private NVS namespace `voice_push` and takes effect after the next restart. `base_url` is a `wss://` origin (host and optional
 port, with no path, query, or user information); the firmware appends

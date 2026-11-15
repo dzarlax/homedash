@@ -1,5 +1,6 @@
 #include "brightness_runtime.h"
 #include "ui_dashboard.h"
+#include "ui_voice_pair.h"
 #include "photo_frame.h"
 #include "config.h"
 #include "wifi_manager.h"
@@ -26,6 +27,8 @@ extern void request_climate_action(const char *entity_id, const char *action, fl
 extern void request_ota_check(void);
 extern void request_recovery_ap(void);
 extern void request_stop_recovery_ap(void);
+extern void request_voice_pair_start(void);
+extern void request_voice_pair_cancel(void);
 extern void wavesahre_rgb_lcd_bl_on(void);
 extern void wavesahre_rgb_lcd_bl_off(void);
 
@@ -430,7 +433,7 @@ bool ui_dashboard_apply_brightness(const web_preferences_t *prefs) {
 }
 
 static void set_screen_off(bool off) {
-    if (off) { ui_dashboard_cancel_brightness_test(); ui_dashboard_hide_sensitive(); }
+    if (off) { ui_dashboard_cancel_brightness_test(); ui_dashboard_hide_sensitive(); if (ui_voice_pair_is_visible()) { ui_voice_pair_hide(); request_voice_pair_cancel(); } }
     if (ui_screen_off == off) return;
     ui_screen_off = off;
     if (off) wavesahre_rgb_lcd_bl_off();
@@ -439,7 +442,7 @@ static void set_screen_off(bool off) {
 
 void ui_dashboard_set_voice_active(bool active) {
     ui_voice_active = active;
-    if (active) { ui_dashboard_hide_sensitive(); set_screen_off(false); }
+    if (active) { ui_dashboard_hide_sensitive(); if (ui_voice_pair_is_visible()) { ui_voice_pair_hide(); request_voice_pair_cancel(); } set_screen_off(false); }
     else ui_last_touch = esp_timer_get_time() / 1000000;
 }
 
@@ -2405,6 +2408,10 @@ void ui_dashboard_hide_sensitive(void)
 static void settings_privacy_tick(lv_timer_t *)
 {
     refresh_backlight_preview();
+    if ((!settings_is_active() || ui_screen_off) && ui_voice_pair_is_visible()) {
+        ui_voice_pair_hide();
+        request_voice_pair_cancel();
+    }
     if (!settings_is_active() || ui_screen_off) ui_dashboard_cancel_brightness_test();
     if (settings_is_active()) refresh_reference_test();
     if (settings_reveal_until_us && (!settings_is_active() || ui_screen_off ||
@@ -2727,7 +2734,10 @@ static void refresh_backlight_preview() {
 
 static void create_settings_page(lv_obj_t *tile)
 {
-    settings_text(tile, 18, 12, 980, 34, "Настройки", true);
+    settings_text(tile, 18, 12, 650, 34, "Настройки", true);
+    settings_button(tile, 720, 4, 280, "Голосовой экран", [](lv_event_t *) { ui_voice_pair_show(); });
+    ui_voice_pair_create(nullptr, [](void *) { request_voice_pair_start(); },
+                         [](void *) { request_voice_pair_cancel(); }, nullptr);
     settings_text(tile, 18, 48, 980, 24, "Веб-панель и локальное восстановление");
     lv_obj_t *web = make_card(tile, 14, 80, 480, 270);
     settings_text(web, 16, 12, 438, 28, "Веб-панель Bridge", true);

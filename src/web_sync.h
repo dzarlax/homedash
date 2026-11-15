@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "web_settings.h"
+#include "voice_pair_protocol.h"
 
 struct web_command_t {
     char id[65];
@@ -28,6 +29,8 @@ struct web_sync_response_t {
     web_network_update_t network;
     web_preferences_t preferences;
     bool has_preferences;
+    bool has_voice_clear;
+    voice_pair::Clear voice_clear;
 };
 
 // Sends one bounded authenticated heartbeat and applies validated settings.

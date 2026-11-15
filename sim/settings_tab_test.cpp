@@ -23,6 +23,12 @@ static bool contains(lv_obj_t *obj, const char *text) {
         if (contains(lv_obj_get_child(obj, i), text)) return true;
     return false;
 }
+static lv_obj_t *button_with_text(lv_obj_t *obj, const char *text) {
+    if (lv_obj_check_type(obj, &lv_button_class) && contains(obj, text)) return obj;
+    for (uint32_t i=0; i<lv_obj_get_child_count(obj); ++i)
+        if (auto *found = button_with_text(lv_obj_get_child(obj, i), text)) return found;
+    return nullptr;
+}
 int main() {
     lv_init(); lv_display_create(1024,600); ui_dashboard_create();
     lv_obj_update_layout(lv_screen_active());
@@ -31,6 +37,14 @@ int main() {
     assert(bindings < MAX_STATIC_UI_LABELS);
     ui_dashboard_open_settings();
     assert(settings_is_active() && starts == 0 && stops == 0);
+    auto *voice_button = button_with_text(lv_screen_active(), "Голосовой экран");
+    assert(voice_button);
+    lv_obj_send_event(voice_button, LV_EVENT_CLICKED, nullptr);
+    assert(ui_voice_pair_is_visible());
+    ui_dashboard_sim_set_page(2);
+    settings_privacy_tick(nullptr);
+    assert(!ui_voice_pair_is_visible());
+    ui_dashboard_open_settings();
     // Offline diagnostics use only locally generated codes, and fit within
     // the device card without overlapping the update controls/navigation.
     sim_set_connection_status("ESP_OK/403", "Sync:ESP_ERR_HTTP_CONNECT tls=8001/ffffd900/8 e=111");
@@ -115,7 +129,7 @@ int main() {
     assert(settings_is_active());
     for (const char *url : {"https://user:secret@example/settings/", "https://example/settings/?token=secret", "https://example/settings/#secret", "https://example/settings/?device_id=bad"})
         assert(!public_settings_url(url));
-    assert(public_settings_url("http://192.168.1.2:8080/settings/"));
+    assert(public_settings_url("http://192.0.2.2:8080/settings/"));
     snprintf(prefs.settings_url, sizeof(prefs.settings_url), "%s", "https://example/settings/?token=secret");
     ui_dashboard_apply_preferences(&prefs);
     assert(lv_obj_has_flag(settings_qr, LV_OBJ_FLAG_HIDDEN));

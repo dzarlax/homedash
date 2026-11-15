@@ -1,5 +1,7 @@
 # PlatformIO
 .pio/
+.DS_Store
+__pycache__/
 
 # ESP-IDF component manager output
 dependencies.lock

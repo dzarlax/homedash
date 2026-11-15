@@ -5,6 +5,7 @@
 #include "voice_config.h"
 #ifndef SIMULATOR
 #include "voice_config_store.h"
+#include "voice_pair_store.h"
 #endif
 #include "voice_fragments.h"
 #include "ui_voice.h"
@@ -40,11 +41,30 @@ voice::Fragments fragments;
 std::atomic<uint32_t> priorities{0};
 std::atomic<bool> finished{false};
 std::atomic<bool> disabled{false};
+// 0 idle, 1 startup/worker owns credentials, 2 stopped and wiped.
+std::atomic<int> lifecycle{0};
+std::atomic<bool> worker_started{false};
+#ifndef SIMULATOR
+bool boot_checked=false;
+bool config_preloaded=false;
+
+#endif
 uint32_t generation=1, rendered=0;
 bool on_screen=false;
 std::atomic<bool> connected_once{false};
 std::atomic<uint64_t> connected_since_ms{0};
 char endpoint[192], header[280];
+void finish_worker(bool destroyed) {
+    voice_secure_zero(header,sizeof(header));
+    if (destroyed) lifecycle.store(2,std::memory_order_release);
+}
+#ifndef SIMULATOR
+void release_startup() {
+    voice_secure_zero(header,sizeof(header));
+    lifecycle.store(0,std::memory_order_release);
+    if (disabled.load(std::memory_order_acquire)) voice_push_request_stop();
+}
+#endif
 #ifdef SIMULATOR
 uint64_t time_offset_ms=0;
 int sim_startup_mode=0;
@@ -119,7 +139,7 @@ void event(void *, esp_event_base_t, int32_t id, void *data) {
         receive(e->data_ptr,(size_t)e->data_len,(size_t)e->payload_offset,(size_t)e->payload_len,e->op_code,e->fin);
     }
 }
-bool load_config() {
+bool load_legacy_config() {
     VoiceProvision provision={}; bool ok=voice_config_store_load(provision);
     int a=0,b=0;
     if (ok) {
@@ -131,6 +151,7 @@ bool load_config() {
 }
 void worker(void *) {
     unsigned delay_sec=1;
+    bool destroyed=true;
     while (!disabled.load()) {
         if (!wifi_is_connected() || !wifi_time_is_valid()) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
         esp_websocket_client_config_t cfg={}; cfg.uri=endpoint; cfg.headers=header; cfg.crt_bundle_attach=esp_crt_bundle_attach;
@@ -145,17 +166,20 @@ void worker(void *) {
                 while (!finished.load() && !disabled.load()) vTaskDelay(pdMS_TO_TICKS(200));
                 if (disabled.load() && !finished.load()) esp_websocket_client_stop(c);
             }
-            esp_websocket_client_destroy(c);
+            if (esp_websocket_client_destroy(c)!=ESP_OK) {
+                destroyed=false; disabled.store(true); voice_push_priority(VOICE_PRIORITY_RECOVERY,true);
+            }
         }
         xSemaphoreTake(lock,portMAX_DELAY); model->disconnect(now_ms()); ++generation; xSemaphoreGive(lock);
         if (disabled.load()) break;
         bool was_connected=connected_once.load();
         uint64_t connected_for=was_connected ? now_ms()-connected_since_ms.load() : 0;
         delay_sec=voice_reconnect_after_session(delay_sec,was_connected,connected_for);
-        vTaskDelay(pdMS_TO_TICKS(voice_reconnect_delay_ms(delay_sec,esp_random())));
+        unsigned remaining=voice_reconnect_delay_ms(delay_sec,esp_random());
+        while (remaining && !disabled.load()) { unsigned step=std::min(remaining,200u); vTaskDelay(pdMS_TO_TICKS(step)); remaining-=step; }
         delay_sec=voice_reconnect_next(delay_sec);
     }
-    voice_secure_zero(header,sizeof(header));
+    finish_worker(destroyed);
     vTaskDelete(nullptr);
 }
 #endif
@@ -164,7 +188,7 @@ void voice_push_ui_init() {
     static void *storage = nullptr;
     const VoiceStartupOps ops = {
 #ifndef SIMULATOR
-        [] { return load_config(); },
+        [] { return config_preloaded; },
         [] {
             storage=heap_caps_malloc(sizeof(voice::ViewModel), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (storage) ESP_LOGI("voice_push", "model bytes=%u external=%u",
@@ -210,12 +234,11 @@ bool voice_push_provision(const char *base, const char *token) {
     bool saved=voice_config_store_save(base,token);
     // A failed commit can still have written the blob; never resume the old
     // subscription after an ambiguous replacement attempt.
-    disabled.store(true); voice_push_priority(VOICE_PRIORITY_RECOVERY, true);
+    voice_push_request_stop();
     return saved;
 }
 bool voice_push_forget() {
-    disabled.store(true);
-    voice_push_priority(VOICE_PRIORITY_RECOVERY, true);
+    voice_push_request_stop();
     return voice_config_store_clear();
 }
 #else
@@ -224,27 +247,71 @@ bool voice_push_forget() { return true; }
 #endif
 void voice_push_touch() { if (lock) { xSemaphoreTake(lock,portMAX_DELAY); model->touch(now_ms()); xSemaphoreGive(lock); } }
 void voice_push_start() {
+    if (!lock.load() || disabled.load()) {
+#ifndef SIMULATOR
+        release_startup();
+#endif
+        return;
+    }
+    bool expected=false;
+    if (!worker_started.compare_exchange_strong(expected,true)) return;
+#ifndef SIMULATOR
+    esp_log_level_set("transport_ws", ESP_LOG_NONE);
+    if (esp_log_level_get("transport_ws") != ESP_LOG_NONE ||
+        xTaskCreatePinnedToCore(worker,"voice_push",4096,nullptr,1,nullptr,0)!=pdPASS) {
+        release_startup();
+        ESP_LOGE("voice_push", "Worker creation or log filtering failed");
+    }
+#else
     const VoiceStartOps ops = {
         [] { return lock.load()!=nullptr; },
-#ifndef SIMULATOR
-        [] {
-            // The transport can otherwise log the bearer during failed handshakes.
-            esp_log_level_set("transport_ws", ESP_LOG_NONE);
-            return esp_log_level_get("transport_ws") == ESP_LOG_NONE;
-        },
-        [] {
-            bool ok=xTaskCreatePinnedToCore(worker,"voice_push",4096,nullptr,1,nullptr,0)==pdPASS;
-            if (!ok) ESP_LOGE("voice_push", "Worker creation failed");
-            return ok;
-        },
-#else
         [] { return true; },
-        [] { ++sim_workers; if (sim_startup_mode==5) return false; ++sim_clients; return true; },
-#endif
+        [] { ++sim_workers; if (sim_startup_mode==5) return false; ++sim_clients; lifecycle.store(1); return true; },
         [] { voice_secure_zero(header,sizeof(header)); }
     };
     voice_start_optional(ops);
+#endif
 }
+void voice_push_request_stop() {
+    disabled.store(true, std::memory_order_release);
+    voice_push_priority(VOICE_PRIORITY_RECOVERY, true);
+    int expected=0;
+    if (lifecycle.compare_exchange_strong(expected,1)) {
+        voice_secure_zero(header,sizeof(header));
+        lifecycle.store(2,std::memory_order_release);
+    }
+}
+bool voice_push_is_stopped() {
+    return lifecycle.load(std::memory_order_acquire)==2;
+}
+
+#ifndef SIMULATOR
+void voice_push_poll_start() {
+    // The network task serializes this with pairing journal operations.
+    if (boot_checked || disabled.load() || !wifi_is_connected() || !wifi_pairing_time_is_valid()) return;
+    int expected=0;
+    if (!lifecycle.compare_exchange_strong(expected,1)) return;
+    voice_pair::EntropyReady ready{true,true};
+    auto *state=new (std::nothrow) voice_pair_store::State{};
+    if (!state) { release_startup(); return; }
+    auto result=voice_pair_store::load(*state,ready);
+    auto choice=voice_push_boot_choice(result==voice_pair_store::Result::Empty, result==voice_pair_store::Result::Ok, state->has_active, state->has_candidate, state->has_tombstone, state->managed_started, state->recovery_required);
+    if (choice==VoiceBootChoice::Legacy) config_preloaded=load_legacy_config();
+    else if (choice==VoiceBootChoice::Active) {
+        int a=snprintf(endpoint,sizeof(endpoint),"%s/api/voice/v1/events",state->active.wss);
+        int b=snprintf(header,sizeof(header),"Authorization: Bearer %s\r\n",state->active.token);
+        config_preloaded=a>0 && (size_t)a<sizeof(endpoint) && b>0 && (size_t)b<sizeof(header);
+    }
+    voice_pair_store::wipe(state,sizeof(*state)); delete state;
+    boot_checked=!voice_push_boot_retry(result==voice_pair_store::Result::StorageError);
+    if (!config_preloaded || disabled.load()) { release_startup(); return; }
+    if (!lvgl_port_lock(-1)) { release_startup(); return; }
+    voice_push_ui_init();
+    lvgl_port_unlock();
+    if (!disabled.load()) voice_push_start();
+    else { voice_secure_zero(header,sizeof(header)); lifecycle.store(2,std::memory_order_release); }
+}
+#endif
 void voice_push_priority(VoicePriority reason,bool enabled) {
     if (enabled) priorities.fetch_or(reason); else priorities.fetch_and(~(uint32_t)reason);
     if (enabled && lock && lvgl_port_lock(-1)) {
@@ -257,6 +324,7 @@ void voice_push_priority(VoicePriority reason,bool enabled) {
 }
 
 #ifdef SIMULATOR
+void voice_push_sim_finish_worker(bool destroyed) { finish_worker(destroyed); }
 void voice_push_sim_startup_mode(int mode) { sim_startup_mode=mode; }
 void voice_push_sim_startup_stats(unsigned *out) {
     out[0]=sim_allocations; out[1]=sim_constructed; out[2]=sim_destroyed; out[3]=sim_frees;
